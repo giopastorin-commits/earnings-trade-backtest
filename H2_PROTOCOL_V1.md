@@ -96,11 +96,65 @@ Ranks use average ranks for tied values. The following must be reported:
 
 Pearson correlation is not a primary test.
 
-The primary p-value uses the standard tie-aware Spearman test with a one-sided
-alternative. The implementation and library version must be recorded. If the
-selected implementation cannot calculate a valid p-value because either
-variable is constant, the primary test is not estimable and H2A is classified
-as `NOT CONFIRMED`.
+The confirmatory primary p-value is cluster-aware and is defined below. A
+standard tie-aware Spearman p-value may be reported only as a clearly labeled
+naive diagnostic. It is not the confirmatory p-value and cannot be used in the
+support criteria.
+
+### Cluster-aware primary p-value
+
+The confirmatory p-value uses a one-sided wild cluster bootstrap-t test on the
+rank regression corresponding to Spearman association:
+
+```text
+rank(absolute_return_pct_20) = alpha + beta * rank(h2_novelty) + error
+```
+
+Average ranks are used for ties. The reported primary effect statistic remains
+Spearman rho. The rank-regression slope has the same direction as rho; its
+cluster-aware bootstrap-t test supplies the confirmatory p-value for the
+pre-specified alternative `rho > 0` (equivalently, `beta > 0`).
+
+The procedure is frozen as follows:
+
+1. Fit the full rank regression and calculate the observed statistic
+   `t_observed = beta_hat / SE_CR1(beta_hat)`. `SE_CR1` is the ticker-clustered
+   sandwich standard error with finite-sample correction
+   `G/(G-1) * (N-1)/(N-K)`, where `G` is the number of distinct tickers,
+   `N` is the number of rows, and `K=2` is the number of regression parameters
+   including the intercept.
+2. Fit the restricted null model with `beta=0`, consisting of an intercept
+   only, and retain its fitted values and residuals.
+3. Generate exactly 10,000 requested wild-bootstrap replicates using a separate
+   deterministic pseudorandom-number-generator instance initialized with seed
+   `20260918`.
+4. The resampling unit is the ticker cluster. In each replicate, independently
+   draw one Rademacher weight per ticker (`-1` or `+1`, each with probability
+   0.5) and apply that same weight to every restricted-model residual belonging
+   to that ticker. Construct the bootstrap outcome ranks as restricted fitted
+   values plus weighted residuals. Predictor ranks and cluster membership remain
+   fixed.
+5. Refit the full rank regression to each bootstrap sample and calculate
+   `t_bootstrap = beta_bootstrap / SE_CR1(beta_bootstrap)` using the same CR1
+   ticker-clustered variance definition.
+6. With `B_valid` valid replicates, calculate the one-sided confirmatory
+   p-value as
+   `(1 + count(t_bootstrap >= t_observed)) / (1 + B_valid)`. The plus-one rule
+   prevents a zero Monte Carlo p-value.
+
+A replicate is invalid if the regression is singular, its cluster-robust
+standard error is zero or non-finite, or its t-statistic is non-finite. Invalid
+replicates are omitted from the p-value denominator and their count is reported.
+If fewer than 9,500 of the 10,000 requested replicates are valid, the p-value is
+declared not estimable. The test is also not estimable when `G < 2`, `N <= K`,
+the predictor or outcome ranks are constant, or the observed cluster-robust
+standard error is zero or non-finite. In every not-estimable case, H2A is
+classified as `NOT CONFIRMED` under V1.
+
+The implementation and library versions used for ranking, regression,
+clustered covariance, and random-number generation must be recorded. This
+method is fixed before results are inspected and may not be replaced according
+to which inferential method yields a smaller p-value.
 
 ## Bootstrap confidence interval
 
