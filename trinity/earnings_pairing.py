@@ -45,10 +45,11 @@ def pair_earnings_release(
 ) -> PairingResult:
     """Select the previous comparable release for ``current``.
 
-    Candidates must have the same normalized ticker, document type, and period
-    type and must be strictly earlier than the current release.  An immediately
-    preceding fiscal period is preferred.  Otherwise, the chronologically
-    closest compatible candidate is used as an explicit fallback.
+    Candidates must have the same normalized ticker and a known, equal document
+    type and must be strictly earlier than the current release.  Known period
+    types must match; UNKNOWN period metadata is allowed only through the
+    chronological fallback.  An immediately preceding fiscal period is
+    preferred.
 
     The order of ``history`` never affects the result.  A copy of the current
     release may be present in history and is excluded.  Duplicate history IDs
@@ -65,7 +66,9 @@ def pair_earnings_release(
         for index, record in enumerate(history)
     ]
     _validate_release_ids(current_release, history_releases)
-    _validate_timezone_awareness(current_release, history_releases)
+
+    if current_release.document_type == "UNKNOWN":
+        return _unmatched_result(current_release, 0)
 
     candidates = sorted(
         (
@@ -73,15 +76,19 @@ def pair_earnings_release(
             for release in history_releases
             if release.release_id != current_release.release_id
             and release.ticker == current_release.ticker
-            and release.release_at < current_release.release_at
             and release.document_type == current_release.document_type
-            and release.period_type == current_release.period_type
+            and release.document_type != "UNKNOWN"
+            and _period_types_compatible(
+                current_release.period_type, release.period_type
+            )
+            and release.release_at < current_release.release_at
         ),
         key=lambda release: (release.release_at, release.release_id),
     )
     candidate_count = len(candidates)
     if not candidates:
         return _unmatched_result(current_release, candidate_count)
+    _validate_timezone_awareness(current_release, candidates)
 
     expected_period = _expected_previous_period(current_release)
     exact_candidates = (
@@ -254,12 +261,23 @@ def _validate_release_ids(current: _Release, history: Sequence[_Release]) -> Non
 
 
 def _validate_timezone_awareness(
-    current: _Release, history: Sequence[_Release]
+    current: _Release, candidates: Sequence[_Release]
 ) -> None:
-    if any(release.timezone_aware != current.timezone_aware for release in history):
+    if any(release.timezone_aware != current.timezone_aware for release in candidates):
         raise EarningsPairingInputError(
-            "release_at values must consistently be timezone-aware or timezone-naive"
+            "potentially comparable release_at values must consistently be "
+            "timezone-aware or timezone-naive"
         )
+
+
+def _period_types_compatible(current_type: str, candidate_type: str) -> bool:
+    """Allow UNKNOWN period metadata only for downstream fallback handling."""
+
+    return (
+        current_type == candidate_type
+        or current_type == "UNKNOWN"
+        or candidate_type == "UNKNOWN"
+    )
 
 
 def _expected_previous_period(release: _Release) -> tuple[int, int | None] | None:

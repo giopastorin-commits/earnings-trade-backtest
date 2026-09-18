@@ -216,6 +216,108 @@ class EarningsPairingTests(unittest.TestCase):
         self.assertEqual(result["previous_release_id"], "q1")
         self.assertEqual(result["candidate_count"], 1)
 
+    def test_unknown_document_type_does_not_pair_automatically(self) -> None:
+        current = _release(
+            "current", "2026-07-20", 2026, 2, document_type="UNKNOWN"
+        )
+        history = [
+            _release(
+                "previous", "2026-04-20", 2026, 1, document_type="UNKNOWN"
+            )
+        ]
+
+        result = pair_earnings_release(current, history)
+
+        self.assertEqual(result["pairing_status"], "NO_MATCH")
+        self.assertEqual(result["pairing_method"], "NONE")
+        self.assertEqual(result["candidate_count"], 0)
+
+    def test_unknown_period_with_known_document_uses_fallback(self) -> None:
+        current = _release(
+            "current", "2026-07-20", 2026, None, period_type="UNKNOWN"
+        )
+        history = [
+            _release(
+                "previous", "2026-04-20", 2026, None, period_type="UNKNOWN"
+            )
+        ]
+
+        result = pair_earnings_release(current, history)
+
+        self.assertEqual(result["pairing_status"], "MATCHED")
+        self.assertEqual(
+            result["pairing_method"], "CHRONOLOGICAL_COMPATIBLE_FALLBACK"
+        )
+        self.assertEqual(result["fiscal_continuity"], "UNKNOWN")
+        self.assertTrue(result["fallback_used"])
+
+    def test_other_ticker_with_different_timezone_awareness_is_irrelevant(self) -> None:
+        current = _release("current", "2026-07-20T08:00:00+00:00", 2026, 2)
+        previous = _release("q1", "2026-04-20T08:00:00+00:00", 2026, 1)
+        irrelevant = _release(
+            "other", "2026-04-20T08:00:00", 2026, 1, ticker="OTHER"
+        )
+
+        result = pair_earnings_release(current, [previous, irrelevant])
+
+        self.assertEqual(result["previous_release_id"], "q1")
+
+    def test_other_document_type_with_different_timezone_is_irrelevant(self) -> None:
+        current = _release("current", "2026-07-20T08:00:00+00:00", 2026, 2)
+        previous = _release("q1", "2026-04-20T08:00:00+00:00", 2026, 1)
+        irrelevant = _release(
+            "transcript",
+            "2026-04-20T08:00:00",
+            2026,
+            1,
+            document_type="TRANSCRIPT",
+        )
+
+        result = pair_earnings_release(current, [irrelevant, previous])
+
+        self.assertEqual(result["previous_release_id"], "q1")
+
+    def test_future_document_with_different_timezone_is_irrelevant(self) -> None:
+        current = _release("current", "2026-07-20T08:00:00+00:00", 2026, 2)
+        previous = _release("q1", "2026-04-20T08:00:00+00:00", 2026, 1)
+        future = _release("future", "2026-10-20T08:00:00", 2026, 3)
+
+        result = pair_earnings_release(current, [future, previous])
+
+        self.assertEqual(result["previous_release_id"], "q1")
+        self.assertEqual(result["candidate_count"], 1)
+
+    def test_exact_period_has_priority_over_more_recent_fallback(self) -> None:
+        current = _release("current", "2026-07-20", 2026, 2)
+        exact = _release("q1", "2026-04-20", 2026, 1)
+        fallback = _release(
+            "unknown-period",
+            "2026-06-20",
+            None,
+            None,
+            period_type="UNKNOWN",
+        )
+
+        result = pair_earnings_release(current, [fallback, exact])
+
+        self.assertEqual(result["previous_release_id"], "q1")
+        self.assertEqual(result["pairing_method"], "EXACT_PREVIOUS_FISCAL_PERIOD")
+        self.assertEqual(result["fiscal_continuity"], "EXACT")
+        self.assertFalse(result["fallback_used"])
+
+    def test_broken_continuity_when_immediate_period_is_missing(self) -> None:
+        current = _release("q3-2026", "2026-10-20", 2026, 3)
+        history = [_release("q1-2026", "2026-04-20", 2026, 1)]
+
+        result = pair_earnings_release(current, history)
+
+        self.assertEqual(result["previous_release_id"], "q1-2026")
+        self.assertEqual(
+            result["pairing_method"], "CHRONOLOGICAL_COMPATIBLE_FALLBACK"
+        )
+        self.assertEqual(result["fiscal_continuity"], "BROKEN")
+        self.assertTrue(result["fallback_used"])
+
 
 if __name__ == "__main__":
     unittest.main()
