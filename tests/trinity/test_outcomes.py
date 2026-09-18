@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import unittest
 
 from trinity.outcomes import InsufficientDataError, calculate_event_outcomes
@@ -64,11 +64,14 @@ class EventOutcomeTests(unittest.TestCase):
         self.assertTrue(all(row["reference_price"] is None for row in result))
         self.assertTrue(all(row["future_close"] is None for row in result))
 
-    def test_insufficient_data_for_plus_60_has_clear_error(self) -> None:
+    def test_insufficient_data_for_plus_60_is_pending(self) -> None:
         bars = _bars(count=61)
 
-        with self.assertRaisesRegex(InsufficientDataError, r"\+60.*only 55"):
-            calculate_event_outcomes("ACME", bars[5]["date"], "AFTER_MARKET", bars)
+        result = calculate_event_outcomes("ACME", bars[5]["date"], "AFTER_MARKET", bars)
+
+        self.assertEqual(result[-1]["horizon_sessions"], 60)
+        self.assertEqual(result[-1]["outcome_status"], "PENDING")
+        self.assertIsNone(result[-1]["future_close"])
 
     def test_spy_benchmark_and_excess_return(self) -> None:
         bars = _bars()
@@ -121,6 +124,99 @@ class EventOutcomeTests(unittest.TestCase):
 
         self.assertEqual(result["reference_price"], bars[event_index]["close"])
         self.assertNotEqual(result["reference_price"], bars[event_index + 1]["close"])
+
+    def test_partial_horizons_complete_and_pending(self) -> None:
+        bars = _bars(count=11)
+        result = calculate_event_outcomes(
+            "ACME", bars[5]["date"], "AFTER_MARKET", bars
+        )
+
+        statuses = {
+            row["horizon_sessions"]: row["outcome_status"] for row in result
+        }
+        self.assertEqual(
+            statuses,
+            {1: "COMPLETE", 5: "COMPLETE", 20: "PENDING", 60: "PENDING"},
+        )
+
+    def test_after_market_non_trading_date_records_resolution(self) -> None:
+        result = calculate_event_outcomes(
+            "ACME", "2024-01-06", "AFTER_MARKET", _bars(date(2024, 1, 1)), horizons=(1,)
+        )[0]
+
+        self.assertEqual(result["event_date_received"], "2024-01-06")
+        self.assertEqual(result["reference_session_date"], "2024-01-05")
+        self.assertEqual(
+            result["reference_resolution"],
+            "LAST_SESSION_BEFORE_NON_TRADING_EVENT",
+        )
+
+    def test_pre_market_non_trading_date_records_resolution(self) -> None:
+        result = calculate_event_outcomes(
+            "ACME", "2024-01-06", "PRE_MARKET", _bars(date(2024, 1, 1)), horizons=(1,)
+        )[0]
+
+        self.assertEqual(result["event_date_received"], "2024-01-06")
+        self.assertEqual(result["reference_session_date"], "2024-01-05")
+        self.assertEqual(result["future_session_date"], "2024-01-08")
+        self.assertEqual(
+            result["reference_resolution"],
+            "PREVIOUS_SESSION_BEFORE_NEXT_TRADING_SESSION",
+        )
+
+    def test_timezone_aware_datetime_is_preserved_without_conversion(self) -> None:
+        event_at = datetime(
+            2024,
+            1,
+            9,
+            0,
+            30,
+            tzinfo=timezone(timedelta(hours=9)),
+        )
+        result = calculate_event_outcomes(
+            "ACME", event_at, "PRE_MARKET", _bars(), horizons=(1,)
+        )[0]
+
+        self.assertEqual(result["event_at"], "2024-01-09T00:30:00+09:00")
+        self.assertEqual(result["event_date_received"], "2024-01-09")
+
+    def test_missing_reference_still_raises_insufficient_data(self) -> None:
+        bars = _bars(start=date(2024, 1, 8))
+
+        with self.assertRaisesRegex(InsufficientDataError, "no session exists"):
+            calculate_event_outcomes(
+                "ACME", "2024-01-06", "AFTER_MARKET", bars, horizons=(1,)
+            )
+
+    def test_available_outcome_has_complete_status(self) -> None:
+        bars = _bars()
+        result = calculate_event_outcomes(
+            "ACME", bars[5]["date"], "AFTER_MARKET", bars, horizons=(1,)
+        )[0]
+
+        self.assertEqual(result["outcome_status"], "COMPLETE")
+        self.assertEqual(result["reference_resolution"], "EVENT_SESSION_CLOSE")
+
+    def test_pending_outcome_has_all_future_metrics_null(self) -> None:
+        bars = _bars(count=7)
+        result = calculate_event_outcomes(
+            "ACME", bars[5]["date"], "AFTER_MARKET", bars, horizons=(5,)
+        )[0]
+
+        self.assertEqual(result["outcome_status"], "PENDING")
+        nullable_fields = (
+            "future_session_date",
+            "future_close",
+            "raw_return_pct",
+            "benchmark_return_pct",
+            "excess_return_pct",
+            "absolute_return_pct",
+            "max_favorable_excursion_pct",
+            "max_adverse_excursion_pct",
+            "volume_change_pct",
+            "realized_volatility",
+        )
+        self.assertTrue(all(result[field] is None for field in nullable_fields))
 
 
 if __name__ == "__main__":

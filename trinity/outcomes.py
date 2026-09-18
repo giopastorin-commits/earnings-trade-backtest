@@ -34,7 +34,7 @@ class OutcomeInputError(ValueError):
 
 
 class InsufficientDataError(OutcomeInputError):
-    """Raised when supplied sessions do not cover a requested outcome."""
+    """Raised when supplied sessions cannot establish a valid reference."""
 
 
 @dataclass(frozen=True)
@@ -66,9 +66,14 @@ def calculate_event_outcomes(
     after the event date as its reference.  AFTER_MARKET uses the last session
     on or before the event date.  This makes weekends and holidays deterministic
     without inventing sessions, and prevents a post-market event from using a
-    future close.  INTRADAY and UNKNOWN produce one null-valued row per horizon
-    with ``timing_ambiguous=True`` because daily data cannot define a safe
-    reference price for them.
+    future close.  ``reference_resolution`` records the exact rule used.
+    INTRADAY and UNKNOWN produce one null-valued PENDING row per horizon with
+    ``timing_ambiguous=True`` because daily data cannot define a safe reference.
+
+    Every requested horizon produces a row.  A horizon for which the future
+    session is not present is PENDING; available horizons are COMPLETE.  Aware
+    datetimes are never converted to another timezone: their received civil
+    date is used as-is and recorded in ``event_date_received``.
 
     Excursions use each intervening session's high/low relative to the reference
     close.  Adverse excursion is signed (zero or negative).  Realized volatility
@@ -77,7 +82,7 @@ def calculate_event_outcomes(
 
     Raises:
         OutcomeInputError: If values, ordering, or requested horizons are invalid.
-        InsufficientDataError: If a reference or future session is unavailable.
+        InsufficientDataError: If a valid reference session is unavailable.
     """
 
     normalized_ticker = ticker.strip() if isinstance(ticker, str) else ""
@@ -94,22 +99,16 @@ def calculate_event_outcomes(
             _ambiguous_record(
                 normalized_ticker,
                 event_at_text,
+                event_date,
                 event_timing,
                 horizon,
             )
             for horizon in normalized_horizons
         ]
 
-    reference_index = _reference_index(bars, event_date, event_timing)
-    max_horizon = max(normalized_horizons)
-    last_required_index = reference_index + max_horizon
-    if last_required_index >= len(bars):
-        available = len(bars) - reference_index - 1
-        raise InsufficientDataError(
-            f"insufficient ohlcv data for +{max_horizon} sessions: "
-            f"only {available} future session(s) are available"
-        )
-
+    reference_index, reference_resolution = _resolve_reference(
+        bars, event_date, event_timing
+    )
     reference = bars[reference_index]
     if reference.volume == 0:
         raise OutcomeInputError(
@@ -124,6 +123,20 @@ def calculate_event_outcomes(
     records: list[OutcomeRecord] = []
     for horizon in normalized_horizons:
         future_index = reference_index + horizon
+        if future_index >= len(bars):
+            records.append(
+                _pending_record(
+                    normalized_ticker,
+                    event_at_text,
+                    event_date,
+                    event_timing,
+                    horizon,
+                    reference,
+                    reference_resolution,
+                )
+            )
+            continue
+
         future = bars[future_index]
         path = bars[reference_index + 1 : future_index + 1]
         raw_return = _percent_change(reference.close, future.close)
@@ -132,20 +145,24 @@ def calculate_event_outcomes(
         excess_return: float | None = None
         if benchmark_closes is not None:
             benchmark_reference = _benchmark_close_on(
-                benchmark_closes, reference.session_date, "reference"
+                benchmark_closes, reference.session_date
             )
             benchmark_future = _benchmark_close_on(
-                benchmark_closes, future.session_date, f"+{horizon}"
+                benchmark_closes, future.session_date
             )
-            benchmark_return = _percent_change(benchmark_reference, benchmark_future)
-            excess_return = raw_return - benchmark_return
+            if benchmark_reference is not None and benchmark_future is not None:
+                benchmark_return = _percent_change(benchmark_reference, benchmark_future)
+                excess_return = raw_return - benchmark_return
 
         records.append(
             {
                 "ticker": normalized_ticker,
                 "event_at": event_at_text,
+                "event_date_received": event_date.isoformat(),
                 "timing": event_timing.value,
                 "timing_ambiguous": False,
+                "reference_resolution": reference_resolution,
+                "outcome_status": "COMPLETE",
                 "horizon_sessions": horizon,
                 "reference_session_date": reference.session_date.isoformat(),
                 "future_session_date": future.session_date.isoformat(),
@@ -171,18 +188,57 @@ def calculate_event_outcomes(
 def _ambiguous_record(
     ticker: str,
     event_at: str,
+    event_date: date,
     timing: EventTiming,
     horizon: int,
 ) -> OutcomeRecord:
     return {
         "ticker": ticker,
         "event_at": event_at,
+        "event_date_received": event_date.isoformat(),
         "timing": timing.value,
         "timing_ambiguous": True,
+        "reference_resolution": "AMBIGUOUS",
+        "outcome_status": "PENDING",
         "horizon_sessions": horizon,
         "reference_session_date": None,
         "future_session_date": None,
         "reference_price": None,
+        "future_close": None,
+        "raw_return_pct": None,
+        "benchmark_return_pct": None,
+        "excess_return_pct": None,
+        "absolute_return_pct": None,
+        "max_favorable_excursion_pct": None,
+        "max_adverse_excursion_pct": None,
+        "volume_change_pct": None,
+        "realized_volatility": None,
+    }
+
+
+def _pending_record(
+    ticker: str,
+    event_at: str,
+    event_date: date,
+    timing: EventTiming,
+    horizon: int,
+    reference: _Bar,
+    reference_resolution: str,
+) -> OutcomeRecord:
+    """Build a horizon row whose future session has not arrived yet."""
+
+    return {
+        "ticker": ticker,
+        "event_at": event_at,
+        "event_date_received": event_date.isoformat(),
+        "timing": timing.value,
+        "timing_ambiguous": False,
+        "reference_resolution": reference_resolution,
+        "outcome_status": "PENDING",
+        "horizon_sessions": horizon,
+        "reference_session_date": reference.session_date.isoformat(),
+        "future_session_date": None,
+        "reference_price": reference.close,
         "future_close": None,
         "raw_return_pct": None,
         "benchmark_return_pct": None,
@@ -203,7 +259,7 @@ def _parse_event_at(value: date | datetime | str) -> tuple[date, str]:
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return parsed.date(), parsed.isoformat()
+            return parsed.date(), value
         except ValueError:
             try:
                 parsed_date = date.fromisoformat(value)
@@ -260,7 +316,7 @@ def _normalize_bars(rows: Sequence[TradingBar], series_name: str) -> list[_Bar]:
 
 def _normalize_benchmark(rows: Sequence[TradingBar]) -> dict[date, float]:
     if not rows:
-        raise InsufficientDataError("benchmark_ohlcv must contain at least one session")
+        return {}
     dates: list[date] = []
     closes: dict[date, float] = {}
     for index, row in enumerate(rows):
@@ -325,12 +381,22 @@ def _validate_order(dates: Sequence[date], series_name: str) -> None:
         )
 
 
-def _reference_index(bars: Sequence[_Bar], event_date: date, timing: EventTiming) -> int:
+def _resolve_reference(
+    bars: Sequence[_Bar], event_date: date, timing: EventTiming
+) -> tuple[int, str]:
+    """Return the reference index and an auditable resolution label."""
+
     if timing is EventTiming.AFTER_MARKET:
         candidates = [index for index, bar in enumerate(bars) if bar.session_date <= event_date]
         if not candidates:
             raise InsufficientDataError("no session exists on or before the AFTER_MARKET event")
-        return candidates[-1]
+        reference_index = candidates[-1]
+        resolution = (
+            "EVENT_SESSION_CLOSE"
+            if bars[reference_index].session_date == event_date
+            else "LAST_SESSION_BEFORE_NON_TRADING_EVENT"
+        )
+        return reference_index, resolution
 
     event_session = next(
         (index for index, bar in enumerate(bars) if bar.session_date >= event_date),
@@ -342,16 +408,18 @@ def _reference_index(bars: Sequence[_Bar], event_date: date, timing: EventTiming
         raise InsufficientDataError(
             "PRE_MARKET outcome requires a previous session for the reference close"
         )
-    return event_session - 1
+    resolution = (
+        "PREVIOUS_SESSION_CLOSE"
+        if bars[event_session].session_date == event_date
+        else "PREVIOUS_SESSION_BEFORE_NEXT_TRADING_SESSION"
+    )
+    return event_session - 1, resolution
 
 
-def _benchmark_close_on(closes: Mapping[date, float], target: date, label: str) -> float:
-    try:
-        return closes[target]
-    except KeyError as error:
-        raise InsufficientDataError(
-            f"benchmark_ohlcv has no {label} session for {target.isoformat()}"
-        ) from error
+def _benchmark_close_on(closes: Mapping[date, float], target: date) -> float | None:
+    """Return an exact-date benchmark close, if the supplied series has it."""
+
+    return closes.get(target)
 
 
 def _percent_change(start: float, end: float) -> float:
