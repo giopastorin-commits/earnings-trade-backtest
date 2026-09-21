@@ -1,0 +1,92 @@
+[
+  {
+    "company_name": "Alba Meccanica SpA",
+    "ticker": "ALBA",
+    "provider_symbol": "ALBA.MI",
+    "isin": "IT0000000001",
+    "as_of": "2026-09-21",
+    "price": {
+      "published_at": "2026-09-21",
+      "current_price": 18.4,
+      "return_5d": 2.1,
+      "return_20d": 5.2,
+      "return_60d": 8.3,
+      "trend": "rising",
+      "indicators": {"moving_average_20d": 17.8}
+    },
+    "fundamentals": {
+      "published_at": "2026-09-15",
+      "revenue": 420000000,
+      "revenue_growth": 9.1,
+      "operating_margin": 14.2,
+      "net_income": 39000000,
+      "free_cash_flow": 31000000,
+      "net_debt": 80000000,
+      "valuation_metrics": {"pe": 16.2}
+    },
+    "events": [
+      {
+        "kind": "EARNINGS",
+        "published_at": "2026-09-15",
+        "summary": "Synthetic quarterly results improved.",
+        "facts": {"revenue_growth": 9.1},
+        "guidance": "Management reiterated its synthetic annual outlook."
+      }
+    ],
+    "evidence": [
+      {
+        "source": "Synthetic company release",
+        "published_at": "2026-09-15",
+        "identifier": "ALBA-Q2-2026",
+        "excerpt": "Revenue and operating margin improved."
+      }
+    ]
+  },
+  {
+    "company_name": "Borea Servizi SpA",
+    "ticker": "BOREA",
+    "provider_symbol": "BOREA.MI",
+    "as_of": "2026-09-21",
+    "price": {
+      "published_at": "2026-09-21",
+      "current_price": 7.6,
+      "return_5d": -1.3,
+      "return_20d": 0.4,
+      "return_60d": -3.2
+    },
+    "fundamentals": {
+      "published_at": "2026-09-18",
+      "revenue": 270000000,
+      "revenue_growth": 3.0,
+      "operating_margin": 7.5,
+      "net_income": 9000000,
+      "free_cash_flow": -4000000,
+      "net_debt": 120000000
+    },
+    "events": [
+      {
+        "kind": "GUIDANCE",
+        "published_at": "2026-09-18",
+        "summary": "Synthetic revenue outlook was maintained, while costs rose.",
+        "guidance": "Revenue outlook unchanged."
+      }
+    ],
+    "evidence": [
+      {
+        "source": "Synthetic company update",
+        "published_at": "2026-09-18",
+        "identifier": "BOREA-UPDATE-2026"
+      }
+    ]
+  },
+  {
+    "company_name": "Cima Tessile SpA",
+    "ticker": "CIMA",
+    "provider_symbol": "CIMA.MI",
+    "as_of": "2026-09-21",
+    "price": {},
+    "fundamentals": {},
+    "events": [],
+    "evidence": []
+  }
+]
