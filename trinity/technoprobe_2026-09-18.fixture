@@ -1,0 +1,90 @@
+{
+  "company_name": "Technoprobe S.p.A.",
+  "ticker": "TPRO",
+  "provider_symbol": "TPRO (Euronext Milan)",
+  "isin": "IT0005482333",
+  "snapshot_as_of": "2026-09-18",
+  "price": {
+    "current_price": 29.46,
+    "return_5d": null,
+    "return_20d": null,
+    "return_60d": null,
+    "published_at": "2026-09-18"
+  },
+  "financial_report": {
+    "published_at": "2026-08-05",
+    "period": "H1 2026",
+    "currency": "EUR",
+    "unit": "thousands",
+    "revenue": 464051,
+    "revenue_previous": 325860,
+    "revenue_growth_pct_reported": 42.4,
+    "operating_profit": 170487,
+    "net_income": 143108,
+    "net_income_previous": 34408,
+    "net_cash": 685882,
+    "ebitda": 206151,
+    "ebitda_margin_pct_reported": 44.4,
+    "guidance_2026_revenue_million_eur": [1050, 1100],
+    "guidance_2026_revenue_previous_million_eur": [950, 1050],
+    "guidance_2026_ebitda_margin_pct": [46, 48],
+    "guidance_2026_ebitda_margin_previous_pct": [44, 46],
+    "capex_plan_million_eur": 350,
+    "capex_plan_previous_million_eur": 250
+  },
+  "evidence": [
+    {
+      "source": "Borsa Italiana, official Technoprobe listing",
+      "published_at": "2026-09-18",
+      "identifier": "IT0005482333-2026-09-18",
+      "url": "https://www.borsaitaliana.it/borsa/azioni/listino-ufficiale.html?isin=IT0005482333&lang=it",
+      "excerpt": "Ultimo contratto 18/09/26; prezzo 29,46 EUR."
+    },
+    {
+      "source": "Technoprobe, H1 2026 consolidated results press release",
+      "published_at": "2026-08-05",
+      "identifier": "PR-H1-2026",
+      "url": "https://www.technoprobe.com/wp-content/uploads/2026/08/PR-H1-2026.pdf",
+      "excerpt": "H1 revenue EUR 464.051m (+42.4%); operating profit EUR 170.487m; net profit EUR 143.108m; positive net financial position EUR 685.882m. FY2026 revenue and EBITDA margin guidance revised upward."
+    },
+    {
+      "source": "Technoprobe, China strategic partnership completion press release",
+      "published_at": "2026-08-14",
+      "identifier": "CHINA-PARTNERSHIP-2026-08-14",
+      "url": "https://www.technoprobe.com/wp-content/uploads/2026/08/Closing-PJ-Ibiza_Closing-PJ-Ibiza-VF.pdf",
+      "excerpt": "Local partner invests USD 35m for 30% of Nexprobe Semiconductor (Shanghai); completion announced 14 August 2026."
+    }
+  ],
+  "events": [
+    {
+      "kind": "H1_2026_RESULTS_AND_GUIDANCE",
+      "published_at": "2026-08-05",
+      "summary": "H1 revenue and net profit increased year over year; company raised FY2026 revenue and EBITDA margin guidance and planned capex.",
+      "facts": {
+        "revenue_previous_eur": 325860000,
+        "net_income_previous_eur": 34408000,
+        "ebitda_eur": 206151000,
+        "ebitda_margin_pct_reported": 44.4,
+        "guidance_2026_revenue_million_eur": [1050, 1100],
+        "guidance_2026_revenue_previous_million_eur": [950, 1050],
+        "guidance_2026_ebitda_margin_pct": [46, 48],
+        "guidance_2026_ebitda_margin_previous_pct": [44, 46],
+        "capex_plan_million_eur": 350,
+        "capex_plan_previous_million_eur": 250,
+        "evidence_identifier": "PR-H1-2026"
+      },
+      "guidance": "FY2026 revenue EUR 1,050-1,100m (previously 950-1,050m); EBITDA margin 46-48% (previously 44-46%); capex through Q1 2027 EUR 350m (previously 250m)."
+    },
+    {
+      "kind": "CHINA_PARTNERSHIP_COMPLETION",
+      "published_at": "2026-08-14",
+      "summary": "Technoprobe completed the formalities for a strategic partnership in China through Nexprobe Semiconductor (Shanghai).",
+      "facts": {
+        "local_partner_investment_usd": 35000000,
+        "local_partner_new_share_capital_pct": 30,
+        "evidence_identifier": "CHINA-PARTNERSHIP-2026-08-14"
+      },
+      "guidance": null
+    }
+  ]
+}
