@@ -223,6 +223,25 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
                 record[field] = _required_text(item[field], f"evidence[{index}].{field}")
         evidence.append(record)
 
+    financial_facts = _mapping(data.get("financial_facts", {}), "financial_facts")
+    known_evidence = {item["identifier"] for item in evidence if item["identifier"]}
+    for field, raw in financial_facts.items():
+        if raw is None:
+            continue
+        fact = _mapping(raw, f"financial_facts.{field}")
+        if fact.get("unit") not in {"EUR", "PERCENT"} or fact.get("source_unit") not in {
+            "EUR", "EUR_THOUSANDS", "EUR_MILLIONS", "EUR_BILLIONS", "PERCENT"
+        }:
+            raise ItaliaV1InputError(f"financial_facts.{field} has unverified unit")
+        if fact.get("evidence_identifier") not in known_evidence:
+            raise ItaliaV1InputError(f"financial_facts.{field} lacks matching evidence")
+        _required_text(fact.get("period"), f"financial_facts.{field}.period")
+        _required_text(fact.get("extraction_method"), f"financial_facts.{field}.extraction_method")
+        _required_text(fact.get("source_excerpt"), f"financial_facts.{field}.source_excerpt")
+        values = fact.get("value") if isinstance(fact.get("value"), list) else [fact.get("value")]
+        for value in values:
+            _number(value, f"financial_facts.{field}.value")
+
     missing = [
         f"price.{field}" for field in _PRICE_FIELDS if price[field] is None
     ] + [
@@ -233,9 +252,11 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
         "identity": {
             "company_name": company_name, "ticker": ticker,
             "provider_symbol": provider_symbol, "isin": isin, "as_of": day,
+            "schema_type": _optional_text(data.get("schema_type"), "schema_type"),
         },
         "price": price,
         "fundamentals": fundamentals,
+        "financial_facts": _json_copy(financial_facts, "financial_facts"),
         "events": events,
         "evidence": evidence,
         "missing_fields": missing,
@@ -305,6 +326,7 @@ class ThesisRecord:
             **identity,
             "price": facts.get("price"),
             "fundamentals": facts.get("fundamentals"),
+            "financial_facts": facts.get("financial_facts"),
             "events": facts.get("events"),
             "evidence": facts.get("evidence"),
         }, day)

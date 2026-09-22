@@ -40,9 +40,15 @@ def load_real_company(
     never relabel an old price as the current price for a later as-of date.
     """
 
-    if company == "TPRO.MI":
-        from trinity.italia_acquisition import acquire_technoprobe
-        result, _ = acquire_technoprobe(as_of, cache_dir=cache_dir, session=session,
+    from trinity.italia_company_config import COMPANIES
+    if company in COMPANIES:
+        if company == "TPRO.MI":
+            from trinity.italia_acquisition import acquire_technoprobe
+            result, _ = acquire_technoprobe(as_of, cache_dir=cache_dir, session=session,
+                                            now=now, refresh=refresh)
+        else:
+            from trinity.italia_acquisition import acquire_company
+            result, _ = acquire_company(company, as_of, cache_dir=cache_dir, session=session,
                                         now=now, refresh=refresh)
         return result
     if not isinstance(company, str) or company.strip().upper() != "TECHNOPROBE":

@@ -20,10 +20,13 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 import requests
 
+from trinity.italia_company_config import COMPANIES, CompanyConfig
+
 
 PRESS_URL = "https://www.technoprobe.com/investors/investor-relations/financial-press-releases"
 REPORT_URL = "https://www.technoprobe.com/investors/investor-relations/financial-statements"
 MARKET_TZ = ZoneInfo("Europe/Rome")
+DOCUMENT_TYPES = {"RESULTS", "FINANCIAL_REPORT", "GUIDANCE", "CORPORATE_EVENT"}
 MONTHS = {name: i for i, name in enumerate((
     "january", "february", "march", "april", "may", "june", "july", "august",
     "september", "october", "november", "december"), 1)}
@@ -61,9 +64,10 @@ class CachedHTTP:
 
     def get(self, url: str, kind: str) -> tuple[bytes, dict[str, str]]:
         parsed = urlparse(url)
-        if parsed.scheme != "https" or parsed.hostname not in {
-            "query1.finance.yahoo.com", "www.technoprobe.com"
-        } or kind not in {"json", "html", "pdf"}:
+        allowed_hosts = {"query1.finance.yahoo.com"} | {
+            urlparse(config.ir_base_url).hostname for config in COMPANIES.values()
+        }
+        if parsed.scheme != "https" or parsed.hostname not in allowed_hosts or kind not in {"json", "html", "pdf"}:
             raise AcquisitionError(f"source not allowed: {url}")
         key = sha256(url.encode("utf-8")).hexdigest()
         raw = self.directory / f"{key}.{kind}"
@@ -96,11 +100,11 @@ class CachedHTTP:
 
 def fetch_prices(cache: CachedHTTP, as_of: str | date, *, ticker: str = "TPRO.MI") -> dict[str, object]:
     """Return definitive Milan closes and 5/20/60-session close returns."""
-    if ticker != "TPRO.MI":
-        raise AcquisitionError("only TPRO.MI is supported; foreign listing fallback forbidden")
+    if ticker not in COMPANIES:
+        raise AcquisitionError("unsupported Milan symbol; foreign listing fallback forbidden")
     day = _day(as_of)
     query = urlencode({"range": "5y", "interval": "1d", "events": "div,splits"})
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/TPRO.MI?{query}"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{query}"
     content, audit = cache.get(url, "json")
     try:
         payload = json.loads(content)
@@ -167,8 +171,36 @@ def _date_from_text(text: str) -> str | None:
     return None
 
 
-def discover_documents(press_html: bytes, report_html: bytes, as_of: str | date) -> list[dict[str, str]]:
+def discover_documents(press_html: bytes | dict[str, bytes], report_html: bytes | None,
+                       as_of: str | date, *, config: CompanyConfig | None = None) -> list[dict[str, str]]:
     """Select latest results/report and up to two recent material IR releases."""
+    if config is not None and config.ticker != "TPRO.MI":
+        from urllib.parse import unquote, urljoin
+        if not isinstance(press_html, dict):
+            raise AcquisitionError("configured IR pages are required")
+        selected = []
+        for source in config.documents:
+            if source.document_type not in DOCUMENT_TYPES:
+                raise AcquisitionError("unsupported configured document type")
+            if source.published_at > _day(as_of).isoformat():
+                continue
+            if urlparse(source.url).hostname != urlparse(config.ir_base_url).hostname:
+                raise AcquisitionError("IR document URL outside configured official site")
+            page = press_html.get(source.index_url)
+            if page is None:
+                raise AcquisitionError("configured IR index page missing")
+            links = {unquote(urljoin(source.index_url, a["href"])).lower()
+                     for a in BeautifulSoup(page, "html.parser").select("a[href]")}
+            if unquote(source.url).lower() not in links:
+                raise AcquisitionError(f"configured document absent from IR index: {source.title}")
+            selected.append({"company": config.company_name, "title": source.title,
+                             "url": source.url, "published_at": source.published_at,
+                             "document_type": source.document_type})
+        if not {"RESULTS", "FINANCIAL_REPORT"} <= {d["document_type"] for d in selected}:
+            raise AcquisitionError("latest results or financial report not found on official IR")
+        return selected
+    if not isinstance(press_html, bytes) or not isinstance(report_html, bytes):
+        raise AcquisitionError("Technoprobe IR pages are required")
     day = _day(as_of).isoformat()
     from urllib.parse import urljoin
     documents: list[dict[str, str]] = []
@@ -297,3 +329,98 @@ def acquire_technoprobe(as_of: str | date, *, cache_dir: str | Path = "data/trin
     summary = {"prices": prices, "documents": docs,
                "source_pages": [press_audit, report_audit], "emarket_storage": "NOT_ACCESSED"}
     return company, summary
+
+
+def acquire_company(ticker: str, as_of: str | date, *,
+                    cache_dir: str | Path = "data/trinity_italia_v1",
+                    session: requests.Session | None = None, now: datetime | None = None,
+                    refresh: bool = False) -> tuple[dict[str, object], dict[str, object]]:
+    """Acquire configured Milan prices, listed IR PDFs, and audited H1 facts."""
+    if ticker not in COMPANIES:
+        raise AcquisitionError("unsupported Milan symbol")
+    if ticker == "TPRO.MI":
+        company, summary = acquire_technoprobe(as_of, cache_dir=cache_dir, session=session,
+                                               now=now, refresh=refresh)
+        for index, document in enumerate(summary["documents"]):
+            document.update({"company": company["company_name"],
+                             "document_type": "RESULTS" if index == 0 else
+                             "FINANCIAL_REPORT" if index == 1 else "CORPORATE_EVENT",
+                             "sha256": document["content_sha256"],
+                             "local_path": document["raw_path"]})
+        return company, summary
+    from trinity.italia_financial_facts import extract_financial_facts
+    from trinity.italia_v1 import build_facts
+
+    config = COMPANIES[ticker]
+    day = _day(as_of).isoformat()
+    cache = CachedHTTP(cache_dir, session, refresh=refresh, now=now)
+    prices = fetch_prices(cache, day, ticker=ticker)
+    pages: dict[str, bytes] = {}
+    page_audits = []
+    for index_url in dict.fromkeys(source.index_url for source in config.documents):
+        pages[index_url], audit = cache.get(index_url, "html")
+        page_audits.append(audit)
+    documents = discover_documents(pages, None, day, config=config)
+    evidence = [{"source": "Yahoo Finance Chart", "url": prices["audit"]["url"],
+                 "identifier": f"YAHOO-{ticker}-{prices['published_at']}",
+                 "published_at": prices["published_at"], "excerpt": "Definitive daily OHLCV",
+                 "title": f"{ticker} daily OHLCV", "document_kind": "PRICE",
+                 "published_at_precision": "SESSION_DATE", **{k: prices["audit"][k]
+                 for k in ("retrieved_at", "content_sha256", "raw_path")}}]
+    results_text = None
+    result_doc = None
+    report_text = None
+    report_doc = None
+    for document in documents:
+        content, audit = cache.get(document["url"], "pdf")
+        document.update({"retrieved_at": audit["retrieved_at"],
+                         "sha256": audit["content_sha256"], "local_path": audit["raw_path"]})
+        identifier = f"IR-{sha256(document['url'].encode()).hexdigest()[:16]}"
+        document["identifier"] = identifier
+        evidence.append({"source": config.company_name + " Investor Relations",
+                         "url": document["url"], "title": document["title"],
+                         "identifier": identifier, "published_at": document["published_at"],
+                         "published_at_precision": "DATE_ONLY",
+                         "document_kind": document["document_type"],
+                         "retrieved_at": audit["retrieved_at"],
+                         "content_sha256": audit["content_sha256"],
+                         "raw_path": audit["raw_path"], "excerpt": document["title"]})
+        if document["document_type"] == "RESULTS":
+            results_text = extract_pdf_text(content)
+            result_doc = document
+        if document["document_type"] == "FINANCIAL_REPORT" and config.extract_report_guidance:
+            report_text = extract_pdf_text(content)
+            report_doc = document
+    if results_text is None or result_doc is None:
+        raise AcquisitionError("results PDF missing")
+    normalized, failures = extract_financial_facts(
+        results_text, config, result_doc["identifier"], report_text=report_text,
+        report_evidence_identifier=report_doc["identifier"] if report_doc else None)
+    fundamentals = {"revenue": None, "revenue_growth": None, "operating_margin": None,
+                    "net_income": None, "free_cash_flow": None, "net_debt": None,
+                    "published_at": result_doc["published_at"], "provenance": {}}
+    for field in ("revenue", "revenue_growth", "operating_margin", "net_income"):
+        if normalized[field] is not None:
+            fundamentals[field] = normalized[field]["value"]
+            fundamentals["provenance"][field] = normalized[field]
+    if normalized["net_debt_or_cash"] is not None:
+        value = normalized["net_debt_or_cash"]["value"]
+        fundamentals["net_debt"] = -value if config.ticker == "DLG.MI" else value
+        fundamentals["provenance"]["net_debt"] = normalized["net_debt_or_cash"]
+    price = {field: prices[field] for field in
+             ("current_price", "return_5d", "return_20d", "return_60d", "published_at")}
+    price["acquisition"] = {field: prices[field] for field in
+                            ("volume", "market", "currency", "session_count")}
+    price["acquisition"].update(prices["audit"])
+    company = {"company_name": config.company_name, "ticker": ticker.removesuffix(".MI"),
+               "provider_symbol": ticker, "isin": config.isin, "as_of": day,
+               "schema_type": config.schema_type, "price": price,
+               "fundamentals": fundamentals, "financial_facts": normalized,
+               "events": [{"kind": "RESULTS", "published_at": result_doc["published_at"],
+                           "summary": result_doc["title"], "facts": {
+                               "evidence_identifier": result_doc["identifier"]},
+                           "guidance": normalized["guidance"]["source_excerpt"]
+                           if normalized["guidance"] else None}], "evidence": evidence}
+    build_facts(company, day)
+    return company, {"prices": prices, "documents": documents,
+                     "source_pages": page_audits, "extraction_failures": failures}
