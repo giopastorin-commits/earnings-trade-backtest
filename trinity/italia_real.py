@@ -30,7 +30,9 @@ MODEL = "gpt-5.6-sol"
 
 
 def load_real_company(
-    company: str, as_of: str | date, *, snapshot_path: str | Path = SNAPSHOT
+    company: str, as_of: str | date, *, snapshot_path: str | Path = SNAPSHOT,
+    cache_dir: str | Path = "data/trinity_italia_v1", session: object = None,
+    now: object = None, refresh: bool = False,
 ) -> dict[str, object]:
     """Map a dated, sourced Technoprobe snapshot to a V1 CompanyInput.
 
@@ -38,6 +40,11 @@ def load_real_company(
     never relabel an old price as the current price for a later as-of date.
     """
 
+    if company == "TPRO.MI":
+        from trinity.italia_acquisition import acquire_technoprobe
+        result, _ = acquire_technoprobe(as_of, cache_dir=cache_dir, session=session,
+                                        now=now, refresh=refresh)
+        return result
     if not isinstance(company, str) or company.strip().upper() != "TECHNOPROBE":
         raise ItaliaV1InputError("only TECHNOPROBE is supported by this snapshot loader")
     with Path(snapshot_path).open(encoding="utf-8") as handle:
@@ -194,8 +201,7 @@ class CodexCLIProvider:
             "identifier di evidence fra parentesi quadre. Distingui fatti, guidance e "
             "inferenze. Non calcolare rendimenti, margini, ratio o valuation: usa soltanto "
             "i numeri presenti nei facts. Se un dato manca, dichiaralo; non inventarlo. "
-            "Per la partnership cinese, distingui la sottoscrizione di nuovo capitale "
-            "da una cessione di azioni esistenti: non chiamarla cessione. "
+            "Non qualificare eventi societari oltre quanto supportato dai facts. "
             "PASS indica evidenza insufficiente o tesi non supportata, WATCH monitoraggio, "
             "INVESTIGATE ulteriore approfondimento; non sono segnali buy/sell. "
             "Niente dati esterni o successivi ad as_of.\nFACTS:\n"
@@ -236,8 +242,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Analyze one Technoprobe source snapshot")
     parser.add_argument("--as-of", default="2026-09-18")
     parser.add_argument("--storage-dir", default="theses")
+    parser.add_argument("--live", action="store_true", help="Acquire Yahoo and official IR data")
+    parser.add_argument("--cache-dir", default="data/trinity_italia_v1")
     args = parser.parse_args(argv)
-    company_input = load_real_company("TECHNOPROBE", args.as_of)
+    company_input = load_real_company("TPRO.MI" if args.live else "TECHNOPROBE",
+                                      args.as_of, cache_dir=args.cache_dir)
     thesis = analyze_company(company_input, args.as_of, CodexCLIProvider())
     path = save_thesis(thesis, args.storage_dir)
     print(json.dumps(thesis.to_dict(), ensure_ascii=False, indent=2))

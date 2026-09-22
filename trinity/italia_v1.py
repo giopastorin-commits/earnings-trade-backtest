@@ -153,6 +153,10 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
         _published_day(price_input.get("published_at"), day, "price.published_at")
         if has_price or price_input.get("published_at") is not None else None
     )
+    if "acquisition" in price_input:
+        price["acquisition"] = _json_copy(
+            _mapping(price_input["acquisition"], "price.acquisition"), "price.acquisition"
+        )
 
     fundamentals_input = _mapping(data.get("fundamentals", {}), "fundamentals")
     fundamentals: dict[str, object] = {
@@ -175,6 +179,11 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
             fundamentals_input.get("published_at"), day, "fundamentals.published_at"
         ) if has_fundamentals or fundamentals_input.get("published_at") is not None else None
     )
+    if "provenance" in fundamentals_input:
+        fundamentals["provenance"] = _json_copy(
+            _mapping(fundamentals_input["provenance"], "fundamentals.provenance"),
+            "fundamentals.provenance",
+        )
 
     events: list[dict[str, object]] = []
     for index, raw in enumerate(_items(data.get("events", []), "events")):
@@ -197,7 +206,7 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
         url = _optional_text(item.get("url"), f"evidence[{index}].url")
         if identifier is None and url is None:
             raise ItaliaV1InputError(f"evidence[{index}] needs identifier or url")
-        evidence.append({
+        record = {
             "source": _required_text(item.get("source"), f"evidence[{index}].source"),
             "published_at": _published_day(
                 item.get("published_at"), day, f"evidence[{index}].published_at"
@@ -205,7 +214,14 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
             "identifier": identifier,
             "url": url,
             "excerpt": _optional_text(item.get("excerpt"), f"evidence[{index}].excerpt"),
-        })
+        }
+        for field in (
+            "title", "retrieved_at", "content_sha256", "raw_path", "published_at_precision",
+            "document_kind",
+        ):
+            if field in item:
+                record[field] = _required_text(item[field], f"evidence[{index}].{field}")
+        evidence.append(record)
 
     missing = [
         f"price.{field}" for field in _PRICE_FIELDS if price[field] is None
