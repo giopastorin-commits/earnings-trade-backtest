@@ -21,6 +21,10 @@ from uuid import uuid4
 PROMPT_VERSION = "TRINITY_ITALIA_V1_CONTRACT"
 STATUSES = frozenset({"PASS", "WATCH", "INVESTIGATE"})
 CONFIDENCES = frozenset({"LOW", "MEDIUM", "HIGH"})
+EVENT_CLASSIFICATIONS = frozenset({
+    "NEW_INFORMATION", "EXPECTATION_CHANGE", "CONFIRMATION", "REITERATION",
+    "ALREADY_KNOWN", "LOW_RELEVANCE",
+})
 _PRICE_FIELDS = ("current_price", "return_5d", "return_20d", "return_60d")
 _FUNDAMENTAL_FIELDS = (
     "revenue", "revenue_growth", "operating_margin", "net_income",
@@ -290,6 +294,15 @@ class ThesisRecord:
     prompt_version: str
     claim_refs: list[dict[str, object]] = field(default_factory=list)
     rejected_claim_refs: list[dict[str, object]] = field(default_factory=list)
+    evidence_confidence: str = "LOW"
+    thesis_strength: str = "LOW"
+    analyst_status: str = "PASS"
+    analyst_thesis_strength: str = "LOW"
+    analyst_evidence_confidence: str = "LOW"
+    critic_status: str = "PASS"
+    critic_thesis_strength: str = "LOW"
+    critic_evidence_confidence: str = "LOW"
+    event_assessments: list[dict[str, object]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not isinstance(self.thesis_id, str) or not _THESIS_ID.fullmatch(self.thesis_id):
@@ -302,6 +315,18 @@ class ThesisRecord:
             raise ItaliaV1InputError(f"status must be one of {sorted(STATUSES)}")
         if self.confidence not in CONFIDENCES:
             raise ItaliaV1InputError(f"confidence must be one of {sorted(CONFIDENCES)}")
+        for field_name in ("evidence_confidence", "thesis_strength",
+                           "analyst_thesis_strength", "analyst_evidence_confidence",
+                           "critic_thesis_strength", "critic_evidence_confidence"):
+            if getattr(self, field_name) not in CONFIDENCES:
+                raise ItaliaV1InputError(
+                    f"{field_name} must be one of {sorted(CONFIDENCES)}"
+                )
+        for field_name in ("analyst_status", "critic_status"):
+            if getattr(self, field_name) not in STATUSES:
+                raise ItaliaV1InputError(f"{field_name} must be one of {sorted(STATUSES)}")
+        if self.confidence != self.evidence_confidence:
+            raise ItaliaV1InputError("confidence must mirror evidence_confidence")
         for field in _ANALYSIS_TEXT_FIELDS:
             _required_text(getattr(self, field), field)
         for field in ("catalysts", "risks", "critic_notes"):
@@ -316,6 +341,17 @@ class ThesisRecord:
                     claim.get("fact_ids"), f"{collection_name}[{index}].fact_ids"
                 )):
                     _required_text(fact_id, f"{collection_name}[{index}].fact_ids[{fact_index}]")
+        for index, raw in enumerate(_items(self.event_assessments, "event_assessments")):
+            assessment = _mapping(raw, f"event_assessments[{index}]")
+            for key in ("event_id", "classification", "rationale"):
+                _required_text(assessment.get(key), f"event_assessments[{index}].{key}")
+            if assessment.get("classification") not in EVENT_CLASSIFICATIONS:
+                raise ItaliaV1InputError(
+                    f"event_assessments[{index}].classification must be one of "
+                    f"{sorted(EVENT_CLASSIFICATIONS)}"
+                )
+            if not isinstance(assessment.get("material"), bool):
+                raise ItaliaV1InputError(f"event_assessments[{index}].material must be boolean")
         _required_text(self.model_version, "model_version")
         _required_text(self.prompt_version, "prompt_version")
         try:
@@ -372,8 +408,10 @@ def analyze_company(
             for index, item in enumerate(_items(draft.get(field), field))
         ]
     proposed_status = draft.get("proposed_status")
-    confidence = draft.get("confidence")
-    if proposed_status not in STATUSES or confidence not in CONFIDENCES:
+    analyst_evidence_confidence = draft.get("evidence_confidence", draft.get("confidence"))
+    analyst_thesis_strength = draft.get("thesis_strength", "LOW")
+    if (proposed_status not in STATUSES or analyst_evidence_confidence not in CONFIDENCES
+            or analyst_thesis_strength not in CONFIDENCES):
         raise ItaliaV1InputError("analyst must propose a valid status and confidence")
 
     critique = _mapping(
@@ -385,9 +423,17 @@ def analyze_company(
         for index, item in enumerate(_items(critique.get("notes"), "critic notes"))
     ]
     status = critique.get("status")
-    final_confidence = critique.get("confidence")
-    if status not in STATUSES or final_confidence not in CONFIDENCES:
+    final_confidence = critique.get("evidence_confidence", critique.get("confidence"))
+    thesis_strength = critique.get("thesis_strength", analyst_thesis_strength)
+    critic_status = critique.get("critic_status", status)
+    critic_evidence_confidence = critique.get("critic_evidence_confidence", final_confidence)
+    critic_thesis_strength = critique.get("critic_thesis_strength", thesis_strength)
+    if (status not in STATUSES or final_confidence not in CONFIDENCES
+            or thesis_strength not in CONFIDENCES or critic_status not in STATUSES
+            or critic_evidence_confidence not in CONFIDENCES
+            or critic_thesis_strength not in CONFIDENCES):
         raise ItaliaV1InputError("critic must return a valid final status and confidence")
+    event_assessments = critique.get("event_assessments", draft.get("event_assessments", []))
     identity = facts["identity"]
     return ThesisRecord(
         thesis_id=uuid4().hex,
@@ -400,6 +446,16 @@ def analyze_company(
         risks=analysis["risks"],
         status=status,
         confidence=final_confidence,
+        evidence_confidence=final_confidence,
+        thesis_strength=thesis_strength,
+        analyst_status=proposed_status,
+        analyst_thesis_strength=analyst_thesis_strength,
+        analyst_evidence_confidence=analyst_evidence_confidence,
+        critic_status=critic_status,
+        critic_thesis_strength=critic_thesis_strength,
+        critic_evidence_confidence=critic_evidence_confidence,
+        event_assessments=[dict(_mapping(item, "event assessment"))
+                           for item in _items(event_assessments, "event_assessments")],
         evidence=facts["evidence"],
         critic_notes=notes,
         created_at=datetime.now(timezone.utc).isoformat(),

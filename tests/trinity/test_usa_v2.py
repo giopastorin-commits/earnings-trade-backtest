@@ -7,8 +7,8 @@ from pathlib import Path
 from trinity.italia_v1 import analyze_company
 from trinity.usa_v2 import (
     AS_OF, COMPANIES, NEWS, PRICES, _issuer_release, _literal_metrics,
-    USAProvider, _numeric_audit, _clean_citations, _guidance_ranges, load_company,
-    validate_claim_refs,
+    USAProvider, _bounded_evidence_confidence, _event_id, _numeric_audit, _clean_citations,
+    _guidance_ranges, calibrate_decision, load_company, validate_claim_refs,
 )
 
 
@@ -63,6 +63,38 @@ class USAV2Tests(unittest.TestCase):
             "thesis_invalidation": "Nessun claim quantitativo.",
             "claim_refs": refs,
         }
+
+    @classmethod
+    def _decision_facts(cls, *, primary=True, comparable=True):
+        fact = cls._fact("fact:LIN:2026Q2:revenue", 10, "USD_BILLIONS",
+                         scale=1_000_000_000)
+        evidence = [{"identifier": "e1", "document_kind":
+                     "SEC_EARNINGS_RELEASE" if primary else "NEWS"}]
+        events = [{"kind": "RESULTS", "published_at": "2026-07-31",
+                   "facts": {"evidence_identifier": "e1",
+                             "structured_sec_facts": [fact]}}]
+        if comparable:
+            evidence.extend([
+                {"identifier": "e2", "document_kind": "SEC_EARNINGS_RELEASE"},
+                {"identifier": "e3", "document_kind": "SEC_PERIODIC_REPORT"},
+            ])
+            events.extend([
+                {"kind": "RESULTS", "published_at": "2026-05-01",
+                 "facts": {"evidence_identifier": "e2"}},
+                {"kind": "SEC_PERIODIC_REPORT", "published_at": "2026-08-01",
+                 "facts": {"evidence_identifier": "e3"}},
+            ])
+        return {
+            "identity": {"ticker": "LIN"},
+            "price": {"current_price": None, "return_5d": None, "return_20d": None,
+                      "return_60d": None, "acquisition": {"fact_metadata": []}},
+            "evidence": evidence, "events": events,
+        }
+
+    @staticmethod
+    def _event(classification, *, material=True, event_id="e1"):
+        return {"event_id": event_id, "classification": classification,
+                "material": material, "rationale": "Test decision evidence."}
 
     @staticmethod
     def _ref(text, fact_ids, *, claim_id="claim:LIN:fundamental:1", ticker="LIN"):
@@ -238,7 +270,9 @@ class USAV2Tests(unittest.TestCase):
         fact_id = "fact:LIN:2026Q2:operating_margin"
         text = "Il margine operativo e stato 27,49%."
         facts = self._claim_facts(self._fact(fact_id, 27.4949, "PERCENT"))
-        response = {"notes": [], "status": "WATCH", "confidence": "MEDIUM",
+        response = {"notes": [], "status": "WATCH", "evidence_confidence": "MEDIUM",
+                    "thesis_strength": "MEDIUM",
+                    "event_assessments": [self._event("NEW_INFORMATION")],
                     "revised_analysis": self._analysis(text, [self._ref(text, [fact_id])])}
 
         class StaticProvider(USAProvider):
@@ -246,7 +280,104 @@ class USAV2Tests(unittest.TestCase):
                 return response
 
         result = StaticProvider().critique(facts, {})
-        self.assertEqual((result["status"], result["confidence"]), ("WATCH", "MEDIUM"))
+        self.assertEqual((result["status"], result["thesis_strength"]), ("WATCH", "MEDIUM"))
+
+    def test_high_evidence_without_new_information_is_pass(self):
+        facts = self._decision_facts()
+        self.assertEqual(_bounded_evidence_confidence(facts, "HIGH"), "HIGH")
+        self.assertEqual(calibrate_decision(
+            [self._event("CONFIRMATION", material=False)], "HIGH"), "PASS")
+
+    def test_high_evidence_with_unconfirmed_material_event_is_watch(self):
+        facts = self._decision_facts()
+        self.assertEqual(_bounded_evidence_confidence(facts, "HIGH"), "HIGH")
+        self.assertEqual(calibrate_decision(
+            [self._event("NEW_INFORMATION")], "MEDIUM"), "WATCH")
+
+    def test_high_evidence_with_verified_expectation_change_is_investigate(self):
+        facts = self._decision_facts()
+        self.assertEqual(_bounded_evidence_confidence(facts, "HIGH"), "HIGH")
+        self.assertEqual(calibrate_decision(
+            [self._event("EXPECTATION_CHANGE")], "MEDIUM"), "INVESTIGATE")
+
+    def test_low_evidence_with_weak_apparent_change_is_not_high_or_investigate(self):
+        facts = self._decision_facts(primary=False, comparable=False)
+        self.assertEqual(_bounded_evidence_confidence(facts, "HIGH"), "LOW")
+        self.assertEqual(calibrate_decision(
+            [self._event("NEW_INFORMATION")], "LOW"), "WATCH")
+
+    def test_reiterated_guidance_does_not_trigger_investigate(self):
+        self.assertEqual(calibrate_decision(
+            [self._event("REITERATION", material=False)], "MEDIUM"), "PASS")
+
+    def test_release_and_ten_q_are_not_two_catalysts(self):
+        release = self._event("NEW_INFORMATION")
+        confirmation = self._event("CONFIRMATION", material=False, event_id="e3")
+        self.assertEqual(calibrate_decision([release], "MEDIUM"), "WATCH")
+        self.assertEqual(calibrate_decision([release, confirmation], "MEDIUM"), "WATCH")
+
+    def test_low_novelty_with_strong_fundamentals_is_not_investigate(self):
+        self.assertEqual(calibrate_decision(
+            [self._event("ALREADY_KNOWN", material=False)], "HIGH"), "PASS")
+
+    def test_new_material_event_with_incomplete_fundamentals_can_be_watch(self):
+        facts = self._decision_facts(primary=True, comparable=False)
+        self.assertEqual(_bounded_evidence_confidence(facts, "HIGH"), "MEDIUM")
+        self.assertEqual(calibrate_decision(
+            [self._event("NEW_INFORMATION")], "MEDIUM"), "WATCH")
+
+    def test_critic_can_change_status_without_losing_evidence_confidence(self):
+        facts = self._decision_facts()
+        evidence_confidence = _bounded_evidence_confidence(facts, "HIGH")
+        analyst_status = calibrate_decision(
+            [self._event("LOW_RELEVANCE", material=False)], "LOW")
+        critic_status = calibrate_decision(
+            [self._event("NEW_INFORMATION")], "MEDIUM")
+        self.assertEqual((analyst_status, critic_status), ("PASS", "WATCH"))
+        self.assertEqual(evidence_confidence, "HIGH")
+
+    def test_high_evidence_confidence_is_reachable_with_sec_provenance(self):
+        self.assertEqual(
+            _bounded_evidence_confidence(self._decision_facts(), "HIGH"), "HIGH"
+        )
+
+    @unittest.skipUnless(PRICES.is_dir() and NEWS.is_dir(), "frozen EODHD cache unavailable")
+    def test_thesis_persists_analyst_and_critic_decisions_separately(self):
+        pack = load_company("AAPL", AS_OF)
+        event_assessments = [
+            {"event_id": _event_id(event), "classification": "LOW_RELEVANCE",
+             "material": False, "rationale": "No immediate thesis impact in test."}
+            for event in pack.company_input["events"]
+        ]
+
+        class DecisionProvider(FakeProvider):
+            def analyze(self, facts):
+                result = super().analyze(facts)
+                result.pop("confidence")
+                result.update({"evidence_confidence": "HIGH", "thesis_strength": "LOW",
+                               "event_assessments": event_assessments})
+                return result
+
+            def critique(self, facts, draft):
+                return {"notes": ["Material event requires monitoring."], "status": "WATCH",
+                        "evidence_confidence": "HIGH", "thesis_strength": "MEDIUM",
+                        "event_assessments": event_assessments}
+
+        thesis = analyze_company(pack.company_input, AS_OF, DecisionProvider())
+        self.assertEqual(
+            (thesis.analyst_status, thesis.analyst_thesis_strength,
+             thesis.analyst_evidence_confidence),
+            ("PASS", "LOW", "HIGH"),
+        )
+        self.assertEqual(
+            (thesis.critic_status, thesis.critic_thesis_strength,
+             thesis.critic_evidence_confidence),
+            ("WATCH", "MEDIUM", "HIGH"),
+        )
+        self.assertEqual(
+            (thesis.status, thesis.thesis_strength, thesis.evidence_confidence),
+            ("WATCH", "MEDIUM", "HIGH"),
+        )
 
     def test_structured_claim_never_accepts_invented_number(self):
         fact_id = "fact:LIN:2026Q2:revenue"

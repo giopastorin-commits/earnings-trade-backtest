@@ -57,6 +57,11 @@ GUIDANCE_TABLE_RANGE = re.compile(
 REVISION_FIELDS = ("fundamental_analysis", "earnings_and_news_analysis", "price_context",
                    "bull_case", "bear_case", "catalysts", "risks", "thesis_invalidation")
 CLAIM_FIELDS = frozenset(REVISION_FIELDS)
+DECISION_LEVELS = frozenset({"LOW", "MEDIUM", "HIGH"})
+EVENT_CLASSES = (
+    "NEW_INFORMATION", "EXPECTATION_CHANGE", "CONFIRMATION", "REITERATION",
+    "ALREADY_KNOWN", "LOW_RELEVANCE",
+)
 _CLAIM_REF_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["claim_id", "field", "text", "fact_ids", "materiality", "period"],
@@ -69,10 +74,33 @@ _CLAIM_REF_SCHEMA = {
         "period": {"type": ["string", "null"]},
     },
 }
+_EVENT_ASSESSMENT_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["event_id", "classification", "material", "rationale"],
+    "properties": {
+        "event_id": {"type": "string"},
+        "classification": {"type": "string", "enum": list(EVENT_CLASSES)},
+        "material": {"type": "boolean"},
+        "rationale": {"type": "string"},
+    },
+}
 _USA_ANALYST_SCHEMA = json.loads(json.dumps(_ANALYST_SCHEMA))
-_USA_ANALYST_SCHEMA["required"].append("claim_refs")
+_USA_ANALYST_SCHEMA["required"].remove("confidence")
+del _USA_ANALYST_SCHEMA["properties"]["confidence"]
+_USA_ANALYST_SCHEMA["required"].extend(
+    ["claim_refs", "evidence_confidence", "thesis_strength", "event_assessments"]
+)
 _USA_ANALYST_SCHEMA["properties"]["claim_refs"] = {
     "type": "array", "items": _CLAIM_REF_SCHEMA,
+}
+_USA_ANALYST_SCHEMA["properties"]["evidence_confidence"] = {
+    "type": "string", "enum": list(DECISION_LEVELS),
+}
+_USA_ANALYST_SCHEMA["properties"]["thesis_strength"] = {
+    "type": "string", "enum": list(DECISION_LEVELS),
+}
+_USA_ANALYST_SCHEMA["properties"]["event_assessments"] = {
+    "type": "array", "items": _EVENT_ASSESSMENT_SCHEMA,
 }
 _REVISED_SCHEMA = {"type": "object", "additionalProperties": False,
                    "required": [*REVISION_FIELDS, "claim_refs"],
@@ -81,11 +109,14 @@ _REVISED_SCHEMA = {"type": "object", "additionalProperties": False,
                        "claim_refs": {"type": "array", "items": _CLAIM_REF_SCHEMA},
                    }}
 _USA_CRITIC_SCHEMA = {"type": "object", "additionalProperties": False,
-                      "required": ["notes", "status", "confidence", "revised_analysis"],
+                      "required": ["notes", "status", "evidence_confidence",
+                                   "thesis_strength", "event_assessments", "revised_analysis"],
                       "properties": {
                           "notes": {"type": "array", "items": {"type": "string"}},
                           "status": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
-                          "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                          "evidence_confidence": {"type": "string", "enum": list(DECISION_LEVELS)},
+                          "thesis_strength": {"type": "string", "enum": list(DECISION_LEVELS)},
+                          "event_assessments": {"type": "array", "items": _EVENT_ASSESSMENT_SCHEMA},
                           "revised_analysis": _REVISED_SCHEMA,
                       }}
 
@@ -684,6 +715,121 @@ def validate_claim_refs(
     return ClaimValidation(revised, valid, rejected, essential_removed)
 
 
+def calibrate_decision(
+    event_assessments: list[Mapping[str, object]], thesis_strength: str,
+) -> str:
+    """Map audited event impact to action status without using evidence quality."""
+    if thesis_strength not in DECISION_LEVELS:
+        raise ValueError(f"invalid thesis_strength: {thesis_strength}")
+    material_classes: set[str] = set()
+    for index, assessment in enumerate(event_assessments):
+        classification = str(assessment.get("classification") or "")
+        if classification not in EVENT_CLASSES:
+            raise ValueError(f"event_assessments[{index}]: invalid classification")
+        if not isinstance(assessment.get("material"), bool):
+            raise ValueError(f"event_assessments[{index}]: material must be boolean")
+        if assessment["material"]:
+            material_classes.add(classification)
+    if "EXPECTATION_CHANGE" in material_classes:
+        return "INVESTIGATE"
+    if "NEW_INFORMATION" in material_classes:
+        return "INVESTIGATE" if thesis_strength == "HIGH" else "WATCH"
+    return "PASS"
+
+
+def _event_id(event: Mapping[str, object]) -> str:
+    event_facts = event.get("facts")
+    if isinstance(event_facts, Mapping):
+        direct = event_facts.get("evidence_identifier")
+        if isinstance(direct, str) and direct:
+            return direct
+        for value in event_facts.values():
+            if isinstance(value, list):
+                for fact in value:
+                    if isinstance(fact, Mapping):
+                        identifier = fact.get("evidence_id") or fact.get("evidence_identifier")
+                        if isinstance(identifier, str) and identifier:
+                            return identifier
+    return "event:" + _slug(
+        f"{event.get('published_at', '')}:{event.get('kind', '')}:{event.get('summary', '')}"
+    )
+
+
+def _validated_event_assessments(
+    facts: Mapping[str, object], assessments: object,
+) -> list[dict[str, object]]:
+    if not isinstance(assessments, list):
+        raise ValueError("event_assessments must be a list")
+    expected = [_event_id(event) for event in facts.get("events", [])]
+    normalized: list[dict[str, object]] = []
+    observed: list[str] = []
+    for index, raw in enumerate(assessments):
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"event_assessments[{index}] must be an object")
+        event_id = str(raw.get("event_id") or "")
+        classification = str(raw.get("classification") or "")
+        rationale = str(raw.get("rationale") or "").strip()
+        material = raw.get("material")
+        if event_id not in expected or event_id in observed:
+            raise ValueError(f"event_assessments[{index}]: unknown or duplicate event_id")
+        if classification not in EVENT_CLASSES:
+            raise ValueError(f"event_assessments[{index}]: invalid classification")
+        if not isinstance(material, bool) or not rationale:
+            raise ValueError(f"event_assessments[{index}]: material/rationale invalid")
+        observed.append(event_id)
+        normalized.append({"event_id": event_id, "classification": classification,
+                           "material": material, "rationale": rationale})
+    if sorted(observed) != sorted(expected):
+        raise ValueError("event_assessments must classify every facts.events entry exactly once")
+    return normalized
+
+
+def _evidence_confidence_ceiling(facts: Mapping[str, object]) -> str:
+    evidence = facts.get("evidence", [])
+    if not isinstance(evidence, list) or not evidence:
+        return "LOW"
+    evidence_ids = {
+        str(item.get("identifier")) for item in evidence
+        if isinstance(item, Mapping) and item.get("identifier")
+    }
+    catalog = _fact_catalog(facts)
+    financial_facts = [
+        fact for fact in catalog.values()
+        if str(fact.get("metric") or "") not in {
+            "current_price", "return_5d", "return_20d", "return_60d"
+        }
+    ]
+    provenance_complete = bool(financial_facts) and all(
+        str(fact.get("evidence_id") or "") in evidence_ids
+        and bool(fact.get("unit")) and bool(fact.get("period"))
+        and bool(fact.get("extraction_method"))
+        for fact in financial_facts
+    )
+    kinds = {
+        str(item.get("document_kind") or "") for item in evidence
+        if isinstance(item, Mapping)
+    }
+    result_periods = {
+        str(event.get("published_at") or "") for event in facts.get("events", [])
+        if isinstance(event, Mapping) and event.get("kind") == "RESULTS"
+    }
+    if (provenance_complete and "SEC_PERIODIC_REPORT" in kinds
+            and len(result_periods) >= 2):
+        return "HIGH"
+    if provenance_complete and any(kind.startswith("SEC_") or kind == "ISSUER_RELEASE"
+                                   for kind in kinds):
+        return "MEDIUM"
+    return "LOW"
+
+
+def _bounded_evidence_confidence(facts: Mapping[str, object], requested: str) -> str:
+    if requested not in DECISION_LEVELS:
+        raise ValueError(f"invalid evidence_confidence: {requested}")
+    order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+    ceiling = _evidence_confidence_ceiling(facts)
+    return min((requested, ceiling), key=lambda value: order[value])
+
+
 def _clean_citations(value: str, known: set[str]) -> str:
     """Keep only actual evidence IDs, splitting combined model citations."""
     def replacement(match: re.Match[str]) -> str:
@@ -843,7 +989,8 @@ class USAProvider(CodexCLIProvider):
         self.revisions: dict[str, object] = {}
         self.validated_claim_refs: list[dict[str, object]] = []
         self.rejected_claim_refs: list[dict[str, object]] = []
-        self.critic_recommendation: tuple[str, str] | None = None
+        self.analyst_recommendation: tuple[str, str, str] | None = None
+        self.critic_recommendation: tuple[str, str, str] | None = None
         self.legacy_numeric_failures: list[str] = []
 
     def analyze(self, facts: Mapping[str, object]) -> Mapping[str, object]:
@@ -860,36 +1007,83 @@ class USAProvider(CodexCLIProvider):
             "narrative, whose fact_ids list contains only supplied fact_id values, and whose period matches "
             "the fact when stated. fact_ids are the authoritative numeric provenance; citations remain for "
             "rendering. Do not create a claim_ref for arithmetic absent from a supplied fact. "
-            "Distinguish a new disclosure from a repeated statement; a scheduled results call is not a catalyst. "
+            "Classify every facts.events entry exactly once in event_assessments, using its facts.evidence_identifier "
+            "as event_id (or the evidence_id of its first structured fact when needed). NEW_INFORMATION is a new "
+            "disclosure that can affect the thesis but lacks a verified comparable expectation baseline. "
+            "EXPECTATION_CHANGE requires a material change verified against a comparable earlier primary source. "
+            "CONFIRMATION is a second primary document for the same disclosed event; it is not a second catalyst. "
+            "REITERATION repeats guidance or a statement without changing it. ALREADY_KNOWN is prior baseline "
+            "information. LOW_RELEVANCE is routine or immaterial. A scheduled results call is LOW_RELEVANCE. "
             "Only list a catalyst if the event is concrete, future-relevant and evidenced. "
             "State uncertainty when the cache lacks underlying results or independent confirmation. "
-            "Lower confidence when evidence is thin; status is research triage, not a trade signal. "
-            "PASS means insufficient supported thesis and requires LOW confidence; WATCH means monitor; "
-            "INVESTIGATE means concrete evidence merits more work. as_of is the historical cutoff.\nFACTS:\n"
+            "evidence_confidence measures only source quality, primary filings, pertinent fact completeness, "
+            "provenance, temporal comparability, units and extraction reliability. It never measures attractiveness. "
+            "HIGH evidence_confidence is allowed when SEC documents and provenance are sufficient. "
+            "thesis_strength measures material novelty, verified expectation change, catalyst quality, change from "
+            "the prior baseline, bull/bear balance and verifiable invalidation; fact count alone is irrelevant. "
+            "PASS means no material new information or thesis change requires immediate work. WATCH means a material "
+            "event or hypothesis needs monitoring but lacks sufficient confirmation. INVESTIGATE means material new "
+            "information or a verified expectation change can concretely alter the thesis. Status is research triage, "
+            "not a trade signal. as_of is the historical cutoff.\nFACTS:\n"
             + json.dumps(facts, ensure_ascii=False, allow_nan=False, sort_keys=True)
         )
-        return self._request(prompt, _USA_ANALYST_SCHEMA)
+        result = self._request(prompt, _USA_ANALYST_SCHEMA)
+        result["event_assessments"] = _validated_event_assessments(
+            facts, result["event_assessments"]
+        )
+        result["evidence_confidence"] = _bounded_evidence_confidence(
+            facts, str(result["evidence_confidence"])
+        )
+        self.analyst_recommendation = (
+            str(result["proposed_status"]), str(result["thesis_strength"]),
+            str(result["evidence_confidence"]),
+        )
+        return result
 
     def critique(self, facts: Mapping[str, object], draft: Mapping[str, object]) -> Mapping[str, object]:
         prompt = (
             "You are TRINITY USA V2 Critic. Return only schema JSON, in Italian. Audit each material "
             "claim against evidence identifiers, including every number and unit. Identify repeated news, "
             "weak or irrelevant catalysts, unsupported causal claims, overstrong conclusions, and guidance "
-            "changes claimed without a comparable earlier source. Distinguish source-reported metrics from "
+            "changes claimed without a comparable earlier source. Audit every event_assessments entry and return "
+            "one corrected assessment for every facts.events entry. EXPECTATION_CHANGE requires current and prior "
+            "comparable primary evidence. Earnings release plus 10-Q for the same result is NEW_INFORMATION plus "
+            "CONFIRMATION, never two catalysts. Reiterated guidance is REITERATION, not expectation change. "
+            "Distinguish source-reported metrics from "
             "independently verified facts. In notes give specific corrections with evidence IDs. "
             "Return revised_analysis with all narrative fields corrected; remove unsupported claims and "
             "numbers, preserve source citations, and make invalidation criteria precise. For every retained "
             "quantitative claim, include a claim_refs entry with exact narrative text and supplied fact_ids. "
             "Never create a fact_id or bind a calculated value to component facts. Mark a claim MATERIAL only "
-            "when removing it would materially weaken the recommended status or confidence. If evidence "
-            "is thin or issuer release only, confidence cannot be HIGH. If material unsupported claims remain, "
-            "return PASS/LOW. PASS always requires LOW. Status is research triage, not a trade signal.\nFACTS:\n"
+            "when removing it would materially weaken the recommended status or thesis_strength. "
+            "evidence_confidence measures only source quality, filing coverage, pertinent facts, provenance, "
+            "comparability, units and extraction reliability; it does not measure thesis attractiveness. "
+            "thesis_strength measures material novelty, verified expectation change, catalyst quality, baseline "
+            "change, bull/bear balance and invalidation; it must not follow fact count alone. PASS means no material "
+            "new information or thesis change requires immediate work. WATCH means a material event or hypothesis "
+            "needs monitoring but lacks sufficient confirmation. INVESTIGATE means material new information or a "
+            "verified expectation change can concretely alter the thesis. HIGH evidence_confidence is valid when "
+            "SEC documentation and provenance are sufficient. Status is research triage, not a trade signal.\nFACTS:\n"
             + json.dumps(facts, ensure_ascii=False, allow_nan=False, sort_keys=True)
             + "\nDRAFT:\n" + json.dumps(draft, ensure_ascii=False, allow_nan=False, sort_keys=True)
         )
         result = self._request(prompt, _USA_CRITIC_SCHEMA)
+        result["event_assessments"] = _validated_event_assessments(
+            facts, result["event_assessments"]
+        )
+        result["evidence_confidence"] = _bounded_evidence_confidence(
+            facts, str(result["evidence_confidence"])
+        )
+        raw_critic_status = str(result["status"])
+        raw_critic_strength = str(result["thesis_strength"])
+        raw_critic_evidence = str(result["evidence_confidence"])
         revised = result["revised_analysis"]
-        self.critic_recommendation = (str(result["status"]), str(result["confidence"]))
+        self.critic_recommendation = (
+            raw_critic_status, raw_critic_strength, raw_critic_evidence,
+        )
+        result["critic_status"] = raw_critic_status
+        result["critic_thesis_strength"] = raw_critic_strength
+        result["critic_evidence_confidence"] = raw_critic_evidence
         known_ids = {str(item["identifier"]) for item in facts["evidence"]}
         for field in REVISION_FIELDS:
             if isinstance(revised[field], list):
@@ -908,17 +1102,22 @@ class USAProvider(CodexCLIProvider):
             )
         if validation.essential_support_removed:
             result["status"] = "PASS"
-            result["confidence"] = "LOW"
+            result["thesis_strength"] = "LOW"
             result["notes"].append(
-                "Status degraded to PASS/LOW because material rejected claims left fewer than two "
+                "Status degraded to PASS/LOW thesis strength because material rejected claims left fewer than two "
                 "validated material claims backed by distinct facts."
             )
+        else:
+            calibrated_status = calibrate_decision(
+                result["event_assessments"], str(result["thesis_strength"])
+            )
+            if calibrated_status != result["status"]:
+                result["notes"].append(
+                    f"Action status calibrated from {result['status']} to {calibrated_status} using "
+                    "material event classes and thesis strength; evidence confidence was unchanged."
+                )
+            result["status"] = calibrated_status
         self.revisions = {field: validation.revised_analysis[field] for field in REVISION_FIELDS}
-        if result.get("status") == "PASS" and result.get("confidence") != "LOW":
-            raise ValueError("PASS requires LOW confidence")
-        if result.get("confidence") == "HIGH":
-            result["confidence"] = "MEDIUM"
-            result["notes"].append("Confidence capped at MEDIUM: cached issuer wire releases lack independently verified filing/IR financial statements.")
         return result
 
 
@@ -959,9 +1158,16 @@ def main() -> int:
                       "evidence_count": len(thesis.evidence), "events": pack.triage["selected_titles"],
                       "structured_facts": structured_fact_count,
                       "guidance_facts": guidance_fact_count,
+                      "analyst_status": provider.analyst_recommendation[0],
+                      "analyst_thesis_strength": provider.analyst_recommendation[1],
+                      "analyst_evidence_confidence": provider.analyst_recommendation[2],
                       "critic_status": provider.critic_recommendation[0],
-                      "critic_confidence": provider.critic_recommendation[1],
-                      "status": thesis.status, "confidence": thesis.confidence,
+                      "critic_thesis_strength": provider.critic_recommendation[1],
+                      "critic_evidence_confidence": provider.critic_recommendation[2],
+                      "status": thesis.status,
+                      "thesis_strength": thesis.thesis_strength,
+                      "evidence_confidence": thesis.evidence_confidence,
+                      "event_assessments": thesis.event_assessments,
                       "validated_claims": len(provider.validated_claim_refs),
                       "rejected_claims": len(provider.rejected_claim_refs),
                       "legacy_numeric_failures": len(provider.legacy_numeric_failures),
