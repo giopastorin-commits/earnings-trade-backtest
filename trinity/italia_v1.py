@@ -8,7 +8,7 @@ silently assigned a time zone or cutoff hour.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 import json
 import math
@@ -217,7 +217,7 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
         }
         for field in (
             "title", "retrieved_at", "content_sha256", "raw_path", "published_at_precision",
-            "document_kind",
+            "document_kind", "filing_date", "accepted_at", "form", "accession_number",
         ):
             if field in item:
                 record[field] = _required_text(item[field], f"evidence[{index}].{field}")
@@ -288,6 +288,8 @@ class ThesisRecord:
     created_at: str
     model_version: str
     prompt_version: str
+    claim_refs: list[dict[str, object]] = field(default_factory=list)
+    rejected_claim_refs: list[dict[str, object]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not isinstance(self.thesis_id, str) or not _THESIS_ID.fullmatch(self.thesis_id):
@@ -305,6 +307,15 @@ class ThesisRecord:
         for field in ("catalysts", "risks", "critic_notes"):
             for index, value in enumerate(_items(getattr(self, field), field)):
                 _required_text(value, f"{field}[{index}]")
+        for collection_name in ("claim_refs", "rejected_claim_refs"):
+            for index, raw in enumerate(_items(getattr(self, collection_name), collection_name)):
+                claim = _mapping(raw, f"{collection_name}[{index}]")
+                for key in ("claim_id", "field", "text", "materiality"):
+                    _required_text(claim.get(key), f"{collection_name}[{index}].{key}")
+                for fact_index, fact_id in enumerate(_items(
+                    claim.get("fact_ids"), f"{collection_name}[{index}].fact_ids"
+                )):
+                    _required_text(fact_id, f"{collection_name}[{index}].fact_ids[{fact_index}]")
         _required_text(self.model_version, "model_version")
         _required_text(self.prompt_version, "prompt_version")
         try:
