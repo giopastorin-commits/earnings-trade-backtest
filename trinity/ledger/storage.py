@@ -23,9 +23,18 @@ from .errors import (
     ArtifactMetadataConflict,
     CanonicalizationError,
     MigrationHashDrift,
+    MigrationHistoryError,
+    MigrationIdentityDrift,
+    UnknownAppliedMigration,
     UnsupportedSchemaVersion,
 )
-from .schema import FREEZE_IDENTIFIER, SCHEMA_VERSION, Migration, core_migration
+from .schema import (
+    FREEZE_IDENTIFIER,
+    SCHEMA_VERSION,
+    Migration,
+    MigrationRegistry,
+    migration_registry,
+)
 
 HASH_DOMAIN = b"TRINITY-LEDGER-V1\0"
 _ARTIFACT_ID_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -91,15 +100,20 @@ class LedgerStorage:
         self.path = path
 
     @classmethod
-    def open(cls, path: str | Path) -> "LedgerStorage":
+    def open(
+        cls,
+        path: str | Path,
+        *,
+        registry: MigrationRegistry | None = None,
+    ) -> "LedgerStorage":
         database_path = Path(path)
         connection = sqlite3.connect(database_path, isolation_level=None)
         connection.row_factory = sqlite3.Row
         try:
             _configure_connection(connection)
             storage = cls(connection, database_path)
-            storage.apply_migration(core_migration())
-            storage._validate_schema()
+            selected_registry = registry if registry is not None else migration_registry()
+            storage.apply_migrations(selected_registry)
             return storage
         except Exception:
             connection.close()
@@ -126,41 +140,60 @@ class LedgerStorage:
             self.connection.commit()
 
     def apply_migration(self, migration: Migration) -> bool:
-        """Apply a migration once, rejecting identity or content drift."""
+        """Compatibility helper for a one-entry bootstrap registry."""
 
-        existing = self._find_migration(migration)
-        if existing is not None:
-            _assert_same_migration(existing, migration)
-            return False
-        if migration.schema_version != SCHEMA_VERSION:
-            raise UnsupportedSchemaVersion(
-                f"writer supports schema {SCHEMA_VERSION}, got {migration.schema_version}"
-            )
+        return self.apply_migrations(MigrationRegistry((migration,))) > 0
 
+    def apply_migrations(self, registry: MigrationRegistry) -> int:
+        """Validate complete history, then apply pending migrations in order."""
+
+        applied = self._read_migration_history()
+        _validate_migration_history(applied, registry)
+        if applied:
+            self._validate_schema(registry.bootstrap)
+
+        applied_count = 0
+        for migration in registry.migrations[len(applied) :]:
+            self._apply_pending_migration(migration, bootstrap=(migration.sequence == 1))
+            applied_count += 1
+
+        final_history = self._read_migration_history()
+        _validate_migration_history(final_history, registry)
+        self._validate_schema(registry.bootstrap)
+        return applied_count
+
+    def current_migration_level(self) -> int:
+        """Derive the current level from immutable migration history."""
+
+        history = self._read_migration_history()
+        return int(history[-1]["schema_version"]) if history else 0
+
+    def _apply_pending_migration(self, migration: Migration, *, bootstrap: bool) -> None:
         applied_at = _utc_now()
-        script = "\n".join(
-            (
-                "BEGIN IMMEDIATE;",
-                migration.text,
-                "INSERT INTO schema_migration "
-                "(migration_id, schema_version, sha256, applied_at) VALUES "
-                f"({_sql_literal(migration.migration_id)}, {migration.schema_version}, "
-                f"{_sql_literal(migration.sha256)}, {_sql_literal(applied_at)});",
+        statements = [
+            "BEGIN IMMEDIATE;",
+            migration.text,
+            "INSERT INTO schema_migration "
+            "(migration_id, schema_version, sha256, applied_at) VALUES "
+            f"({_sql_literal(migration.migration_id)}, {migration.sequence}, "
+            f"{_sql_literal(migration.sha256)}, {_sql_literal(applied_at)});",
+        ]
+        if bootstrap:
+            statements.append(
                 "INSERT INTO schema_metadata "
                 "(singleton_id, schema_version, freeze_identifier, created_at, "
                 "applied_migration_id) VALUES "
                 f"(1, {SCHEMA_VERSION}, {_sql_literal(FREEZE_IDENTIFIER)}, "
-                f"{_sql_literal(applied_at)}, {_sql_literal(migration.migration_id)});",
-                "COMMIT;",
+                f"{_sql_literal(applied_at)}, {_sql_literal(migration.migration_id)});"
             )
-        )
+        statements.append("COMMIT;")
+
         try:
-            self.connection.executescript(script)
+            self.connection.executescript("\n".join(statements))
         except sqlite3.DatabaseError:
             if self.connection.in_transaction:
                 self.connection.rollback()
             raise
-        return True
 
     def insert_artifact(
         self,
@@ -291,29 +324,36 @@ class LedgerStorage:
         except CanonicalizationError as exc:
             raise ArtifactIntegrityError("stored artifact payload is not canonical") from exc
 
-    def _find_migration(self, migration: Migration) -> sqlite3.Row | None:
+    def _read_migration_history(self) -> list[sqlite3.Row]:
         table_exists = self.connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migration'"
         ).fetchone()
         if table_exists is None:
-            return None
+            return []
         return self.connection.execute(
             """
             SELECT migration_id, schema_version, sha256
             FROM schema_migration
-            WHERE migration_id = ? OR schema_version = ?
-            """,
-            (migration.migration_id, migration.schema_version),
-        ).fetchone()
+            ORDER BY schema_version
+            """
+        ).fetchall()
 
-    def _validate_schema(self) -> None:
+    def _validate_schema(self, bootstrap: Migration) -> None:
         row = self.connection.execute(
-            "SELECT schema_version, freeze_identifier FROM schema_metadata WHERE singleton_id = 1"
+            """
+            SELECT schema_version, freeze_identifier, applied_migration_id
+            FROM schema_metadata
+            WHERE singleton_id = 1
+            """
         ).fetchone()
         if row is None or row["schema_version"] != SCHEMA_VERSION:
             raise UnsupportedSchemaVersion("missing or unsupported schema_metadata version")
         if row["freeze_identifier"] != FREEZE_IDENTIFIER:
             raise UnsupportedSchemaVersion("database freeze identifier is unsupported")
+        if row["applied_migration_id"] != bootstrap.migration_id:
+            raise MigrationIdentityDrift(
+                "schema_metadata bootstrap migration identity does not match registry"
+            )
 
     @staticmethod
     def _assert_artifact_metadata(
@@ -359,15 +399,39 @@ def _validate_canonical_payload(version: str, payload: bytes) -> bytes:
     raise CanonicalizationError(f"unsupported canonicalization version: {version!r}")
 
 
-def _assert_same_migration(row: sqlite3.Row, migration: Migration) -> None:
-    if (
-        row["migration_id"] != migration.migration_id
-        or row["schema_version"] != migration.schema_version
-        or row["sha256"] != migration.sha256
-    ):
-        raise MigrationHashDrift(
-            f"migration {migration.migration_id!r} differs from the applied record"
+def _validate_migration_history(
+    rows: list[sqlite3.Row], registry: MigrationRegistry
+) -> None:
+    sequences = [int(row["schema_version"]) for row in rows]
+    expected_sequences = list(range(1, len(rows) + 1))
+    if sequences != expected_sequences:
+        raise MigrationHistoryError(
+            f"applied migration history must start at 1 without gaps: got {sequences}"
         )
+    if len(rows) > len(registry):
+        unknown = rows[len(registry)]["migration_id"]
+        raise UnknownAppliedMigration(f"unknown applied migration: {unknown!r}")
+
+    registered_positions = {
+        migration.migration_id: migration.sequence for migration in registry
+    }
+    for row, expected in zip(rows, registry.migrations):
+        actual_id = row["migration_id"]
+        if actual_id != expected.migration_id:
+            actual_position = registered_positions.get(actual_id)
+            if actual_position is not None:
+                raise MigrationHistoryError(
+                    f"reordered migration history: {actual_id!r} is at sequence "
+                    f"{row['schema_version']}, expected {actual_position}"
+                )
+            raise MigrationIdentityDrift(
+                f"migration sequence {expected.sequence} has identity {actual_id!r}; "
+                f"expected {expected.migration_id!r}"
+            )
+        if row["sha256"] != expected.sha256:
+            raise MigrationHashDrift(
+                f"migration {expected.migration_id!r} hash differs from registry"
+            )
 
 
 def _artifact_from_row(row: sqlite3.Row) -> Artifact:

@@ -21,8 +21,24 @@ class ArtifactMetadataConflict(LedgerError):
     """A content address is already bound to incompatible immutable metadata."""
 
 
-class MigrationHashDrift(LedgerError):
+class MigrationIntegrityError(LedgerError):
+    """Applied migration history is inconsistent with the ordered registry."""
+
+
+class MigrationHashDrift(MigrationIntegrityError):
     """An applied migration no longer has its recorded SHA-256."""
+
+
+class MigrationIdentityDrift(MigrationIntegrityError):
+    """A migration sequence is bound to an unexpected stable identifier."""
+
+
+class MigrationHistoryError(MigrationIntegrityError):
+    """Migration history or registry ordering is invalid."""
+
+
+class UnknownAppliedMigration(MigrationIntegrityError):
+    """The database contains a migration unknown to this writer."""
 
 
 class ImmutableRecordViolation(LedgerError):

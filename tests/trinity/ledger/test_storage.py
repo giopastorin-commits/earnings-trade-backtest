@@ -14,7 +14,7 @@ from trinity.ledger import (
     CanonicalizationError,
     LedgerStorage,
     MigrationHashDrift,
-    UnsupportedSchemaVersion,
+    MigrationHistoryError,
     artifact_id_for,
     canonicalize_json_document,
 )
@@ -68,9 +68,9 @@ def test_changed_applied_migration_is_rejected(storage):
         storage.apply_migration(changed)
 
 
-def test_unsupported_migration_version_is_rejected(storage):
+def test_out_of_sequence_single_migration_is_rejected(storage):
     migration = Migration("0002_future", 2, b"SELECT 1;")
-    with pytest.raises(UnsupportedSchemaVersion):
+    with pytest.raises(MigrationHistoryError):
         storage.apply_migration(migration)
 
 
