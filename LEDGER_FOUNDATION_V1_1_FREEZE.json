@@ -1,0 +1,38 @@
+{
+  "amendment_file": "LEDGER_FOUNDATION_V1_1_AMENDMENT.md",
+  "amendment_sha256": "a294ee41321fa0f8ec223de9c2abf8020f3119df4a50055268986abdb9b3dd5d",
+  "amendment_type": "ADDITIVE_SEMANTIC_CLOSURE",
+  "baseline_commit": "ec1924e24613b66696d5028e86ff7f24d3193575",
+  "closure_review": {
+    "explicitly_deferred_without_blocking_core": 6,
+    "previous_audit_gaps": 48,
+    "remaining_core_path_blockers": 0,
+    "resolved": 42
+  },
+  "deferred_implementation_boundaries": [
+    "legacy import and reclassification writers",
+    "Challenge Cases registry and execution",
+    "Experiment Registry authoring and execution",
+    "evaluator views and exports"
+  ],
+  "freeze_identifier": "LEDGER_FOUNDATION_V1_SCHEMA_FREEZE_v1.1.0",
+  "frozen_at": "2026-09-29T15:57:04.089082Z",
+  "implementation_ready": true,
+  "major_additive_decisions": [
+    "Caller-scoped request idempotency uses canonical semantic replay equivalence.",
+    "Per-request monotonic fencing and checked operational projections prevent stale authoritative writes.",
+    "Attempt events, attempt artifacts, run inputs, and canonical result manifests close execution lineage.",
+    "Observation availability requires explicit evidence or conservative retrieval-time fallback.",
+    "Derivation creation, lineage, PIT propagation, and temporal recomputation are deterministic and atomic.",
+    "Research, LLM, setup, eligibility, lifecycle, and outcome policies have immutable artifact-backed identities.",
+    "Trade events preserve raw-to-interpreted evidence and exact quantity conservation.",
+    "Legacy, Challenge, Experiment, and evaluator semantics are defined while their implementation may be deferred."
+  ],
+  "parent_freeze_identifier": "LEDGER_FOUNDATION_V1_SCHEMA_FREEZE_v1.0.0",
+  "parent_specification_file": "LEDGER_FOUNDATION_V1_SPEC.md",
+  "parent_specification_sha256": "ddbc36f7795cf7f8e28e1a78415f5a28809bd68b325e0bcb8624d52702b030f9",
+  "schema_version": "1.1.0",
+  "semantic_change_rule": "Any semantic change after this freeze requires a new specification version.",
+  "status": "FROZEN",
+  "supersession_scope": "Supersedes V1.0.0 only where this amendment adds or clarifies missing semantics."
+}
