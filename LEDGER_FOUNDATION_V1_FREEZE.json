@@ -1,0 +1,26 @@
+{
+  "baseline_branch": "trinity-italia-v1",
+  "baseline_commit": "0a7bfbaa87dac94db9f35b26ab1c6f1df8672f45",
+  "freeze_identifier": "LEDGER_FOUNDATION_V1_SCHEMA_FREEZE_v1.0.0",
+  "frozen_at": "2026-09-29T14:11:04.410580Z",
+  "major_frozen_architectural_decisions": [
+    "SQLite is the Ledger Foundation V1 system of record at schema version 1.",
+    "analysis_cutoff_at is the authoritative inclusive analysis boundary.",
+    "run_request_id, attempt_id, and run_id identify distinct entities and namespaces.",
+    "Artifacts identify immutable bytes; InputObservations separately record source and temporal availability semantics.",
+    "Temporal availability propagates through acyclic derivation_node and derivation_edge graphs.",
+    "RETRIEVED_AT_FALLBACK is required when trustworthy source publication time is unavailable.",
+    "execution_eligible_at is derived and materialized under an immutable versioned policy.",
+    "FIXED_HORIZON and TRADE_LIFECYCLE are separate outcome families.",
+    "The corrected lifecycle is monotonic, has no TP1_HIT-to-OPEN transition, and includes EXPIRED_UNFILLED and INVALIDATED_UNFILLED.",
+    "Research-to-setup lineage is explicit and all content-influencing research is required provenance.",
+    "Failed-attempt artifacts remain durable audit evidence even though failed attempts create no run.",
+    "Challenge Cases and the Experiment Registry are versioned, durable Ledger records.",
+    "Legacy data is explicitly classified and gated by point-in-time quality."
+  ],
+  "schema_version": 1,
+  "semantic_change_rule": "Any semantic change after this freeze requires a new specification version.",
+  "specification_file": "LEDGER_FOUNDATION_V1_SPEC.md",
+  "specification_sha256": "ddbc36f7795cf7f8e28e1a78415f5a28809bd68b325e0bcb8624d52702b030f9",
+  "status": "FROZEN"
+}
