@@ -13,7 +13,12 @@ from trinity.ledger import (
     MigrationIdentityDrift,
     UnknownAppliedMigration,
 )
-from trinity.ledger.schema import Migration, MigrationRegistry, core_migration
+from trinity.ledger.schema import (
+    Migration,
+    MigrationRegistry,
+    core_migration,
+    execution_coordination_migration,
+)
 
 MILESTONE_1_COMMIT = "6055d0ec88ec3ac524981325fc8ae232cd2d76b3"
 MIGRATION_PATH = "trinity/ledger/migrations/0001_ledger_core.sql"
@@ -92,24 +97,31 @@ def test_0001_is_byte_identical_to_milestone_one_commit():
     assert core_migration().sql == committed
 
 
-def test_fresh_database_applies_only_registered_migration_one(tmp_path):
+def test_fresh_database_applies_registered_production_migrations(tmp_path):
     path = tmp_path / "fresh.sqlite3"
     with LedgerStorage.open(path) as storage:
         history = storage.connection.execute(
             "SELECT migration_id, schema_version, sha256 FROM schema_migration"
         ).fetchall()
         assert [tuple(row) for row in history] == [
-            (core_migration().migration_id, 1, core_migration().sha256)
+            (core_migration().migration_id, 1, core_migration().sha256),
+            (
+                execution_coordination_migration().migration_id,
+                2,
+                execution_coordination_migration().sha256,
+            ),
         ]
-        assert storage.current_migration_level() == 1
+        assert storage.current_migration_level() == 2
 
 
 def test_existing_milestone_one_database_is_recognized(tmp_path):
     path = tmp_path / "existing.sqlite3"
     _create_milestone_one_database(path)
     with LedgerStorage.open(path) as storage:
-        assert storage.current_migration_level() == 1
-        assert storage.apply_migrations(_registry()) == 0
+        assert storage.current_migration_level() == 2
+        assert storage.apply_migrations(
+            MigrationRegistry((core_migration(), execution_coordination_migration()))
+        ) == 0
 
 
 def test_registry_accepts_ordered_sequences_one_two_three():
@@ -172,7 +184,9 @@ def test_migration_identity_drift_is_rejected(tmp_path):
 def test_unknown_applied_migration_is_rejected(tmp_path):
     path = tmp_path / "unknown.sqlite3"
     _create_milestone_one_database(path)
-    _insert_history(path, Migration("0002_unknown", 2, b"SELECT 1;"))
+    with LedgerStorage.open(path):
+        pass
+    _insert_history(path, Migration("0003_unknown", 3, b"SELECT 1;"))
     with pytest.raises(UnknownAppliedMigration):
         LedgerStorage.open(path)
 
@@ -248,7 +262,7 @@ def test_later_migrations_do_not_recreate_or_mutate_schema_metadata(tmp_path):
             )
 
 
-def test_production_registry_contains_no_migration_two():
+def test_production_registry_contains_execution_coordination_migration():
     from trinity.ledger.schema import migration_registry
 
-    assert [migration.sequence for migration in migration_registry()] == [1]
+    assert [migration.sequence for migration in migration_registry()] == [1, 2]

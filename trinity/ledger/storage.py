@@ -1,10 +1,12 @@
-"""SQLite bootstrap and immutable artifact storage for Ledger Foundation V1."""
+"""SQLite storage for Ledger artifacts and V1.1 execution coordination."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +27,11 @@ from .errors import (
     MigrationHashDrift,
     MigrationHistoryError,
     MigrationIdentityDrift,
+    FinalizationConflict,
+    InvalidAttemptTransition,
+    RequestIdempotencyConflict,
+    StaleAttemptError,
+    UnsupportedRunInput,
     UnknownAppliedMigration,
     UnsupportedSchemaVersion,
 )
@@ -52,6 +59,61 @@ class Artifact:
     artifact_kind: str
     canonicalization_version: str
     payload: bytes
+
+
+@dataclass(frozen=True)
+class RunRequest:
+    run_request_id: str
+    request_kind: str
+    requested_at: str
+    analysis_cutoff_at: str
+    parameters_json: str
+    idempotency_key: str
+    requested_by: str
+    baseline_commit: str
+
+
+@dataclass(frozen=True)
+class Attempt:
+    attempt_id: str
+    run_request_id: str
+    attempt_ordinal: int
+    fence_token: int
+    started_at: str
+    finished_at: str | None
+    status: str
+    worker_identity: str
+    code_commit: str
+    environment_fingerprint: str
+    failure_class: str | None
+    failure_message: str | None
+
+
+@dataclass(frozen=True)
+class AttemptEvent:
+    attempt_event_id: str
+    attempt_id: str
+    sequence_number: int
+    event_type: str
+    event_at: str
+    from_status: str | None
+    to_status: str
+    reason_code: str | None
+    failure_class: str | None
+    failure_message: str | None
+    actor_identity: str
+    details_artifact_id: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class Run:
+    run_id: str
+    run_request_id: str
+    attempt_id: str
+    committed_at: str
+    status: str
+    result_manifest_artifact_id: str
 
 
 def artifact_preimage(
@@ -98,6 +160,12 @@ class LedgerStorage:
     def __init__(self, connection: sqlite3.Connection, path: Path):
         self.connection = connection
         self.path = path
+        self._internal_write_depth = 0
+        self.connection.create_function(
+            "ledger_internal_write_authorized",
+            0,
+            lambda: int(self._internal_write_depth > 0),
+        )
 
     @classmethod
     def open(
@@ -138,6 +206,22 @@ class LedgerStorage:
             raise
         else:
             self.connection.commit()
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[sqlite3.Connection]:
+        if self.connection.in_transaction:
+            yield self.connection
+        else:
+            with self.transaction() as connection:
+                yield connection
+
+    @contextmanager
+    def _internal_write(self) -> Iterator[None]:
+        self._internal_write_depth += 1
+        try:
+            yield
+        finally:
+            self._internal_write_depth -= 1
 
     def apply_migration(self, migration: Migration) -> bool:
         """Compatibility helper for a one-entry bootstrap registry."""
@@ -242,7 +326,7 @@ class LedgerStorage:
         created_at = _utc_now()
         storage_uri = f"sqlite:artifact:{artifact_id}"
         try:
-            with self.transaction() as connection:
+            with self._write_transaction() as connection:
                 connection.execute(
                     """
                     INSERT INTO artifact (
@@ -323,6 +407,631 @@ class LedgerStorage:
             _validate_canonical_payload(artifact.canonicalization_version, artifact.payload)
         except CanonicalizationError as exc:
             raise ArtifactIntegrityError("stored artifact payload is not canonical") from exc
+
+    def create_run_request(
+        self,
+        *,
+        request_kind: str,
+        analysis_cutoff_at: str,
+        parameters: Any,
+        idempotency_key: str,
+        requested_by: str,
+        baseline_commit: str,
+    ) -> RunRequest:
+        """Create or replay one caller-scoped immutable logical request."""
+
+        _require_text("request_kind", request_kind)
+        _require_timestamp("analysis_cutoff_at", analysis_cutoff_at)
+        _require_text("idempotency_key", idempotency_key)
+        _require_text("requested_by", requested_by)
+        _require_text("baseline_commit", baseline_commit)
+        parameters_json = canonicalize_json(parameters).decode("utf-8")
+        fingerprint = _request_fingerprint(
+            request_kind=request_kind,
+            analysis_cutoff_at=analysis_cutoff_at,
+            parameters_json=parameters_json,
+            baseline_commit=baseline_commit,
+        )
+
+        with self.transaction() as connection, self._internal_write():
+            existing = connection.execute(
+                "SELECT * FROM run_request WHERE requested_by = ? AND idempotency_key = ?",
+                (requested_by, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                request = _run_request_from_row(existing)
+                if _request_fingerprint_from_request(request) != fingerprint:
+                    raise RequestIdempotencyConflict(
+                        "caller-scoped idempotency key has incompatible request semantics"
+                    )
+                return request
+
+            request_id = _new_id()
+            requested_at = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO run_request (
+                    run_request_id, request_kind, requested_at, analysis_cutoff_at,
+                    parameters_json, idempotency_key, requested_by, baseline_commit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    request_kind,
+                    requested_at,
+                    analysis_cutoff_at,
+                    parameters_json,
+                    idempotency_key,
+                    requested_by,
+                    baseline_commit,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO run_request_control (
+                    run_request_id, current_attempt_id, current_fence_token,
+                    request_state, committed_run_id, updated_at
+                ) VALUES (?, NULL, 0, 'ACTIVE', NULL, ?)
+                """,
+                (request_id, requested_at),
+            )
+        return self.get_run_request(request_id)
+
+    def get_run_request(self, run_request_id: str) -> RunRequest:
+        row = self.connection.execute(
+            "SELECT * FROM run_request WHERE run_request_id = ?", (run_request_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(run_request_id)
+        return _run_request_from_row(row)
+
+    def allocate_attempt(
+        self,
+        *,
+        run_request_id: str,
+        worker_identity: str,
+        code_commit: str,
+        environment_fingerprint: str,
+    ) -> Attempt:
+        """Atomically allocate the next ordinal and fencing token for a request."""
+
+        _require_text("worker_identity", worker_identity)
+        _require_text("code_commit", code_commit)
+        _require_text("environment_fingerprint", environment_fingerprint)
+        now = _utc_now()
+        with self.transaction() as connection, self._internal_write():
+            control = connection.execute(
+                "SELECT * FROM run_request_control WHERE run_request_id = ?",
+                (run_request_id,),
+            ).fetchone()
+            if control is None:
+                raise KeyError(run_request_id)
+            if control["request_state"] != "ACTIVE":
+                raise InvalidAttemptTransition("a committed request cannot allocate attempts")
+
+            current_id = control["current_attempt_id"]
+            if current_id is not None:
+                current = self._get_attempt_row(current_id)
+                self._append_attempt_event(
+                    attempt_id=current_id,
+                    event_type="AUTHORITY_REVOKED",
+                    event_at=now,
+                    from_status=current["status"],
+                    to_status=current["status"],
+                    reason_code="SUPERSEDED_BY_RETRY",
+                    failure_class=None,
+                    failure_message=None,
+                    actor_identity=worker_identity,
+                    details_artifact_id=None,
+                )
+                if current["status"] == "RUNNING":
+                    self._append_attempt_event(
+                        attempt_id=current_id,
+                        event_type="ABORTED",
+                        event_at=now,
+                        from_status="RUNNING",
+                        to_status="ABORTED",
+                        reason_code="SUPERSEDED_BY_RETRY",
+                        failure_class=None,
+                        failure_message=None,
+                        actor_identity=worker_identity,
+                        details_artifact_id=None,
+                    )
+                    connection.execute(
+                        """
+                        UPDATE attempt
+                        SET status = 'ABORTED', finished_at = ?,
+                            failure_class = NULL, failure_message = NULL
+                        WHERE attempt_id = ?
+                        """,
+                        (now, current_id),
+                    )
+
+            attempt_ordinal = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(attempt_ordinal), 0) + 1 FROM attempt WHERE run_request_id = ?",
+                    (run_request_id,),
+                ).fetchone()[0]
+            )
+            fence_token = int(control["current_fence_token"]) + 1
+            attempt_id = _new_id(excluding={run_request_id})
+            connection.execute(
+                """
+                INSERT INTO attempt (
+                    attempt_id, run_request_id, attempt_ordinal, fence_token,
+                    started_at, finished_at, status, worker_identity, code_commit,
+                    environment_fingerprint, failure_class, failure_message
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'RUNNING', ?, ?, ?, NULL, NULL)
+                """,
+                (
+                    attempt_id,
+                    run_request_id,
+                    attempt_ordinal,
+                    fence_token,
+                    now,
+                    worker_identity,
+                    code_commit,
+                    environment_fingerprint,
+                ),
+            )
+            self._append_attempt_event(
+                attempt_id=attempt_id,
+                event_type="ALLOCATED",
+                event_at=now,
+                from_status=None,
+                to_status="RUNNING",
+                reason_code=None,
+                failure_class=None,
+                failure_message=None,
+                actor_identity=worker_identity,
+                details_artifact_id=None,
+            )
+            connection.execute(
+                """
+                UPDATE run_request_control
+                SET current_attempt_id = ?, current_fence_token = ?, updated_at = ?
+                WHERE run_request_id = ?
+                """,
+                (attempt_id, fence_token, now, run_request_id),
+            )
+        return self.get_attempt(attempt_id)
+
+    def get_attempt(self, attempt_id: str) -> Attempt:
+        return _attempt_from_row(self._get_attempt_row(attempt_id))
+
+    def list_attempt_events(self, attempt_id: str) -> list[AttemptEvent]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM attempt_event
+            WHERE attempt_id = ? ORDER BY sequence_number
+            """,
+            (attempt_id,),
+        ).fetchall()
+        return [_attempt_event_from_row(row) for row in rows]
+
+    def is_attempt_authorized(self, attempt_id: str, fence_token: int) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM attempt
+            JOIN run_request_control USING (run_request_id)
+            WHERE attempt.attempt_id = ?
+              AND attempt.fence_token = ?
+              AND attempt.status = 'RUNNING'
+              AND run_request_control.request_state = 'ACTIVE'
+              AND run_request_control.current_attempt_id = attempt.attempt_id
+              AND run_request_control.current_fence_token = attempt.fence_token
+            """,
+            (attempt_id, fence_token),
+        ).fetchone()
+        return row is not None
+
+    def require_attempt_authority(self, attempt_id: str, fence_token: int) -> Attempt:
+        row = self._require_attempt_authority(attempt_id, fence_token)
+        return _attempt_from_row(row)
+
+    def terminalize_attempt(
+        self,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        status: str,
+        actor_identity: str,
+        reason_code: str | None = None,
+        failure_class: str | None = None,
+        failure_message: str | None = None,
+        details_artifact_id: str | None = None,
+    ) -> Attempt:
+        """Atomically record FAILED or ABORTED; success is commit_run-only."""
+
+        if status not in {"FAILED", "ABORTED"}:
+            raise InvalidAttemptTransition(
+                "only FAILED or ABORTED may terminalize outside committed-run transaction"
+            )
+        _require_text("actor_identity", actor_identity)
+        if status == "FAILED":
+            _require_text("failure_class", failure_class)
+        elif failure_class is not None or failure_message is not None:
+            raise InvalidAttemptTransition("ABORTED forbids failure fields")
+        if status == "ABORTED":
+            _require_text("reason_code", reason_code)
+
+        with self.transaction() as connection, self._internal_write():
+            row = self._get_attempt_row(attempt_id)
+            if row["status"] != "RUNNING":
+                if self._terminalization_matches(
+                    row,
+                    status=status,
+                    reason_code=reason_code,
+                    failure_class=failure_class,
+                    failure_message=failure_message,
+                    actor_identity=actor_identity,
+                    details_artifact_id=details_artifact_id,
+                ):
+                    return _attempt_from_row(row)
+                raise InvalidAttemptTransition(
+                    f"attempt is already terminal with status {row['status']}"
+                )
+            self._require_attempt_authority(attempt_id, fence_token)
+            if details_artifact_id is not None:
+                self.get_artifact(details_artifact_id)
+            finished_at = _utc_now()
+            self._append_attempt_event(
+                attempt_id=attempt_id,
+                event_type=status,
+                event_at=finished_at,
+                from_status="RUNNING",
+                to_status=status,
+                reason_code=reason_code,
+                failure_class=failure_class,
+                failure_message=failure_message,
+                actor_identity=actor_identity,
+                details_artifact_id=details_artifact_id,
+            )
+            connection.execute(
+                """
+                UPDATE attempt
+                SET status = ?, finished_at = ?, failure_class = ?, failure_message = ?
+                WHERE attempt_id = ?
+                """,
+                (status, finished_at, failure_class, failure_message, attempt_id),
+            )
+        return self.get_attempt(attempt_id)
+
+    def attach_attempt_artifact(
+        self,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        artifact_id: str,
+        role: str,
+    ) -> str:
+        if role == "RESULT_MANIFEST":
+            raise InvalidAttemptTransition("result manifests attach only during run commit")
+        if role not in {
+            "OUTPUT",
+            "FAILED_ATTEMPT_OUTPUT",
+            "LOG",
+            "DIAGNOSTIC",
+            "PARTIAL_OUTPUT",
+        }:
+            raise ValueError(f"unsupported attempt artifact role: {role!r}")
+        with self.transaction(), self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            self.get_artifact(artifact_id)
+            return self._attach_attempt_artifact(attempt_id, artifact_id, role, _utc_now())
+
+    def commit_run(
+        self,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        run_id: str | None = None,
+        output_artifact_ids: tuple[str, ...] = (),
+        run_inputs: tuple[object, ...] = (),
+    ) -> Run:
+        """Atomically commit a minimal successful run and canonical manifest."""
+
+        if run_inputs:
+            raise UnsupportedRunInput(
+                "non-empty run inputs require the deferred observation and derivation schema"
+            )
+        if len(output_artifact_ids) != len(set(output_artifact_ids)):
+            raise FinalizationConflict("output artifact IDs must be unique")
+        sorted_outputs = tuple(sorted(output_artifact_ids))
+        attempt = self.get_attempt(attempt_id)
+        request = self.get_run_request(attempt.run_request_id)
+        existing_row = self.connection.execute(
+            "SELECT * FROM run WHERE attempt_id = ? OR run_request_id = ?",
+            (attempt_id, attempt.run_request_id),
+        ).fetchone()
+        effective_run_id = run_id or (existing_row["run_id"] if existing_row else _new_id())
+        if effective_run_id in {attempt_id, attempt.run_request_id}:
+            raise FinalizationConflict("request, attempt, and run IDs must be pairwise unequal")
+        manifest_value = _result_manifest_value(
+            run_id=effective_run_id,
+            request=request,
+            attempt=attempt,
+            output_artifact_ids=sorted_outputs,
+        )
+        manifest_payload = canonicalize_json(manifest_value)
+        manifest_id = artifact_id_for(
+            "ledger.run-result-manifest.v1", CANONICAL_JSON_V1, manifest_payload
+        )
+        if existing_row is not None:
+            existing = _run_from_row(existing_row)
+            if (
+                existing.run_id == effective_run_id
+                and existing.attempt_id == attempt_id
+                and existing.result_manifest_artifact_id == manifest_id
+            ):
+                return self.get_run(existing.run_id)
+            raise FinalizationConflict("request or attempt already has incompatible run closure")
+
+        with self.transaction() as connection, self._internal_write():
+            attempt = _attempt_from_row(self._require_attempt_authority(attempt_id, fence_token))
+            attached_outputs = {
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT artifact_id FROM attempt_artifact
+                    WHERE attempt_id = ? AND role = 'OUTPUT'
+                    """,
+                    (attempt_id,),
+                )
+            }
+            if attached_outputs != set(sorted_outputs):
+                raise FinalizationConflict(
+                    "manifest output IDs must equal the attempt's attached OUTPUT closure"
+                )
+            for artifact_id in sorted_outputs:
+                self.get_artifact(artifact_id)
+            manifest = self.insert_artifact(
+                artifact_type="ledger.run-result-manifest.v1",
+                canonicalization_version=CANONICAL_JSON_V1,
+                payload=manifest_payload,
+                media_type="application/json",
+                claimed_artifact_id=manifest_id,
+            )
+            committed_at = _utc_now()
+            self._attach_attempt_artifact(
+                attempt_id, manifest.artifact_id, "RESULT_MANIFEST", committed_at
+            )
+            connection.execute(
+                """
+                INSERT INTO run (
+                    run_id, run_request_id, attempt_id, committed_at, status,
+                    result_manifest_artifact_id
+                ) VALUES (?, ?, ?, ?, 'COMMITTED', ?)
+                """,
+                (
+                    effective_run_id,
+                    attempt.run_request_id,
+                    attempt_id,
+                    committed_at,
+                    manifest.artifact_id,
+                ),
+            )
+            self._append_attempt_event(
+                attempt_id=attempt_id,
+                event_type="SUCCEEDED",
+                event_at=committed_at,
+                from_status="RUNNING",
+                to_status="SUCCEEDED",
+                reason_code=None,
+                failure_class=None,
+                failure_message=None,
+                actor_identity=attempt.worker_identity,
+                details_artifact_id=None,
+            )
+            connection.execute(
+                """
+                UPDATE attempt
+                SET status = 'SUCCEEDED', finished_at = ?,
+                    failure_class = NULL, failure_message = NULL
+                WHERE attempt_id = ?
+                """,
+                (committed_at, attempt_id),
+            )
+            connection.execute(
+                """
+                UPDATE run_request_control
+                SET request_state = 'COMMITTED', committed_run_id = ?, updated_at = ?
+                WHERE run_request_id = ?
+                """,
+                (effective_run_id, committed_at, attempt.run_request_id),
+            )
+        return self.get_run(effective_run_id)
+
+    def get_run(self, run_id: str) -> Run:
+        row = self.connection.execute(
+            "SELECT * FROM run WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        run = _run_from_row(row)
+        manifest = self.get_artifact(run.result_manifest_artifact_id)
+        if manifest.artifact_kind != "ledger.run-result-manifest.v1":
+            raise ArtifactIntegrityError("run manifest has incorrect artifact kind")
+        value = json.loads(manifest.payload)
+        output_ids = value.get("output_artifact_ids")
+        if not isinstance(output_ids, list) or not all(
+            isinstance(item, str) for item in output_ids
+        ):
+            raise ArtifactIntegrityError("run manifest output IDs are malformed")
+        expected = _result_manifest_value(
+            run_id=run.run_id,
+            request=self.get_run_request(run.run_request_id),
+            attempt=self.get_attempt(run.attempt_id),
+            output_artifact_ids=tuple(output_ids),
+        )
+        if value != expected or output_ids != sorted(set(output_ids)):
+            raise ArtifactIntegrityError("run manifest does not match committed closure")
+        manifest_link = self.connection.execute(
+            """
+            SELECT 1 FROM attempt_artifact
+            WHERE attempt_id = ? AND artifact_id = ? AND role = 'RESULT_MANIFEST'
+            """,
+            (run.attempt_id, run.result_manifest_artifact_id),
+        ).fetchone()
+        if manifest_link is None:
+            raise ArtifactIntegrityError("run manifest is not attached to its attempt")
+        attached_outputs = {
+            row[0]
+            for row in self.connection.execute(
+                """
+                SELECT artifact_id FROM attempt_artifact
+                WHERE attempt_id = ? AND role = 'OUTPUT'
+                """,
+                (run.attempt_id,),
+            )
+        }
+        if set(output_ids) != attached_outputs:
+            raise ArtifactIntegrityError("run manifest output closure is incomplete")
+        return run
+
+    def _get_attempt_row(self, attempt_id: str) -> sqlite3.Row:
+        row = self.connection.execute(
+            "SELECT * FROM attempt WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(attempt_id)
+        return row
+
+    def _require_attempt_authority(
+        self, attempt_id: str, fence_token: int
+    ) -> sqlite3.Row:
+        row = self.connection.execute(
+            """
+            SELECT attempt.*
+            FROM attempt
+            JOIN run_request_control USING (run_request_id)
+            WHERE attempt.attempt_id = ?
+              AND attempt.fence_token = ?
+              AND attempt.status = 'RUNNING'
+              AND run_request_control.request_state = 'ACTIVE'
+              AND run_request_control.current_attempt_id = attempt.attempt_id
+              AND run_request_control.current_fence_token = attempt.fence_token
+            """,
+            (attempt_id, fence_token),
+        ).fetchone()
+        if row is None:
+            raise StaleAttemptError("attempt does not hold current write authority")
+        return row
+
+    def _append_attempt_event(
+        self,
+        *,
+        attempt_id: str,
+        event_type: str,
+        event_at: str,
+        from_status: str | None,
+        to_status: str,
+        reason_code: str | None,
+        failure_class: str | None,
+        failure_message: str | None,
+        actor_identity: str,
+        details_artifact_id: str | None,
+    ) -> str:
+        sequence = int(
+            self.connection.execute(
+                "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM attempt_event WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()[0]
+        )
+        event_id = _new_id()
+        self.connection.execute(
+            """
+            INSERT INTO attempt_event (
+                attempt_event_id, attempt_id, sequence_number, event_type,
+                event_at, from_status, to_status, reason_code, failure_class,
+                failure_message, actor_identity, details_artifact_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                attempt_id,
+                sequence,
+                event_type,
+                event_at,
+                from_status,
+                to_status,
+                reason_code,
+                failure_class,
+                failure_message,
+                actor_identity,
+                details_artifact_id,
+                _utc_now(),
+            ),
+        )
+        return event_id
+
+    def _attach_attempt_artifact(
+        self, attempt_id: str, artifact_id: str, role: str, attached_at: str
+    ) -> str:
+        existing = self.connection.execute(
+            """
+            SELECT attempt_artifact_id FROM attempt_artifact
+            WHERE attempt_id = ? AND artifact_id = ? AND role = ?
+            """,
+            (attempt_id, artifact_id, role),
+        ).fetchone()
+        if existing is not None:
+            return str(existing[0])
+        ordinal = int(
+            self.connection.execute(
+                """
+                SELECT COALESCE(MAX(ordinal), 0) + 1 FROM attempt_artifact
+                WHERE attempt_id = ? AND role = ?
+                """,
+                (attempt_id, role),
+            ).fetchone()[0]
+        )
+        link_id = _new_id()
+        self.connection.execute(
+            """
+            INSERT INTO attempt_artifact (
+                attempt_artifact_id, attempt_id, artifact_id, role, attached_at, ordinal
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (link_id, attempt_id, artifact_id, role, attached_at, ordinal),
+        )
+        return link_id
+
+    def _terminalization_matches(
+        self,
+        row: sqlite3.Row,
+        *,
+        status: str,
+        reason_code: str | None,
+        failure_class: str | None,
+        failure_message: str | None,
+        actor_identity: str,
+        details_artifact_id: str | None,
+    ) -> bool:
+        if row["status"] != status:
+            return False
+        event = self.connection.execute(
+            """
+            SELECT * FROM attempt_event
+            WHERE attempt_id = ? AND event_type = ?
+            ORDER BY sequence_number DESC LIMIT 1
+            """,
+            (row["attempt_id"], status),
+        ).fetchone()
+        return event is not None and (
+            event["reason_code"],
+            event["failure_class"],
+            event["failure_message"],
+            event["actor_identity"],
+            event["details_artifact_id"],
+        ) == (
+            reason_code,
+            failure_class,
+            failure_message,
+            actor_identity,
+            details_artifact_id,
+        )
 
     def _read_migration_history(self) -> list[sqlite3.Row]:
         table_exists = self.connection.execute(
@@ -436,6 +1145,102 @@ def _validate_migration_history(
 
 def _artifact_from_row(row: sqlite3.Row) -> Artifact:
     return Artifact(**{field: row[field] for field in Artifact.__dataclass_fields__})
+
+
+def _run_request_from_row(row: sqlite3.Row) -> RunRequest:
+    return RunRequest(**{field: row[field] for field in RunRequest.__dataclass_fields__})
+
+
+def _attempt_from_row(row: sqlite3.Row) -> Attempt:
+    return Attempt(**{field: row[field] for field in Attempt.__dataclass_fields__})
+
+
+def _attempt_event_from_row(row: sqlite3.Row) -> AttemptEvent:
+    return AttemptEvent(
+        **{field: row[field] for field in AttemptEvent.__dataclass_fields__}
+    )
+
+
+def _run_from_row(row: sqlite3.Row) -> Run:
+    return Run(**{field: row[field] for field in Run.__dataclass_fields__})
+
+
+def _request_fingerprint(
+    *,
+    request_kind: str,
+    analysis_cutoff_at: str,
+    parameters_json: str,
+    baseline_commit: str,
+) -> str:
+    value = {
+        "request_kind": request_kind,
+        "analysis_cutoff_at": analysis_cutoff_at,
+        "parameters_json": json.loads(parameters_json),
+        "baseline_commit": baseline_commit,
+    }
+    return hashlib.sha256(canonicalize_json(value)).hexdigest()
+
+
+def _request_fingerprint_from_request(request: RunRequest) -> str:
+    return _request_fingerprint(
+        request_kind=request.request_kind,
+        analysis_cutoff_at=request.analysis_cutoff_at,
+        parameters_json=request.parameters_json,
+        baseline_commit=request.baseline_commit,
+    )
+
+
+def _result_manifest_value(
+    *,
+    run_id: str,
+    request: RunRequest,
+    attempt: Attempt,
+    output_artifact_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "manifest_version": "1",
+        "run_id": run_id,
+        "run_request_id": request.run_request_id,
+        "attempt_id": attempt.attempt_id,
+        "analysis_cutoff_at": request.analysis_cutoff_at,
+        "request_kind": request.request_kind,
+        "baseline_commit": request.baseline_commit,
+        "attempt_code_commit": attempt.code_commit,
+        "environment_fingerprint": attempt.environment_fingerprint,
+        "policy_references": [],
+        "input_observation_ids": [],
+        "derivation_node_ids": [],
+        "output_artifact_ids": list(output_artifact_ids),
+        "research_ids": [],
+        "setup_ids": [],
+        "eligibility_ids": [],
+        "trade_ids": [],
+        "outcome_ids": [],
+    }
+
+
+def _new_id(*, excluding: set[str] | None = None) -> str:
+    excluded = excluding or set()
+    while True:
+        value = str(uuid.uuid4())
+        if value not in excluded:
+            return value
+
+
+def _require_text(name: str, value: object) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be non-empty text")
+
+
+def _require_timestamp(name: str, value: object) -> None:
+    _require_text(name, value)
+    assert isinstance(value, str)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", value):
+        raise ValueError(f"{name} must be an RFC 3339 UTC timestamp with microseconds")
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError as exc:
+        raise ValueError(f"{name} is not a valid UTC timestamp") from exc
 
 
 def _utc_now() -> str:

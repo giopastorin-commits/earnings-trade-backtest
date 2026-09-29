@@ -19,7 +19,13 @@ from trinity.ledger import (
     canonicalize_json_document,
 )
 from trinity.ledger.canonical import IDENTITY
-from trinity.ledger.schema import Migration, core_migration
+from trinity.ledger.schema import (
+    Migration,
+    MigrationRegistry,
+    core_migration,
+    execution_coordination_migration,
+    migration_registry,
+)
 
 
 @pytest.fixture
@@ -28,23 +34,34 @@ def storage(tmp_path: Path):
         yield opened
 
 
-def test_new_database_has_only_milestone_one_tables(storage):
+def test_new_database_has_current_production_tables(storage):
     tables = {
         row["name"]
         for row in storage.connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         )
     }
-    assert tables == {"schema_metadata", "schema_migration", "artifact"}
+    assert tables == {
+        "schema_metadata",
+        "schema_migration",
+        "artifact",
+        "run_request",
+        "attempt",
+        "run",
+        "run_request_control",
+        "attempt_event",
+        "attempt_artifact",
+        "run_input",
+    }
 
 
 def test_all_ledger_tables_are_strict(storage):
     strict = {
         row["name"]: row["strict"]
         for row in storage.connection.execute("PRAGMA table_list")
-        if row["name"] in {"schema_metadata", "schema_migration", "artifact"}
+        if row["name"] not in {"sqlite_schema", "sqlite_temp_schema"}
     }
-    assert strict == {"schema_metadata": 1, "schema_migration": 1, "artifact": 1}
+    assert strict and set(strict.values()) == {1}
 
 
 def test_connection_pragmas_are_configured(storage):
@@ -55,8 +72,8 @@ def test_connection_pragmas_are_configured(storage):
 
 def test_migration_applies_once_and_is_idempotent(storage):
     rows_before = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
-    assert len(rows_before) == 1
-    assert storage.apply_migration(core_migration()) is False
+    assert len(rows_before) == 2
+    assert storage.apply_migrations(migration_registry()) == 0
     rows_after = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
     assert [tuple(row) for row in rows_after] == [tuple(row) for row in rows_before]
 
@@ -65,7 +82,9 @@ def test_changed_applied_migration_is_rejected(storage):
     original = core_migration()
     changed = Migration(original.migration_id, original.schema_version, original.sql + b"\n")
     with pytest.raises(MigrationHashDrift):
-        storage.apply_migration(changed)
+        storage.apply_migrations(
+            MigrationRegistry((changed, execution_coordination_migration()))
+        )
 
 
 def test_out_of_sequence_single_migration_is_rejected(storage):

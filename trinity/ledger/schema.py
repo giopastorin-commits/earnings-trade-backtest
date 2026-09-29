@@ -38,6 +38,13 @@ def core_migration() -> Migration:
     return Migration("0001_ledger_core", SCHEMA_VERSION, resource.read_bytes())
 
 
+def execution_coordination_migration() -> Migration:
+    resource = files("trinity.ledger.migrations").joinpath(
+        "0002_execution_coordination.sql"
+    )
+    return Migration("0002_execution_coordination", 2, resource.read_bytes())
+
+
 @dataclass(frozen=True)
 class MigrationRegistry:
     """A complete, deterministic migration sequence understood by a writer."""
@@ -72,6 +79,6 @@ class MigrationRegistry:
 
 
 def migration_registry() -> MigrationRegistry:
-    """Return the production registry. No production migration 0002 exists yet."""
+    """Return the complete production migration registry."""
 
-    return MigrationRegistry((core_migration(),))
+    return MigrationRegistry((core_migration(), execution_coordination_migration()))

@@ -47,3 +47,23 @@ class ImmutableRecordViolation(LedgerError):
 
 class UnsupportedSchemaVersion(LedgerError):
     """The database schema is not supported by this Ledger writer."""
+
+
+class RequestIdempotencyConflict(LedgerError):
+    """A caller-scoped key was reused for different logical work."""
+
+
+class StaleAttemptError(LedgerError):
+    """An attempt no longer owns current write authority."""
+
+
+class InvalidAttemptTransition(LedgerError):
+    """An attempt lifecycle transition is not permitted."""
+
+
+class FinalizationConflict(LedgerError):
+    """A successful run was repeated with incompatible closure identity."""
+
+
+class UnsupportedRunInput(LedgerError):
+    """A run input requires a deferred observation or derivation entity."""
