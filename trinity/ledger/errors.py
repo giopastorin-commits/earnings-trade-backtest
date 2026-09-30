@@ -75,3 +75,11 @@ class UnsupportedAvailabilityBasis(LedgerError):
 
 class InvalidObservationProvenance(LedgerError):
     """Input-observation provenance violates the frozen contract."""
+
+
+class DerivationIntegrityError(LedgerError):
+    """A temporal derivation graph violates or fails its frozen proof."""
+
+
+class UnsupportedDerivationPolicy(DerivationIntegrityError):
+    """A derivation node references an unsupported temporal policy."""

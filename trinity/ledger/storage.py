@@ -24,6 +24,7 @@ from .errors import (
     ArtifactIntegrityError,
     ArtifactMetadataConflict,
     CanonicalizationError,
+    DerivationIntegrityError,
     MigrationHashDrift,
     MigrationHistoryError,
     MigrationIdentityDrift,
@@ -33,6 +34,7 @@ from .errors import (
     RequestIdempotencyConflict,
     StaleAttemptError,
     UnsupportedAvailabilityBasis,
+    UnsupportedDerivationPolicy,
     UnsupportedRunInput,
     UnknownAppliedMigration,
     UnsupportedSchemaVersion,
@@ -64,6 +66,12 @@ _SOURCE_METADATA_KEYS = frozenset(
         "future_effective_at",
     }
 )
+MAX_REQUIRED_PARENTS_V1 = "MAX_REQUIRED_PARENTS_V1"
+_SUPPORTED_NODE_MAPPINGS = {
+    "INPUT_OBSERVATION": "input_observation",
+    "NORMALIZED_FACT": "artifact",
+}
+_RESERVED_NODE_KINDS = {"RESEARCH", "SETUP", "ELIGIBILITY", "OUTCOME"}
 
 
 @dataclass(frozen=True)
@@ -149,6 +157,49 @@ class InputObservation:
     source_metadata_json: str
 
 
+@dataclass(frozen=True)
+class DerivationNode:
+    derivation_node_id: str
+    run_id: str | None
+    attempt_id: str
+    node_kind: str
+    entity_type: str
+    entity_id: str
+    direct_available_at: str | None
+    derived_available_at: str
+    derivation_policy_version: str
+
+
+@dataclass(frozen=True)
+class DerivationEdge:
+    derivation_edge_id: str
+    parent_node_id: str
+    child_node_id: str
+    edge_role: str
+    required: int
+
+
+@dataclass(frozen=True)
+class DerivationParent:
+    parent_node_id: str
+    edge_role: str
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class RunInputBinding:
+    input_observation_id: str
+    input_role: str
+    derivation_node_id: str
+
+
+@dataclass(frozen=True)
+class RawArtifactLineage:
+    node: DerivationNode
+    observation: InputObservation
+    artifact: Artifact
+
+
 def artifact_preimage(
     artifact_type: str, canonicalization_version: str, payload_bytes: bytes
 ) -> bytes:
@@ -194,10 +245,16 @@ class LedgerStorage:
         self.connection = connection
         self.path = path
         self._internal_write_depth = 0
+        self._run_binding_depth = 0
         self.connection.create_function(
             "ledger_internal_write_authorized",
             0,
             lambda: int(self._internal_write_depth > 0),
+        )
+        self.connection.create_function(
+            "ledger_run_binding_authorized",
+            0,
+            lambda: int(self._run_binding_depth > 0),
         )
 
     @classmethod
@@ -255,6 +312,14 @@ class LedgerStorage:
             yield
         finally:
             self._internal_write_depth -= 1
+
+    @contextmanager
+    def _run_binding(self) -> Iterator[None]:
+        self._run_binding_depth += 1
+        try:
+            yield
+        finally:
+            self._run_binding_depth -= 1
 
     def apply_migration(self, migration: Migration) -> bool:
         """Compatibility helper for a one-entry bootstrap registry."""
@@ -536,6 +601,212 @@ class LedgerStorage:
                 (artifact_id,),
             ).fetchall()
         return [_input_observation_from_row(row) for row in rows]
+
+    def create_raw_derivation_node(
+        self,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        input_observation_id: str,
+        derivation_node_id: str | None = None,
+        derivation_policy_version: str = MAX_REQUIRED_PARENTS_V1,
+    ) -> DerivationNode:
+        """Create an attempt-local raw node from one authoritative observation."""
+
+        _require_derivation_policy(derivation_policy_version)
+        node_id = derivation_node_id or _new_id(excluding={attempt_id})
+        _require_text("derivation_node_id", node_id)
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            observation = self.get_input_observation(input_observation_id)
+            connection.execute(
+                """
+                INSERT INTO derivation_node (
+                    derivation_node_id, run_id, attempt_id, node_kind,
+                    entity_type, entity_id, direct_available_at,
+                    derived_available_at, derivation_policy_version
+                ) VALUES (?, NULL, ?, 'INPUT_OBSERVATION', 'input_observation',
+                          ?, ?, ?, ?)
+                """,
+                (
+                    node_id,
+                    attempt_id,
+                    input_observation_id,
+                    observation.effective_available_at,
+                    observation.effective_available_at,
+                    derivation_policy_version,
+                ),
+            )
+        return self.get_derivation_node(node_id)
+
+    def create_normalized_fact_node(
+        self,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        artifact_id: str,
+        parents: tuple[DerivationParent, ...],
+        derivation_node_id: str | None = None,
+        derivation_policy_version: str = MAX_REQUIRED_PARENTS_V1,
+    ) -> DerivationNode:
+        """Atomically create one derived Artifact node and its complete edges."""
+
+        _require_derivation_policy(derivation_policy_version)
+        node_id = derivation_node_id or _new_id(excluding={attempt_id})
+        _require_text("derivation_node_id", node_id)
+        normalized_parents = _validate_derivation_parents(parents)
+        if not any(parent.required for parent in normalized_parents):
+            raise DerivationIntegrityError("derived node requires at least one required parent")
+
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            self.get_artifact(artifact_id)
+            parent_nodes: dict[str, DerivationNode] = {}
+            for parent in normalized_parents:
+                if parent.parent_node_id == node_id:
+                    raise DerivationIntegrityError("derivation self-edge is forbidden")
+                parent_node = self._verify_derivation_node(
+                    parent.parent_node_id, states={}, memo={}
+                )
+                if parent_node.attempt_id != attempt_id or parent_node.run_id is not None:
+                    raise DerivationIntegrityError(
+                        "derived parents must share the current attempt-local lineage"
+                    )
+                cycle = connection.execute(
+                    """
+                    WITH RECURSIVE descendants(node_id) AS (
+                        SELECT child_node_id FROM derivation_edge
+                        WHERE parent_node_id = ?
+                        UNION
+                        SELECT edge.child_node_id
+                        FROM derivation_edge AS edge
+                        JOIN descendants ON edge.parent_node_id = descendants.node_id
+                    )
+                    SELECT 1 FROM descendants WHERE node_id = ?
+                    """,
+                    (node_id, parent.parent_node_id),
+                ).fetchone()
+                if cycle is not None:
+                    raise DerivationIntegrityError("proposed derivation edge creates a cycle")
+                parent_nodes[parent.parent_node_id] = parent_node
+
+            required_times = [
+                parent_nodes[parent.parent_node_id].derived_available_at
+                for parent in normalized_parents
+                if parent.required
+            ]
+            derived_available_at = max(required_times)
+            for parent in normalized_parents:
+                connection.execute(
+                    """
+                    INSERT INTO derivation_edge (
+                        derivation_edge_id, parent_node_id, child_node_id,
+                        edge_role, required
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _new_id(excluding={node_id, attempt_id}),
+                        parent.parent_node_id,
+                        node_id,
+                        parent.edge_role,
+                        int(parent.required),
+                    ),
+                )
+            connection.execute(
+                """
+                INSERT INTO derivation_node (
+                    derivation_node_id, run_id, attempt_id, node_kind,
+                    entity_type, entity_id, direct_available_at,
+                    derived_available_at, derivation_policy_version
+                ) VALUES (?, NULL, ?, 'NORMALIZED_FACT', 'artifact', ?, NULL, ?, ?)
+                """,
+                (
+                    node_id,
+                    attempt_id,
+                    artifact_id,
+                    derived_available_at,
+                    derivation_policy_version,
+                ),
+            )
+        return self.get_derivation_node(node_id)
+
+    def get_derivation_node(
+        self, derivation_node_id: str, *, verify: bool = True
+    ) -> DerivationNode:
+        row = self.connection.execute(
+            "SELECT * FROM derivation_node WHERE derivation_node_id = ?",
+            (derivation_node_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(derivation_node_id)
+        node = _derivation_node_from_row(row)
+        if verify:
+            self.verify_derivation(derivation_node_id)
+        return node
+
+    def list_derivation_edges(self, child_node_id: str) -> list[DerivationEdge]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM derivation_edge
+            WHERE child_node_id = ?
+            ORDER BY edge_role COLLATE BINARY, parent_node_id COLLATE BINARY
+            """,
+            (child_node_id,),
+        ).fetchall()
+        return [_derivation_edge_from_row(row) for row in rows]
+
+    def verify_derivation(self, derivation_node_id: str) -> str:
+        """Recompute and verify one complete temporal derivation proof."""
+
+        return self.verify_derivations((derivation_node_id,))[derivation_node_id]
+
+    def verify_derivations(
+        self, derivation_node_ids: tuple[str, ...]
+    ) -> dict[str, str]:
+        """Atomically verify one or more roots with shared deterministic memoization."""
+
+        if not isinstance(derivation_node_ids, tuple) or not derivation_node_ids:
+            raise DerivationIntegrityError("verification requires one or more root node IDs")
+        if len(derivation_node_ids) != len(set(derivation_node_ids)):
+            raise DerivationIntegrityError("verification root node IDs must be unique")
+        states: dict[str, str] = {}
+        memo: dict[str, DerivationNode] = {}
+        verified: dict[str, str] = {}
+        for node_id in sorted(derivation_node_ids):
+            _require_text("derivation_node_id", node_id)
+            node = self._verify_derivation_node(node_id, states=states, memo=memo)
+            verified[node_id] = node.derived_available_at
+        return verified
+
+    def get_required_ancestry(self, derivation_node_id: str) -> list[DerivationNode]:
+        return self._get_derivation_ancestry(derivation_node_id, required_only=True)
+
+    def get_full_provenance_ancestry(
+        self, derivation_node_id: str
+    ) -> list[DerivationNode]:
+        return self._get_derivation_ancestry(derivation_node_id, required_only=False)
+
+    def get_raw_artifact_lineage(
+        self, derivation_node_id: str, *, required_only: bool = False
+    ) -> list[RawArtifactLineage]:
+        root = self.get_derivation_node(derivation_node_id)
+        nodes = self._get_derivation_ancestry(
+            derivation_node_id, required_only=required_only
+        )
+        candidates = ([root] if root.node_kind == "INPUT_OBSERVATION" else []) + nodes
+        result: list[RawArtifactLineage] = []
+        for node in candidates:
+            if node.node_kind != "INPUT_OBSERVATION":
+                continue
+            observation = self.get_input_observation(node.entity_id)
+            result.append(
+                RawArtifactLineage(
+                    node=node,
+                    observation=observation,
+                    artifact=self.get_artifact(observation.artifact_id),
+                )
+            )
+        return sorted(result, key=lambda item: item.node.derivation_node_id)
 
     @staticmethod
     def verify_artifact(artifact: Artifact) -> None:
@@ -880,17 +1151,18 @@ class LedgerStorage:
         fence_token: int,
         run_id: str | None = None,
         output_artifact_ids: tuple[str, ...] = (),
-        run_inputs: tuple[object, ...] = (),
+        run_inputs: tuple[RunInputBinding, ...] = (),
+        derivation_node_ids: tuple[str, ...] = (),
     ) -> Run:
-        """Atomically commit a minimal successful run and canonical manifest."""
+        """Atomically commit a successful run and its exact derivation closure."""
 
-        if run_inputs:
-            raise UnsupportedRunInput(
-                "non-empty run inputs require the deferred observation and derivation schema"
-            )
         if len(output_artifact_ids) != len(set(output_artifact_ids)):
             raise FinalizationConflict("output artifact IDs must be unique")
+        if len(derivation_node_ids) != len(set(derivation_node_ids)):
+            raise FinalizationConflict("selected derivation node IDs must be unique")
         sorted_outputs = tuple(sorted(output_artifact_ids))
+        selected_nodes = tuple(sorted(derivation_node_ids))
+        normalized_inputs = _validate_run_input_bindings(run_inputs)
         attempt = self.get_attempt(attempt_id)
         request = self.get_run_request(attempt.run_request_id)
         existing_row = self.connection.execute(
@@ -900,11 +1172,31 @@ class LedgerStorage:
         effective_run_id = run_id or (existing_row["run_id"] if existing_row else _new_id())
         if effective_run_id in {attempt_id, attempt.run_request_id}:
             raise FinalizationConflict("request, attempt, and run IDs must be pairwise unequal")
+        closure_ids, input_observation_ids = self._prepare_derivation_commit(
+            attempt_id=attempt_id,
+            selected_node_ids=selected_nodes,
+            run_inputs=normalized_inputs,
+            analysis_cutoff_at=request.analysis_cutoff_at,
+            expected_run_id=effective_run_id if existing_row is not None else None,
+        )
+        policy_references = (
+            (
+                {
+                    "policy_kind": "DERIVATION",
+                    "policy_version": MAX_REQUIRED_PARENTS_V1,
+                },
+            )
+            if closure_ids
+            else ()
+        )
         manifest_value = _result_manifest_value(
             run_id=effective_run_id,
             request=request,
             attempt=attempt,
             output_artifact_ids=sorted_outputs,
+            input_observation_ids=input_observation_ids,
+            derivation_node_ids=closure_ids,
+            policy_references=policy_references,
         )
         manifest_payload = canonicalize_json(manifest_value)
         manifest_id = artifact_id_for(
@@ -917,11 +1209,44 @@ class LedgerStorage:
                 and existing.attempt_id == attempt_id
                 and existing.result_manifest_artifact_id == manifest_id
             ):
+                stored_inputs = {
+                    (row[0], row[1], row[2])
+                    for row in self.connection.execute(
+                        """
+                        SELECT input_observation_id, input_role, derivation_node_id
+                        FROM run_input WHERE run_id = ?
+                        """,
+                        (existing.run_id,),
+                    )
+                }
+                requested_inputs = {
+                    (
+                        item.input_observation_id,
+                        item.input_role,
+                        item.derivation_node_id,
+                    )
+                    for item in normalized_inputs
+                }
+                if stored_inputs != requested_inputs:
+                    raise FinalizationConflict("run input closure differs from committed run")
                 return self.get_run(existing.run_id)
             raise FinalizationConflict("request or attempt already has incompatible run closure")
 
-        with self.transaction() as connection, self._internal_write():
+        with (
+            self.transaction() as connection,
+            self._internal_write(),
+            self._run_binding(),
+        ):
             attempt = _attempt_from_row(self._require_attempt_authority(attempt_id, fence_token))
+            checked_closure, checked_inputs = self._prepare_derivation_commit(
+                attempt_id=attempt_id,
+                selected_node_ids=selected_nodes,
+                run_inputs=normalized_inputs,
+                analysis_cutoff_at=request.analysis_cutoff_at,
+                expected_run_id=None,
+            )
+            if checked_closure != closure_ids or checked_inputs != input_observation_ids:
+                raise FinalizationConflict("derivation closure changed during finalization")
             attached_outputs = {
                 row[0]
                 for row in connection.execute(
@@ -964,6 +1289,30 @@ class LedgerStorage:
                     manifest.artifact_id,
                 ),
             )
+            for node_id in closure_ids:
+                connection.execute(
+                    "UPDATE derivation_node SET run_id = ? WHERE derivation_node_id = ?",
+                    (effective_run_id, node_id),
+                )
+            for node_id in selected_nodes:
+                self.verify_derivation(node_id)
+            for item in normalized_inputs:
+                connection.execute(
+                    """
+                    INSERT INTO run_input (
+                        run_input_id, run_id, input_observation_id, input_role,
+                        derivation_node_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        _new_id(excluding={effective_run_id, attempt_id}),
+                        effective_run_id,
+                        item.input_observation_id,
+                        item.input_role,
+                        item.derivation_node_id,
+                        committed_at,
+                    ),
+                )
             self._append_attempt_event(
                 attempt_id=attempt_id,
                 event_type="SUCCEEDED",
@@ -1006,18 +1355,35 @@ class LedgerStorage:
         if manifest.artifact_kind != "ledger.run-result-manifest.v1":
             raise ArtifactIntegrityError("run manifest has incorrect artifact kind")
         value = json.loads(manifest.payload)
-        output_ids = value.get("output_artifact_ids")
-        if not isinstance(output_ids, list) or not all(
-            isinstance(item, str) for item in output_ids
-        ):
-            raise ArtifactIntegrityError("run manifest output IDs are malformed")
+        list_fields = (
+            "output_artifact_ids",
+            "input_observation_ids",
+            "derivation_node_ids",
+            "policy_references",
+        )
+        if any(not isinstance(value.get(field), list) for field in list_fields):
+            raise ArtifactIntegrityError("run manifest closure arrays are malformed")
+        output_ids = value["output_artifact_ids"]
+        input_ids = value["input_observation_ids"]
+        node_ids = value["derivation_node_ids"]
+        policy_references = value["policy_references"]
+        if not all(isinstance(item, str) for item in output_ids + input_ids + node_ids):
+            raise ArtifactIntegrityError("run manifest identity arrays are malformed")
         expected = _result_manifest_value(
             run_id=run.run_id,
             request=self.get_run_request(run.run_request_id),
             attempt=self.get_attempt(run.attempt_id),
             output_artifact_ids=tuple(output_ids),
+            input_observation_ids=tuple(input_ids),
+            derivation_node_ids=tuple(node_ids),
+            policy_references=tuple(policy_references),
         )
-        if value != expected or output_ids != sorted(set(output_ids)):
+        if (
+            value != expected
+            or output_ids != sorted(set(output_ids))
+            or input_ids != sorted(set(input_ids))
+            or node_ids != sorted(set(node_ids))
+        ):
             raise ArtifactIntegrityError("run manifest does not match committed closure")
         manifest_link = self.connection.execute(
             """
@@ -1040,7 +1406,292 @@ class LedgerStorage:
         }
         if set(output_ids) != attached_outputs:
             raise ArtifactIntegrityError("run manifest output closure is incomplete")
+        if node_ids:
+            expected_policy = [
+                {
+                    "policy_kind": "DERIVATION",
+                    "policy_version": MAX_REQUIRED_PARENTS_V1,
+                }
+            ]
+            if policy_references != expected_policy:
+                raise ArtifactIntegrityError("run manifest derivation policy is invalid")
+            manifest_nodes = set(node_ids)
+            for node_id in node_ids:
+                node = self.get_derivation_node(node_id)
+                if node.run_id != run.run_id or node.attempt_id != run.attempt_id:
+                    raise ArtifactIntegrityError("manifest node has invalid run lineage")
+                parent_ids = {
+                    edge.parent_node_id for edge in self.list_derivation_edges(node_id)
+                }
+                if not parent_ids <= manifest_nodes:
+                    raise ArtifactIntegrityError("manifest derivation closure is incomplete")
+        elif policy_references:
+            raise ArtifactIntegrityError("manifest has policy without derivation graph")
+        stored_input_ids = {
+            row[0]
+            for row in self.connection.execute(
+                "SELECT input_observation_id FROM run_input WHERE run_id = ?",
+                (run.run_id,),
+            )
+        }
+        if set(input_ids) != stored_input_ids:
+            raise ArtifactIntegrityError("manifest input-observation closure is incomplete")
         return run
+
+    def _prepare_derivation_commit(
+        self,
+        *,
+        attempt_id: str,
+        selected_node_ids: tuple[str, ...],
+        run_inputs: tuple[RunInputBinding, ...],
+        analysis_cutoff_at: str,
+        expected_run_id: str | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        if not selected_node_ids:
+            if run_inputs:
+                raise UnsupportedRunInput(
+                    "run inputs require selected derivation result nodes"
+                )
+            return (), ()
+
+        full_closure: set[str] = set()
+        required_closure: set[str] = set()
+        self.verify_derivations(selected_node_ids)
+        for node_id in selected_node_ids:
+            full_closure.update(
+                self._derivation_closure((node_id,), required_only=False)
+            )
+            required_closure.update(
+                self._derivation_closure((node_id,), required_only=True)
+            )
+
+        for node_id in full_closure:
+            node = self.get_derivation_node(node_id, verify=False)
+            if node.attempt_id != attempt_id:
+                raise FinalizationConflict("cannot adopt a foreign-attempt derivation node")
+            if node.run_id != expected_run_id:
+                expected = "attempt-local" if expected_run_id is None else expected_run_id
+                raise FinalizationConflict(
+                    f"derivation node is not bound to expected lineage {expected!r}"
+                )
+
+        for node_id in required_closure:
+            node = self.get_derivation_node(node_id, verify=False)
+            if node.derived_available_at > analysis_cutoff_at:
+                raise FinalizationConflict(
+                    "required derivation availability exceeds analysis cutoff"
+                )
+
+        required_raw: dict[str, DerivationNode] = {
+            node_id: node
+            for node_id in required_closure
+            if (node := self.get_derivation_node(node_id, verify=False)).node_kind
+            == "INPUT_OBSERVATION"
+        }
+        covered_nodes: set[str] = set()
+        for item in run_inputs:
+            node = required_raw.get(item.derivation_node_id)
+            if node is None:
+                raise UnsupportedRunInput(
+                    "run input must reference a raw node in required ancestry"
+                )
+            if node.entity_id != item.input_observation_id:
+                raise UnsupportedRunInput(
+                    "run input observation does not match its raw derivation node"
+                )
+            covered_nodes.add(item.derivation_node_id)
+        if covered_nodes != set(required_raw):
+            raise UnsupportedRunInput(
+                "every required raw derivation node needs run_input coverage"
+            )
+
+        input_ids = tuple(sorted({item.input_observation_id for item in run_inputs}))
+        return tuple(sorted(full_closure)), input_ids
+
+    def _verify_derivation_node(
+        self,
+        derivation_node_id: str,
+        *,
+        states: dict[str, str],
+        memo: dict[str, DerivationNode],
+    ) -> DerivationNode:
+        state = states.get(derivation_node_id, "UNVISITED")
+        if state == "VISITING":
+            raise DerivationIntegrityError("derivation graph contains a cycle")
+        if state == "VALIDATED":
+            return memo[derivation_node_id]
+        row = self.connection.execute(
+            "SELECT * FROM derivation_node WHERE derivation_node_id = ?",
+            (derivation_node_id,),
+        ).fetchone()
+        if row is None:
+            raise DerivationIntegrityError(
+                f"derivation node does not exist: {derivation_node_id!r}"
+            )
+        node = _derivation_node_from_row(row)
+        states[derivation_node_id] = "VISITING"
+        try:
+            _require_derivation_policy(node.derivation_policy_version)
+            expected_entity_type = _SUPPORTED_NODE_MAPPINGS.get(node.node_kind)
+            if expected_entity_type is None:
+                if node.node_kind in _RESERVED_NODE_KINDS:
+                    raise DerivationIntegrityError(
+                        f"reserved node kind is not instantiable: {node.node_kind}"
+                    )
+                raise DerivationIntegrityError(f"unknown node kind: {node.node_kind!r}")
+            if node.entity_type != expected_entity_type:
+                raise DerivationIntegrityError("invalid node-kind/entity-type mapping")
+            try:
+                _require_timestamp("derived_available_at", node.derived_available_at)
+                if node.direct_available_at is not None:
+                    _require_timestamp("direct_available_at", node.direct_available_at)
+            except ValueError as exc:
+                raise DerivationIntegrityError(str(exc)) from exc
+
+            edges = self.list_derivation_edges(derivation_node_id)
+            seen_edges: set[tuple[str, str, str]] = set()
+            parent_nodes: dict[str, DerivationNode] = {}
+            for edge in edges:
+                key = (edge.parent_node_id, edge.child_node_id, edge.edge_role)
+                if key in seen_edges:
+                    raise DerivationIntegrityError("duplicate derivation edge")
+                seen_edges.add(key)
+                if edge.child_node_id != derivation_node_id:
+                    raise DerivationIntegrityError("edge child identity is inconsistent")
+                if edge.parent_node_id == derivation_node_id:
+                    raise DerivationIntegrityError("derivation self-edge is forbidden")
+                if edge.required not in {0, 1}:
+                    raise DerivationIntegrityError("edge required flag must be 0 or 1")
+                if not edge.edge_role or "\0" in edge.edge_role:
+                    raise DerivationIntegrityError("edge role is invalid")
+                parent = self._verify_derivation_node(
+                    edge.parent_node_id, states=states, memo=memo
+                )
+                if parent.attempt_id != node.attempt_id:
+                    raise DerivationIntegrityError("cross-attempt edge is forbidden")
+                if parent.run_id != node.run_id:
+                    raise DerivationIntegrityError("edge endpoints have inconsistent run lineage")
+                parent_nodes[edge.parent_node_id] = parent
+
+            if node.node_kind == "INPUT_OBSERVATION":
+                if edges:
+                    raise DerivationIntegrityError("raw input node must have zero parents")
+                try:
+                    observation = self.get_input_observation(node.entity_id)
+                except KeyError as exc:
+                    raise DerivationIntegrityError(
+                        "raw node observation target does not exist"
+                    ) from exc
+                expected = observation.effective_available_at
+                if node.direct_available_at != expected:
+                    raise DerivationIntegrityError(
+                        "raw direct availability differs from observation"
+                    )
+            else:
+                try:
+                    self.get_artifact(node.entity_id)
+                except (KeyError, ArtifactIntegrityError) as exc:
+                    raise DerivationIntegrityError(
+                        "normalized-fact Artifact target is invalid"
+                    ) from exc
+                if node.direct_available_at is not None:
+                    raise DerivationIntegrityError(
+                        "derived node direct_available_at must be null"
+                    )
+                required_edges = [edge for edge in edges if edge.required == 1]
+                if not required_edges:
+                    raise DerivationIntegrityError(
+                        "derived node requires at least one required parent"
+                    )
+                expected = max(
+                    parent_nodes[edge.parent_node_id].derived_available_at
+                    for edge in required_edges
+                )
+
+            if node.derived_available_at != expected:
+                raise DerivationIntegrityError(
+                    "stored derived availability differs from recursive recomputation"
+                )
+            states[derivation_node_id] = "VALIDATED"
+            memo[derivation_node_id] = node
+            return node
+        except Exception:
+            states.pop(derivation_node_id, None)
+            raise
+
+    def _get_derivation_ancestry(
+        self, derivation_node_id: str, *, required_only: bool
+    ) -> list[DerivationNode]:
+        self.verify_derivation(derivation_node_id)
+        closure = self._derivation_closure(
+            (derivation_node_id,), required_only=required_only
+        )
+        closure.discard(derivation_node_id)
+        if not closure:
+            return []
+
+        indegree = {node_id: 0 for node_id in closure}
+        children: dict[str, set[str]] = {node_id: set() for node_id in closure}
+        placeholders = ",".join("?" for _ in closure)
+        condition = "AND required = 1" if required_only else ""
+        rows = self.connection.execute(
+            f"""
+            SELECT parent_node_id, child_node_id FROM derivation_edge
+            WHERE parent_node_id IN ({placeholders})
+              AND child_node_id IN ({placeholders})
+              {condition}
+            """,
+            (*closure, *closure),
+        ).fetchall()
+        for row in rows:
+            parent_id, child_id = str(row[0]), str(row[1])
+            if child_id not in children[parent_id]:
+                children[parent_id].add(child_id)
+                indegree[child_id] += 1
+
+        available = sorted(node_id for node_id, degree in indegree.items() if degree == 0)
+        ordered: list[str] = []
+        while available:
+            current = available.pop(0)
+            ordered.append(current)
+            for child in sorted(children[current]):
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    available.append(child)
+                    available.sort()
+        if len(ordered) != len(closure):
+            raise DerivationIntegrityError("derivation ancestry contains a cycle")
+        return [self.get_derivation_node(node_id, verify=False) for node_id in ordered]
+
+    def _derivation_closure(
+        self, roots: tuple[str, ...], *, required_only: bool
+    ) -> set[str]:
+        closure: set[str] = set()
+        pending = list(roots)
+        while pending:
+            node_id = pending.pop()
+            if node_id in closure:
+                continue
+            row = self.connection.execute(
+                "SELECT 1 FROM derivation_node WHERE derivation_node_id = ?",
+                (node_id,),
+            ).fetchone()
+            if row is None:
+                raise DerivationIntegrityError(f"missing derivation node: {node_id!r}")
+            closure.add(node_id)
+            query = """
+                SELECT parent_node_id FROM derivation_edge
+                WHERE child_node_id = ?
+            """
+            parameters: tuple[object, ...] = (node_id,)
+            if required_only:
+                query += " AND required = 1"
+            query += " ORDER BY edge_role COLLATE BINARY, parent_node_id COLLATE BINARY"
+            pending.extend(
+                str(row[0])
+                for row in self.connection.execute(query, parameters).fetchall()
+            )
+        return closure
 
     def _get_attempt_row(self, attempt_id: str) -> sqlite3.Row:
         row = self.connection.execute(
@@ -1323,6 +1974,18 @@ def _input_observation_from_row(row: sqlite3.Row) -> InputObservation:
     )
 
 
+def _derivation_node_from_row(row: sqlite3.Row) -> DerivationNode:
+    return DerivationNode(
+        **{field: row[field] for field in DerivationNode.__dataclass_fields__}
+    )
+
+
+def _derivation_edge_from_row(row: sqlite3.Row) -> DerivationEdge:
+    return DerivationEdge(
+        **{field: row[field] for field in DerivationEdge.__dataclass_fields__}
+    )
+
+
 def _request_fingerprint(
     *,
     request_kind: str,
@@ -1354,6 +2017,9 @@ def _result_manifest_value(
     request: RunRequest,
     attempt: Attempt,
     output_artifact_ids: tuple[str, ...],
+    input_observation_ids: tuple[str, ...] = (),
+    derivation_node_ids: tuple[str, ...] = (),
+    policy_references: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
     return {
         "manifest_version": "1",
@@ -1365,9 +2031,9 @@ def _result_manifest_value(
         "baseline_commit": request.baseline_commit,
         "attempt_code_commit": attempt.code_commit,
         "environment_fingerprint": attempt.environment_fingerprint,
-        "policy_references": [],
-        "input_observation_ids": [],
-        "derivation_node_ids": [],
+        "policy_references": list(policy_references),
+        "input_observation_ids": list(input_observation_ids),
+        "derivation_node_ids": list(derivation_node_ids),
         "output_artifact_ids": list(output_artifact_ids),
         "research_ids": [],
         "setup_ids": [],
@@ -1407,6 +2073,79 @@ def _validate_source_id(source_id: object) -> None:
             "source_id must be provider:dataset[:contract-version] using lowercase "
             "ASCII components"
         )
+
+
+def _require_derivation_policy(policy_version: object) -> None:
+    if policy_version != MAX_REQUIRED_PARENTS_V1:
+        raise UnsupportedDerivationPolicy(
+            f"unsupported derivation policy: {policy_version!r}"
+        )
+
+
+def _validate_run_input_bindings(
+    run_inputs: tuple[RunInputBinding, ...],
+) -> tuple[RunInputBinding, ...]:
+    if not isinstance(run_inputs, tuple):
+        raise UnsupportedRunInput("run_inputs must be an immutable tuple")
+    result: list[RunInputBinding] = []
+    seen: set[tuple[str, str, str]] = set()
+    for item in run_inputs:
+        if not isinstance(item, RunInputBinding):
+            raise UnsupportedRunInput("every run input must be RunInputBinding")
+        try:
+            _require_text("input_observation_id", item.input_observation_id)
+            _require_text("input_role", item.input_role)
+            _require_text("derivation_node_id", item.derivation_node_id)
+        except ValueError as exc:
+            raise UnsupportedRunInput(str(exc)) from exc
+        key = (
+            item.input_observation_id,
+            item.input_role,
+            item.derivation_node_id,
+        )
+        if key in seen:
+            raise UnsupportedRunInput("duplicate run input binding")
+        seen.add(key)
+        result.append(item)
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (
+                item.input_observation_id,
+                item.input_role,
+                item.derivation_node_id,
+            ),
+        )
+    )
+
+
+def _validate_derivation_parents(
+    parents: tuple[DerivationParent, ...],
+) -> tuple[DerivationParent, ...]:
+    if not isinstance(parents, tuple):
+        raise DerivationIntegrityError("parents must be a complete immutable tuple")
+    normalized: list[DerivationParent] = []
+    seen: set[tuple[str, str]] = set()
+    for parent in parents:
+        if not isinstance(parent, DerivationParent):
+            raise DerivationIntegrityError("every parent must be DerivationParent")
+        try:
+            _require_text("parent_node_id", parent.parent_node_id)
+            _require_text("edge_role", parent.edge_role)
+        except ValueError as exc:
+            raise DerivationIntegrityError(str(exc)) from exc
+        if "\0" in parent.edge_role:
+            raise DerivationIntegrityError("edge_role must not contain NUL")
+        if not isinstance(parent.required, bool):
+            raise DerivationIntegrityError("parent required flag must be bool")
+        key = (parent.parent_node_id, parent.edge_role)
+        if key in seen:
+            raise DerivationIntegrityError("duplicate parent/edge_role")
+        seen.add(key)
+        normalized.append(parent)
+    return tuple(
+        sorted(normalized, key=lambda item: (item.edge_role, item.parent_node_id))
+    )
 
 
 def _validate_source_metadata(

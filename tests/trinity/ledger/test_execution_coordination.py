@@ -12,6 +12,7 @@ from trinity.ledger import (
     InvalidAttemptTransition,
     LedgerStorage,
     RequestIdempotencyConflict,
+    RunInputBinding,
     StaleAttemptError,
 )
 
@@ -486,63 +487,63 @@ def test_run_input_schema_is_exactly_guarded_and_immutable(storage):
     } <= triggers
 
     attempt = _attempt(storage, _request(storage).run_request_id)
+    artifact = storage.insert_opaque_artifact(
+        artifact_type="run-input.source.v1",
+        payload=b"run-input-source",
+        media_type="application/octet-stream",
+    )
+    observation = storage.create_input_observation(
+        artifact_id=artifact.artifact_id,
+        source_id="test:run-input:v1",
+        source_record_key="record-1",
+        source_published_at=None,
+        retrieved_at=CUTOFF,
+        availability_basis="RETRIEVED_AT_FALLBACK",
+        effective_available_at=CUTOFF,
+        observed_by_attempt_id=attempt.attempt_id,
+        fence_token=attempt.fence_token,
+        source_metadata={
+            "schema_version": "1",
+            "provider": "test",
+            "dataset_name": "run-input",
+            "source_record_key": "record-1",
+            "acquisition_method": "fixture",
+            "availability_rule_id": "retrieval-fallback",
+            "availability_rule_version": "1",
+            "evidence_artifact_ids": [],
+            "provider_metadata": {},
+            "future_effective_at": None,
+        },
+    )
+    raw = storage.create_raw_derivation_node(
+        attempt_id=attempt.attempt_id,
+        fence_token=attempt.fence_token,
+        input_observation_id=observation.input_observation_id,
+    )
     run = storage.commit_run(
         attempt_id=attempt.attempt_id,
         fence_token=attempt.fence_token,
         run_id="run-with-test-input",
+        derivation_node_ids=(raw.derivation_node_id,),
+        run_inputs=(
+            RunInputBinding(
+                input_observation_id=observation.input_observation_id,
+                input_role="PRIMARY",
+                derivation_node_id=raw.derivation_node_id,
+            ),
+        ),
     )
-    # Derivation remains deferred. A test-only node plus a minimally valid row
-    # exercise the already-frozen run_input constraints and immutability.
-    storage.connection.execute(
-        """
-        CREATE TABLE derivation_node (
-            derivation_node_id TEXT PRIMARY KEY,
-            run_id TEXT NOT NULL,
-            node_kind TEXT NOT NULL,
-            entity_type TEXT NOT NULL,
-            entity_id TEXT NOT NULL
-        ) STRICT
-        """
-    )
-    with storage._internal_write():
+    run_input_id = storage.connection.execute(
+        "SELECT run_input_id FROM run_input WHERE run_id = ?", (run.run_id,)
+    ).fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError, match="immutable record"):
         storage.connection.execute(
-            """
-            INSERT INTO input_observation (
-                input_observation_id, artifact_id, source_id, source_record_key,
-                source_published_at, retrieved_at, availability_basis,
-                effective_available_at, observed_by_attempt_id, source_metadata_json
-            ) VALUES (
-                'observation-1', ?, 'test:run-input', 'record-1', NULL, ?,
-                'RETRIEVED_AT_FALLBACK', ?, ?, '{}'
-            )
-            """,
-            (run.result_manifest_artifact_id, CUTOFF, CUTOFF, attempt.attempt_id),
-        )
-    storage.connection.execute(
-        """
-        INSERT INTO derivation_node VALUES (
-            'node-1', ?, 'INPUT_OBSERVATION', 'input_observation', 'observation-1'
-        )
-        """,
-        (run.run_id,),
-    )
-    with storage.transaction(), storage._internal_write():
-        storage.connection.execute(
-            """
-            INSERT INTO run_input (
-                run_input_id, run_id, input_observation_id, input_role,
-                derivation_node_id, created_at
-            ) VALUES ('run-input-1', ?, 'observation-1', 'PRIMARY', 'node-1', ?)
-            """,
-            (run.run_id, CUTOFF),
+            "UPDATE run_input SET input_role = input_role WHERE run_input_id = ?",
+            (run_input_id,),
         )
     with pytest.raises(sqlite3.IntegrityError, match="immutable record"):
         storage.connection.execute(
-            "UPDATE run_input SET input_role = input_role WHERE run_input_id = 'run-input-1'"
-        )
-    with pytest.raises(sqlite3.IntegrityError, match="immutable record"):
-        storage.connection.execute(
-            "DELETE FROM run_input WHERE run_input_id = 'run-input-1'"
+            "DELETE FROM run_input WHERE run_input_id = ?", (run_input_id,)
         )
 
 

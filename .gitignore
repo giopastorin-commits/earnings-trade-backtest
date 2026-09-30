@@ -195,6 +195,7 @@ debug/
 # Temporary files
 tmp/
 temp/
+.tmp-ledger-*/
 *.tmp
 *.bak
 *.swp

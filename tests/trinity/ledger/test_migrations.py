@@ -20,12 +20,15 @@ from trinity.ledger.schema import (
     execution_coordination_migration,
     input_observation_migration,
     migration_registry,
+    temporal_derivation_dag_migration,
 )
 
 MILESTONE_1_COMMIT = "6055d0ec88ec3ac524981325fc8ae232cd2d76b3"
 MIGRATION_PATH = "trinity/ledger/migrations/0001_ledger_core.sql"
 MILESTONE_2_COMMIT = "81d41b500791be8d658ff0f819b624a7e50c2928"
 MIGRATION_2_PATH = "trinity/ledger/migrations/0002_execution_coordination.sql"
+MILESTONE_3A_COMMIT = "28942ac269594a92b7faa6797f84b861d67c40a7"
+MIGRATION_3_PATH = "trinity/ledger/migrations/0003_input_observation.sql"
 FIXED_TIME = "2026-09-29T00:00:00.000000Z"
 
 
@@ -112,6 +115,17 @@ def test_0002_is_byte_identical_to_milestone_two_commit():
     assert execution_coordination_migration().sql == committed
 
 
+def test_0003_is_byte_identical_to_milestone_3a_commit():
+    repository_root = Path(__file__).resolve().parents[3]
+    committed = subprocess.run(
+        ["git", "show", f"{MILESTONE_3A_COMMIT}:{MIGRATION_3_PATH}"],
+        cwd=repository_root,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert input_observation_migration().sql == committed
+
+
 def test_fresh_database_applies_registered_production_migrations(tmp_path):
     path = tmp_path / "fresh.sqlite3"
     with LedgerStorage.open(path) as storage:
@@ -130,15 +144,20 @@ def test_fresh_database_applies_registered_production_migrations(tmp_path):
                 3,
                 input_observation_migration().sha256,
             ),
+            (
+                temporal_derivation_dag_migration().migration_id,
+                4,
+                temporal_derivation_dag_migration().sha256,
+            ),
         ]
-        assert storage.current_migration_level() == 3
+        assert storage.current_migration_level() == 4
 
 
 def test_existing_milestone_one_database_is_recognized(tmp_path):
     path = tmp_path / "existing.sqlite3"
     _create_milestone_one_database(path)
     with LedgerStorage.open(path) as storage:
-        assert storage.current_migration_level() == 3
+        assert storage.current_migration_level() == 4
         assert storage.apply_migrations(migration_registry()) == 0
 
 
@@ -148,12 +167,36 @@ def test_existing_level_two_database_upgrades_to_input_observation(tmp_path):
     with LedgerStorage.open(path, registry=level_two) as storage:
         assert storage.current_migration_level() == 2
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 3
+        assert upgraded.current_migration_level() == 4
         assert upgraded.apply_migrations(migration_registry()) == 0
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert upgraded.connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'input_observation'"
         ).fetchone() is not None
+
+
+def test_existing_level_three_database_upgrades_to_temporal_dag(tmp_path):
+    path = tmp_path / "level-three.sqlite3"
+    level_three = MigrationRegistry(
+        (
+            core_migration(),
+            execution_coordination_migration(),
+            input_observation_migration(),
+        )
+    )
+    with LedgerStorage.open(path, registry=level_three) as storage:
+        assert storage.current_migration_level() == 3
+    with LedgerStorage.open(path) as upgraded:
+        assert upgraded.current_migration_level() == 4
+        assert upgraded.apply_migrations(migration_registry()) == 0
+        assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        tables = {
+            row[0]
+            for row in upgraded.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert {"derivation_node", "derivation_edge"} <= tables
 
 
 def test_registry_accepts_ordered_sequences_one_two_three():
@@ -218,7 +261,7 @@ def test_unknown_applied_migration_is_rejected(tmp_path):
     _create_milestone_one_database(path)
     with LedgerStorage.open(path):
         pass
-    _insert_history(path, Migration("0004_unknown", 4, b"SELECT 1;"))
+    _insert_history(path, Migration("0005_unknown", 5, b"SELECT 1;"))
     with pytest.raises(UnknownAppliedMigration):
         LedgerStorage.open(path)
 
@@ -294,7 +337,7 @@ def test_later_migrations_do_not_recreate_or_mutate_schema_metadata(tmp_path):
             )
 
 
-def test_production_registry_contains_input_observation_migration():
+def test_production_registry_contains_temporal_derivation_migration():
     from trinity.ledger.schema import migration_registry
 
-    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3]
+    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3, 4]
