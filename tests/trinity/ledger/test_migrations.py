@@ -18,10 +18,14 @@ from trinity.ledger.schema import (
     MigrationRegistry,
     core_migration,
     execution_coordination_migration,
+    input_observation_migration,
+    migration_registry,
 )
 
 MILESTONE_1_COMMIT = "6055d0ec88ec3ac524981325fc8ae232cd2d76b3"
 MIGRATION_PATH = "trinity/ledger/migrations/0001_ledger_core.sql"
+MILESTONE_2_COMMIT = "81d41b500791be8d658ff0f819b624a7e50c2928"
+MIGRATION_2_PATH = "trinity/ledger/migrations/0002_execution_coordination.sql"
 FIXED_TIME = "2026-09-29T00:00:00.000000Z"
 
 
@@ -97,6 +101,17 @@ def test_0001_is_byte_identical_to_milestone_one_commit():
     assert core_migration().sql == committed
 
 
+def test_0002_is_byte_identical_to_milestone_two_commit():
+    repository_root = Path(__file__).resolve().parents[3]
+    committed = subprocess.run(
+        ["git", "show", f"{MILESTONE_2_COMMIT}:{MIGRATION_2_PATH}"],
+        cwd=repository_root,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert execution_coordination_migration().sql == committed
+
+
 def test_fresh_database_applies_registered_production_migrations(tmp_path):
     path = tmp_path / "fresh.sqlite3"
     with LedgerStorage.open(path) as storage:
@@ -110,18 +125,35 @@ def test_fresh_database_applies_registered_production_migrations(tmp_path):
                 2,
                 execution_coordination_migration().sha256,
             ),
+            (
+                input_observation_migration().migration_id,
+                3,
+                input_observation_migration().sha256,
+            ),
         ]
-        assert storage.current_migration_level() == 2
+        assert storage.current_migration_level() == 3
 
 
 def test_existing_milestone_one_database_is_recognized(tmp_path):
     path = tmp_path / "existing.sqlite3"
     _create_milestone_one_database(path)
     with LedgerStorage.open(path) as storage:
+        assert storage.current_migration_level() == 3
+        assert storage.apply_migrations(migration_registry()) == 0
+
+
+def test_existing_level_two_database_upgrades_to_input_observation(tmp_path):
+    path = tmp_path / "level-two.sqlite3"
+    level_two = MigrationRegistry((core_migration(), execution_coordination_migration()))
+    with LedgerStorage.open(path, registry=level_two) as storage:
         assert storage.current_migration_level() == 2
-        assert storage.apply_migrations(
-            MigrationRegistry((core_migration(), execution_coordination_migration()))
-        ) == 0
+    with LedgerStorage.open(path) as upgraded:
+        assert upgraded.current_migration_level() == 3
+        assert upgraded.apply_migrations(migration_registry()) == 0
+        assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert upgraded.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'input_observation'"
+        ).fetchone() is not None
 
 
 def test_registry_accepts_ordered_sequences_one_two_three():
@@ -186,7 +218,7 @@ def test_unknown_applied_migration_is_rejected(tmp_path):
     _create_milestone_one_database(path)
     with LedgerStorage.open(path):
         pass
-    _insert_history(path, Migration("0003_unknown", 3, b"SELECT 1;"))
+    _insert_history(path, Migration("0004_unknown", 4, b"SELECT 1;"))
     with pytest.raises(UnknownAppliedMigration):
         LedgerStorage.open(path)
 
@@ -262,7 +294,7 @@ def test_later_migrations_do_not_recreate_or_mutate_schema_metadata(tmp_path):
             )
 
 
-def test_production_registry_contains_execution_coordination_migration():
+def test_production_registry_contains_input_observation_migration():
     from trinity.ledger.schema import migration_registry
 
-    assert [migration.sequence for migration in migration_registry()] == [1, 2]
+    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3]

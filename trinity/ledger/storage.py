@@ -29,8 +29,10 @@ from .errors import (
     MigrationIdentityDrift,
     FinalizationConflict,
     InvalidAttemptTransition,
+    InvalidObservationProvenance,
     RequestIdempotencyConflict,
     StaleAttemptError,
+    UnsupportedAvailabilityBasis,
     UnsupportedRunInput,
     UnknownAppliedMigration,
     UnsupportedSchemaVersion,
@@ -45,6 +47,23 @@ from .schema import (
 
 HASH_DOMAIN = b"TRINITY-LEDGER-V1\0"
 _ARTIFACT_ID_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SOURCE_ID_RE = re.compile(
+    r"[a-z0-9][a-z0-9._-]*:[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)?\Z"
+)
+_SOURCE_METADATA_KEYS = frozenset(
+    {
+        "schema_version",
+        "provider",
+        "dataset_name",
+        "source_record_key",
+        "acquisition_method",
+        "availability_rule_id",
+        "availability_rule_version",
+        "evidence_artifact_ids",
+        "provider_metadata",
+        "future_effective_at",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +133,20 @@ class Run:
     committed_at: str
     status: str
     result_manifest_artifact_id: str
+
+
+@dataclass(frozen=True)
+class InputObservation:
+    input_observation_id: str
+    artifact_id: str
+    source_id: str
+    source_record_key: str
+    source_published_at: str | None
+    retrieved_at: str
+    availability_basis: str
+    effective_available_at: str
+    observed_by_attempt_id: str
+    source_metadata_json: str
 
 
 def artifact_preimage(
@@ -384,6 +417,125 @@ class LedgerStorage:
         if verify:
             self.verify_artifact(artifact)
         return artifact
+
+    def create_input_observation(
+        self,
+        *,
+        artifact_id: str,
+        source_id: str,
+        source_record_key: str,
+        source_published_at: str | None,
+        retrieved_at: str,
+        availability_basis: str,
+        effective_available_at: str,
+        observed_by_attempt_id: str,
+        fence_token: int,
+        source_metadata: Any,
+    ) -> InputObservation:
+        """Insert one immutable, conservatively available observation."""
+
+        if availability_basis != "RETRIEVED_AT_FALLBACK":
+            if availability_basis in {"SOURCE_PUBLISHED_AT", "LEGACY_ASSERTED_AT"}:
+                raise UnsupportedAvailabilityBasis(
+                    f"{availability_basis} is frozen but deferred in Milestone 3A"
+                )
+            raise InvalidObservationProvenance(
+                f"unknown availability basis: {availability_basis!r}"
+            )
+        _validate_source_id(source_id)
+        _require_text("source_record_key", source_record_key)
+        _require_timestamp("retrieved_at", retrieved_at)
+        _require_timestamp("effective_available_at", effective_available_at)
+        if source_published_at is not None:
+            raise InvalidObservationProvenance(
+                "RETRIEVED_AT_FALLBACK requires source_published_at to be null"
+            )
+        if effective_available_at != retrieved_at:
+            raise InvalidObservationProvenance(
+                "RETRIEVED_AT_FALLBACK requires effective_available_at = retrieved_at exactly"
+            )
+        metadata_json, evidence_ids = _validate_source_metadata(
+            source_metadata,
+            source_id=source_id,
+            source_record_key=source_record_key,
+        )
+        observation_id = _new_id()
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(observed_by_attempt_id, fence_token)
+            self.get_artifact(artifact_id)
+            if evidence_ids:
+                placeholders = ",".join("?" for _ in evidence_ids)
+                attached = {
+                    row[0]
+                    for row in connection.execute(
+                        f"""
+                        SELECT artifact_id FROM attempt_artifact
+                        WHERE attempt_id = ?
+                          AND role IN ('DIAGNOSTIC', 'OUTPUT')
+                          AND artifact_id IN ({placeholders})
+                        """,
+                        (observed_by_attempt_id, *evidence_ids),
+                    )
+                }
+                if attached != set(evidence_ids):
+                    raise InvalidObservationProvenance(
+                        "every evidence artifact must be attached to the observing attempt "
+                        "as DIAGNOSTIC or OUTPUT"
+                    )
+            connection.execute(
+                """
+                INSERT INTO input_observation (
+                    input_observation_id, artifact_id, source_id, source_record_key,
+                    source_published_at, retrieved_at, availability_basis,
+                    effective_available_at, observed_by_attempt_id, source_metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    observation_id,
+                    artifact_id,
+                    source_id,
+                    source_record_key,
+                    None,
+                    retrieved_at,
+                    availability_basis,
+                    effective_available_at,
+                    observed_by_attempt_id,
+                    metadata_json,
+                ),
+            )
+        return self.get_input_observation(observation_id)
+
+    def get_input_observation(self, input_observation_id: str) -> InputObservation:
+        row = self.connection.execute(
+            "SELECT * FROM input_observation WHERE input_observation_id = ?",
+            (input_observation_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(input_observation_id)
+        observation = _input_observation_from_row(row)
+        canonical = canonicalize_json_document(observation.source_metadata_json).decode(
+            "utf-8"
+        )
+        if canonical != observation.source_metadata_json:
+            raise ArtifactIntegrityError("observation source metadata is not canonical JSON")
+        return observation
+
+    def list_input_observations(
+        self, *, artifact_id: str | None = None
+    ) -> list[InputObservation]:
+        if artifact_id is None:
+            rows = self.connection.execute(
+                "SELECT * FROM input_observation ORDER BY input_observation_id"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM input_observation
+                WHERE artifact_id = ? ORDER BY input_observation_id
+                """,
+                (artifact_id,),
+            ).fetchall()
+        return [_input_observation_from_row(row) for row in rows]
 
     @staticmethod
     def verify_artifact(artifact: Artifact) -> None:
@@ -1165,6 +1317,12 @@ def _run_from_row(row: sqlite3.Row) -> Run:
     return Run(**{field: row[field] for field in Run.__dataclass_fields__})
 
 
+def _input_observation_from_row(row: sqlite3.Row) -> InputObservation:
+    return InputObservation(
+        **{field: row[field] for field in InputObservation.__dataclass_fields__}
+    )
+
+
 def _request_fingerprint(
     *,
     request_kind: str,
@@ -1241,6 +1399,110 @@ def _require_timestamp(name: str, value: object) -> None:
         datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
     except ValueError as exc:
         raise ValueError(f"{name} is not a valid UTC timestamp") from exc
+
+
+def _validate_source_id(source_id: object) -> None:
+    if not isinstance(source_id, str) or not _SOURCE_ID_RE.fullmatch(source_id):
+        raise InvalidObservationProvenance(
+            "source_id must be provider:dataset[:contract-version] using lowercase "
+            "ASCII components"
+        )
+
+
+def _validate_source_metadata(
+    value: Any, *, source_id: str, source_record_key: str
+) -> tuple[str, tuple[str, ...]]:
+    if not isinstance(value, dict) or set(value) != _SOURCE_METADATA_KEYS:
+        raise InvalidObservationProvenance(
+            "source_metadata must contain exactly the frozen V1.1 fields"
+        )
+    if value["schema_version"] != "1":
+        raise InvalidObservationProvenance("source metadata schema_version must be '1'")
+    for field in (
+        "provider",
+        "dataset_name",
+        "source_record_key",
+        "acquisition_method",
+        "availability_rule_id",
+        "availability_rule_version",
+    ):
+        try:
+            _require_text(f"source_metadata.{field}", value[field])
+        except ValueError as exc:
+            raise InvalidObservationProvenance(str(exc)) from exc
+    source_parts = source_id.split(":")
+    if value["provider"] != source_parts[0] or value["dataset_name"] != source_parts[1]:
+        raise InvalidObservationProvenance(
+            "source metadata provider and dataset_name must match source_id"
+        )
+    if value["source_record_key"] != source_record_key:
+        raise InvalidObservationProvenance(
+            "source metadata source_record_key must match the observation"
+        )
+    evidence = value["evidence_artifact_ids"]
+    if (
+        not isinstance(evidence, list)
+        or not all(
+            isinstance(item, str) and _ARTIFACT_ID_RE.fullmatch(item)
+            for item in evidence
+        )
+        or evidence != sorted(set(evidence))
+    ):
+        raise InvalidObservationProvenance(
+            "evidence_artifact_ids must be a sorted unique artifact-ID array"
+        )
+    if not isinstance(value["provider_metadata"], dict):
+        raise InvalidObservationProvenance("provider_metadata must be a canonical object")
+    _reject_operational_source_metadata(value["provider_metadata"])
+    if value["future_effective_at"] is not None:
+        raise InvalidObservationProvenance(
+            "RETRIEVED_AT_FALLBACK requires future_effective_at to be null"
+        )
+    try:
+        metadata_json = canonicalize_json(value).decode("utf-8")
+    except CanonicalizationError as exc:
+        raise InvalidObservationProvenance(
+            "source metadata must use deterministic canonical Ledger JSON"
+        ) from exc
+    return metadata_json, tuple(evidence)
+
+
+def _reject_operational_source_metadata(value: Any) -> None:
+    prohibited_keys = {
+        "api_key",
+        "credential",
+        "credentials",
+        "file_path",
+        "filesystem_path",
+        "local_path",
+        "password",
+        "secret",
+        "token",
+    }
+    for key, item in value.items():
+        normalized = key.lower().replace("-", "_")
+        if normalized in prohibited_keys:
+            raise InvalidObservationProvenance(
+                "provider_metadata must not contain secrets or mutable local locators"
+            )
+        if isinstance(item, dict):
+            _reject_operational_source_metadata(item)
+        elif _contains_local_path(item):
+            raise InvalidObservationProvenance(
+                "provider_metadata must not contain secrets or mutable local locators"
+            )
+
+
+def _contains_local_path(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(re.match(r"^[A-Za-z]:[\\/]", value)) or value.startswith(
+            ("/", "\\\\", "file:")
+        )
+    if isinstance(value, list):
+        return any(_contains_local_path(item) for item in value)
+    if isinstance(value, dict):
+        _reject_operational_source_metadata(value)
+    return False
 
 
 def _utc_now() -> str:

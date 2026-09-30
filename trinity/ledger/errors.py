@@ -67,3 +67,11 @@ class FinalizationConflict(LedgerError):
 
 class UnsupportedRunInput(LedgerError):
     """A run input requires a deferred observation or derivation entity."""
+
+
+class UnsupportedAvailabilityBasis(LedgerError):
+    """An availability basis is frozen but operationally deferred."""
+
+
+class InvalidObservationProvenance(LedgerError):
+    """Input-observation provenance violates the frozen contract."""

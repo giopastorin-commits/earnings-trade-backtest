@@ -24,6 +24,7 @@ from trinity.ledger.schema import (
     MigrationRegistry,
     core_migration,
     execution_coordination_migration,
+    input_observation_migration,
     migration_registry,
 )
 
@@ -52,6 +53,7 @@ def test_new_database_has_current_production_tables(storage):
         "attempt_event",
         "attempt_artifact",
         "run_input",
+        "input_observation",
     }
 
 
@@ -72,7 +74,7 @@ def test_connection_pragmas_are_configured(storage):
 
 def test_migration_applies_once_and_is_idempotent(storage):
     rows_before = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
-    assert len(rows_before) == 2
+    assert len(rows_before) == 3
     assert storage.apply_migrations(migration_registry()) == 0
     rows_after = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
     assert [tuple(row) for row in rows_after] == [tuple(row) for row in rows_before]
@@ -83,7 +85,9 @@ def test_changed_applied_migration_is_rejected(storage):
     changed = Migration(original.migration_id, original.schema_version, original.sql + b"\n")
     with pytest.raises(MigrationHashDrift):
         storage.apply_migrations(
-            MigrationRegistry((changed, execution_coordination_migration()))
+            MigrationRegistry(
+                (changed, execution_coordination_migration(), input_observation_migration())
+            )
         )
 
 

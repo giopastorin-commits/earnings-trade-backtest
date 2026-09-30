@@ -45,6 +45,13 @@ def execution_coordination_migration() -> Migration:
     return Migration("0002_execution_coordination", 2, resource.read_bytes())
 
 
+def input_observation_migration() -> Migration:
+    resource = files("trinity.ledger.migrations").joinpath(
+        "0003_input_observation.sql"
+    )
+    return Migration("0003_input_observation", 3, resource.read_bytes())
+
+
 @dataclass(frozen=True)
 class MigrationRegistry:
     """A complete, deterministic migration sequence understood by a writer."""
@@ -81,4 +88,10 @@ class MigrationRegistry:
 def migration_registry() -> MigrationRegistry:
     """Return the complete production migration registry."""
 
-    return MigrationRegistry((core_migration(), execution_coordination_migration()))
+    return MigrationRegistry(
+        (
+            core_migration(),
+            execution_coordination_migration(),
+            input_observation_migration(),
+        )
+    )

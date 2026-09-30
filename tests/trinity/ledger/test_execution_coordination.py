@@ -491,12 +491,8 @@ def test_run_input_schema_is_exactly_guarded_and_immutable(storage):
         fence_token=attempt.fence_token,
         run_id="run-with-test-input",
     )
-    # Milestone 2A deliberately does not create the future domain tables. These
-    # test-only parents exercise the already-frozen run_input constraints and
-    # immutability without shipping placeholder Observation/DAG schemas.
-    storage.connection.execute(
-        "CREATE TABLE input_observation (input_observation_id TEXT PRIMARY KEY) STRICT"
-    )
+    # Derivation remains deferred. A test-only node plus a minimally valid row
+    # exercise the already-frozen run_input constraints and immutability.
     storage.connection.execute(
         """
         CREATE TABLE derivation_node (
@@ -508,9 +504,20 @@ def test_run_input_schema_is_exactly_guarded_and_immutable(storage):
         ) STRICT
         """
     )
-    storage.connection.execute(
-        "INSERT INTO input_observation VALUES ('observation-1')"
-    )
+    with storage._internal_write():
+        storage.connection.execute(
+            """
+            INSERT INTO input_observation (
+                input_observation_id, artifact_id, source_id, source_record_key,
+                source_published_at, retrieved_at, availability_basis,
+                effective_available_at, observed_by_attempt_id, source_metadata_json
+            ) VALUES (
+                'observation-1', ?, 'test:run-input', 'record-1', NULL, ?,
+                'RETRIEVED_AT_FALLBACK', ?, ?, '{}'
+            )
+            """,
+            (run.result_manifest_artifact_id, CUTOFF, CUTOFF, attempt.attempt_id),
+        )
     storage.connection.execute(
         """
         INSERT INTO derivation_node VALUES (
