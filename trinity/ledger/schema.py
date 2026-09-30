@@ -59,6 +59,13 @@ def temporal_derivation_dag_migration() -> Migration:
     return Migration("0004_temporal_derivation_dag", 4, resource.read_bytes())
 
 
+def pit_classification_migration() -> Migration:
+    resource = files("trinity.ledger.migrations").joinpath(
+        "0005_pit_classification.sql"
+    )
+    return Migration("0005_pit_classification", 5, resource.read_bytes())
+
+
 @dataclass(frozen=True)
 class MigrationRegistry:
     """A complete, deterministic migration sequence understood by a writer."""
@@ -101,5 +108,6 @@ def migration_registry() -> MigrationRegistry:
             execution_coordination_migration(),
             input_observation_migration(),
             temporal_derivation_dag_migration(),
+            pit_classification_migration(),
         )
     )

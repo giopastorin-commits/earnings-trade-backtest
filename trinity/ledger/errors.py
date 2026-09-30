@@ -83,3 +83,11 @@ class DerivationIntegrityError(LedgerError):
 
 class UnsupportedDerivationPolicy(DerivationIntegrityError):
     """A derivation node references an unsupported temporal policy."""
+
+
+class ClassificationIntegrityError(LedgerError):
+    """A PIT/record classification violates or fails the frozen policy."""
+
+
+class UnsupportedClassificationPolicy(ClassificationIntegrityError):
+    """A classification references an unsupported policy."""

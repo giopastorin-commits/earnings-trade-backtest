@@ -24,6 +24,7 @@ from .errors import (
     ArtifactIntegrityError,
     ArtifactMetadataConflict,
     CanonicalizationError,
+    ClassificationIntegrityError,
     DerivationIntegrityError,
     MigrationHashDrift,
     MigrationHistoryError,
@@ -34,6 +35,7 @@ from .errors import (
     RequestIdempotencyConflict,
     StaleAttemptError,
     UnsupportedAvailabilityBasis,
+    UnsupportedClassificationPolicy,
     UnsupportedDerivationPolicy,
     UnsupportedRunInput,
     UnknownAppliedMigration,
@@ -67,11 +69,89 @@ _SOURCE_METADATA_KEYS = frozenset(
     }
 )
 MAX_REQUIRED_PARENTS_V1 = "MAX_REQUIRED_PARENTS_V1"
+REQUIRED_ANCESTRY_PIT_V1 = "REQUIRED_ANCESTRY_PIT_V1"
 _SUPPORTED_NODE_MAPPINGS = {
     "INPUT_OBSERVATION": "input_observation",
     "NORMALIZED_FACT": "artifact",
 }
 _RESERVED_NODE_KINDS = {"RESEARCH", "SETUP", "ELIGIBILITY", "OUTCOME"}
+_POLICY_ARTIFACT_KIND = "ledger.pit-classification-policy-definition.v1"
+_EVIDENCE_ARTIFACT_KIND = "ledger.pit-classification-evidence.v1"
+_MANIFEST_V2_KIND = "ledger.run-result-manifest.v2"
+_CLASSIFIED_REQUEST_KINDS = {
+    "PIT_SAFE_DECISION", "RECONSTRUCTION", "EXPLORATORY_NON_PIT"
+}
+_EVIDENCE_KEYS = {
+    "schema_name", "schema_version", "derivation_node_id",
+    "input_observation_id", "artifact_id", "pit_reference_at",
+    "record_origin_evidence_kind", "legacy_namespace", "legacy_record_key",
+    "legacy_record_id", "pit_evidence_kind", "verifier_id",
+    "archive_captured_at", "reconstruction_completed_at",
+    "supporting_artifact_ids", "rationale_code",
+}
+
+
+def _pit_policy_definition_v1() -> dict[str, Any]:
+    """Return the exact frozen REQUIRED_ANCESTRY_PIT_V1 definition."""
+    return {
+        "schema_name": "ledger.pit-classification-policy-definition",
+        "schema_version": "1",
+        "policy_kind": "PIT_CLASSIFICATION",
+        "policy_version": REQUIRED_ANCESTRY_PIT_V1,
+        "record_classes": ["LEDGER_NATIVE", "LEGACY_NON_LEDGER_ARTIFACT"],
+        "pit_classes": ["ARCHIVED_POINT_IN_TIME", "NOT_APPLICABLE", "RECONSTRUCTED_NOT_ARCHIVED", "UNKNOWN"],
+        "classification_bases": ["RAW_ARCHIVE_EVIDENCE", "RAW_NOT_APPLICABLE_EVIDENCE", "RAW_RECONSTRUCTION_EVIDENCE", "RAW_UNKNOWN_EVIDENCE", "REQUIRED_PARENT_PROPAGATION"],
+        "record_origin_evidence_kinds": ["LEDGER_AUTHORIZED_CAPTURE", "LEGACY_IMPORT"],
+        "pit_evidence_kinds": ["INDEPENDENT_ARCHIVE_PROOF", "INSUFFICIENT_PIT_EVIDENCE", "LEDGER_CONTEMPORANEOUS_CAPTURE", "PIT_IRRELEVANT_CONTENT", "POST_REFERENCE_RECONSTRUCTION"],
+        "recognized_verifiers": [
+            {"verifier_id": "INDEPENDENT_ARCHIVE_PROOF_V1", "pit_evidence_kind": "INDEPENDENT_ARCHIVE_PROOF"},
+            {"verifier_id": "LEDGER_AUTHORIZED_CAPTURE_V1", "pit_evidence_kind": "LEDGER_CONTEMPORANEOUS_CAPTURE"},
+            {"verifier_id": "LEDGER_INSUFFICIENT_EVIDENCE_V1", "pit_evidence_kind": "INSUFFICIENT_PIT_EVIDENCE"},
+            {"verifier_id": "LEDGER_PIT_IRRELEVANCE_V1", "pit_evidence_kind": "PIT_IRRELEVANT_CONTENT"},
+            {"verifier_id": "LEDGER_RECONSTRUCTION_EVIDENCE_V1", "pit_evidence_kind": "POST_REFERENCE_RECONSTRUCTION"},
+        ],
+        "not_applicable_artifact_kinds": [_POLICY_ARTIFACT_KIND],
+        "record_origin_results": [
+            {"record_origin_evidence_kind": "LEDGER_AUTHORIZED_CAPTURE", "record_class": "LEDGER_NATIVE"},
+            {"record_origin_evidence_kind": "LEGACY_IMPORT", "record_class": "LEGACY_NON_LEDGER_ARTIFACT"},
+        ],
+        "raw_evidence_results": [
+            {"pit_evidence_kind": "INDEPENDENT_ARCHIVE_PROOF", "classification_basis": "RAW_ARCHIVE_EVIDENCE", "pit_class": "ARCHIVED_POINT_IN_TIME", "verifier_id": "INDEPENDENT_ARCHIVE_PROOF_V1"},
+            {"pit_evidence_kind": "INSUFFICIENT_PIT_EVIDENCE", "classification_basis": "RAW_UNKNOWN_EVIDENCE", "pit_class": "UNKNOWN", "verifier_id": "LEDGER_INSUFFICIENT_EVIDENCE_V1"},
+            {"pit_evidence_kind": "LEDGER_CONTEMPORANEOUS_CAPTURE", "classification_basis": "RAW_ARCHIVE_EVIDENCE", "pit_class": "ARCHIVED_POINT_IN_TIME", "verifier_id": "LEDGER_AUTHORIZED_CAPTURE_V1"},
+            {"pit_evidence_kind": "PIT_IRRELEVANT_CONTENT", "classification_basis": "RAW_NOT_APPLICABLE_EVIDENCE", "pit_class": "NOT_APPLICABLE", "verifier_id": "LEDGER_PIT_IRRELEVANCE_V1"},
+            {"pit_evidence_kind": "POST_REFERENCE_RECONSTRUCTION", "classification_basis": "RAW_RECONSTRUCTION_EVIDENCE", "pit_class": "RECONSTRUCTED_NOT_ARCHIVED", "verifier_id": "LEDGER_RECONSTRUCTION_EVIDENCE_V1"},
+        ],
+        "parent_rules": {"include_required_edges": True, "include_optional_edges": False, "require_complete_direct_parent_set": True, "require_same_pit_reference_at": True, "require_same_policy_identity": True},
+        "pit_propagation": [
+            {"left": "ARCHIVED_POINT_IN_TIME", "right": "ARCHIVED_POINT_IN_TIME", "result": "ARCHIVED_POINT_IN_TIME"},
+            {"left": "ARCHIVED_POINT_IN_TIME", "right": "NOT_APPLICABLE", "result": "ARCHIVED_POINT_IN_TIME"},
+            {"left": "ARCHIVED_POINT_IN_TIME", "right": "RECONSTRUCTED_NOT_ARCHIVED", "result": "RECONSTRUCTED_NOT_ARCHIVED"},
+            {"left": "ARCHIVED_POINT_IN_TIME", "right": "UNKNOWN", "result": "UNKNOWN"},
+            {"left": "NOT_APPLICABLE", "right": "NOT_APPLICABLE", "result": "NOT_APPLICABLE"},
+            {"left": "NOT_APPLICABLE", "right": "RECONSTRUCTED_NOT_ARCHIVED", "result": "RECONSTRUCTED_NOT_ARCHIVED"},
+            {"left": "NOT_APPLICABLE", "right": "UNKNOWN", "result": "UNKNOWN"},
+            {"left": "RECONSTRUCTED_NOT_ARCHIVED", "right": "RECONSTRUCTED_NOT_ARCHIVED", "result": "RECONSTRUCTED_NOT_ARCHIVED"},
+            {"left": "RECONSTRUCTED_NOT_ARCHIVED", "right": "UNKNOWN", "result": "UNKNOWN"},
+            {"left": "UNKNOWN", "right": "UNKNOWN", "result": "UNKNOWN"},
+        ],
+        "record_class_propagation": [
+            {"left": "LEDGER_NATIVE", "right": "LEDGER_NATIVE", "result": "LEDGER_NATIVE"},
+            {"left": "LEDGER_NATIVE", "right": "LEGACY_NON_LEDGER_ARTIFACT", "result": "LEGACY_NON_LEDGER_ARTIFACT"},
+            {"left": "LEGACY_NON_LEDGER_ARTIFACT", "right": "LEGACY_NON_LEDGER_ARTIFACT", "result": "LEGACY_NON_LEDGER_ARTIFACT"},
+        ],
+        "supersession_rules": {"chain_scope": ["derivation_node_id", "pit_reference_at"], "first_classification_version": 1, "classification_version_increment": 1, "parallel_policy_heads_allowed": False, "policy_change_supersedes_current_head": True, "implicit_current_policy_allowed_for_commit": False},
+        "run_gating": [
+            {"request_kind": "EXPLORATORY_NON_PIT", "allowed_resolved_pit_classes": ["ARCHIVED_POINT_IN_TIME", "NOT_APPLICABLE", "RECONSTRUCTED_NOT_ARCHIVED", "UNKNOWN"]},
+            {"request_kind": "PIT_SAFE_DECISION", "allowed_resolved_pit_classes": ["ARCHIVED_POINT_IN_TIME", "NOT_APPLICABLE"]},
+            {"request_kind": "RECONSTRUCTION", "allowed_resolved_pit_classes": ["ARCHIVED_POINT_IN_TIME", "NOT_APPLICABLE", "RECONSTRUCTED_NOT_ARCHIVED"]},
+        ],
+    }
+
+
+def pit_classification_policy_definition_v1() -> dict[str, Any]:
+    """Return a fresh value for the frozen V1.3 policy-definition Artifact."""
+    return _pit_policy_definition_v1()
 
 
 @dataclass(frozen=True)
@@ -200,6 +280,33 @@ class RawArtifactLineage:
     artifact: Artifact
 
 
+@dataclass(frozen=True)
+class PitClassificationPolicy:
+    classification_policy_id: str
+    policy_kind: str
+    policy_version: str
+    definition_artifact_id: str
+    code_commit: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class DerivationNodeClassification:
+    derivation_node_classification_id: str
+    derivation_node_id: str
+    pit_reference_at: str
+    classification_version: int
+    record_class: str
+    resolved_record_class: str
+    pit_class: str
+    classification_basis: str
+    classification_policy_id: str
+    evidence_artifact_id: str | None
+    classified_by_attempt_id: str
+    created_at: str
+    supersedes_classification_id: str | None
+
+
 def artifact_preimage(
     artifact_type: str, canonicalization_version: str, payload_bytes: bytes
 ) -> bytes:
@@ -246,6 +353,7 @@ class LedgerStorage:
         self.path = path
         self._internal_write_depth = 0
         self._run_binding_depth = 0
+        self._classification_construction_depth = 0
         self.connection.create_function(
             "ledger_internal_write_authorized",
             0,
@@ -255,6 +363,10 @@ class LedgerStorage:
             "ledger_run_binding_authorized",
             0,
             lambda: int(self._run_binding_depth > 0),
+        )
+        self.connection.create_function(
+            "ledger_classification_construction_authorized", 0,
+            lambda: int(self._classification_construction_depth > 0),
         )
 
     @classmethod
@@ -320,6 +432,14 @@ class LedgerStorage:
             yield
         finally:
             self._run_binding_depth -= 1
+
+    @contextmanager
+    def _classification_construction(self) -> Iterator[None]:
+        self._classification_construction_depth += 1
+        try:
+            yield
+        finally:
+            self._classification_construction_depth -= 1
 
     def apply_migration(self, migration: Migration) -> bool:
         """Compatibility helper for a one-entry bootstrap registry."""
@@ -848,6 +968,9 @@ class LedgerStorage:
         _require_text("idempotency_key", idempotency_key)
         _require_text("requested_by", requested_by)
         _require_text("baseline_commit", baseline_commit)
+        _validate_classified_request_parameters(
+            request_kind, analysis_cutoff_at, parameters
+        )
         parameters_json = canonicalize_json(parameters).decode("utf-8")
         fingerprint = _request_fingerprint(
             request_kind=request_kind,
@@ -1144,6 +1267,325 @@ class LedgerStorage:
             self.get_artifact(artifact_id)
             return self._attach_attempt_artifact(attempt_id, artifact_id, role, _utc_now())
 
+    def register_pit_classification_policy(
+        self, *, definition_artifact_id: str, code_commit: str,
+        classification_policy_id: str | None = None,
+    ) -> PitClassificationPolicy:
+        """Register the one frozen V1.3 classification policy immutably."""
+        _require_text("code_commit", code_commit)
+        policy_id = classification_policy_id or _new_id()
+        _require_uuid4("classification_policy_id", policy_id)
+        artifact = self.get_artifact(definition_artifact_id)
+        _require_artifact_envelope(artifact, _POLICY_ARTIFACT_KIND)
+        try:
+            value = json.loads(artifact.payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ClassificationIntegrityError("invalid policy definition JSON") from exc
+        if value != _pit_policy_definition_v1():
+            raise ClassificationIntegrityError("policy definition differs from frozen V1.3")
+        with self.transaction() as connection, self._internal_write():
+            connection.execute(
+                "INSERT INTO pit_classification_policy VALUES (?, 'PIT_CLASSIFICATION', ?, ?, ?, ?)",
+                (policy_id, REQUIRED_ANCESTRY_PIT_V1, definition_artifact_id,
+                 code_commit, _utc_now()),
+            )
+        return self.get_pit_classification_policy(policy_id)
+
+    def get_pit_classification_policy(
+        self, classification_policy_id: str
+    ) -> PitClassificationPolicy:
+        row = self.connection.execute(
+            "SELECT * FROM pit_classification_policy WHERE classification_policy_id = ?",
+            (classification_policy_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(classification_policy_id)
+        result = _classification_policy_from_row(row)
+        self._verify_classification_policy(result)
+        return result
+
+    def create_raw_node_classification(
+        self, *, attempt_id: str, fence_token: int, derivation_node_id: str,
+        pit_reference_at: str, classification_policy_id: str,
+        evidence_artifact_id: str,
+        supersedes_classification_id: str | None = None,
+        derivation_node_classification_id: str | None = None,
+    ) -> DerivationNodeClassification:
+        _require_timestamp("pit_reference_at", pit_reference_at)
+        classification_id = derivation_node_classification_id or _new_id()
+        _require_uuid4("derivation_node_classification_id", classification_id)
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            policy = self.get_pit_classification_policy(classification_policy_id)
+            node = self.get_derivation_node(derivation_node_id)
+            if node.node_kind != "INPUT_OBSERVATION" or node.entity_type != "input_observation":
+                raise ClassificationIntegrityError("raw classification requires INPUT_OBSERVATION node")
+            observation = self.get_input_observation(node.entity_id)
+            evidence = self.get_artifact(evidence_artifact_id)
+            record_class, pit_class, basis = self._validate_raw_evidence(
+                evidence=evidence, node=node, observation=observation,
+                pit_reference_at=pit_reference_at, attempt_id=attempt_id,
+            )
+            version, predecessor = self._classification_successor(
+                derivation_node_id, pit_reference_at, supersedes_classification_id
+            )
+            connection.execute(
+                """INSERT INTO derivation_node_classification (
+                    derivation_node_classification_id, derivation_node_id,
+                    pit_reference_at, classification_version, record_class,
+                    resolved_record_class, pit_class, classification_basis,
+                    classification_policy_id, evidence_artifact_id,
+                    classified_by_attempt_id, created_at, supersedes_classification_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (classification_id, derivation_node_id, pit_reference_at, version,
+                 record_class, record_class, pit_class, basis,
+                 policy.classification_policy_id, evidence_artifact_id, attempt_id,
+                 _utc_now(), predecessor),
+            )
+        return self.get_node_classification(classification_id)
+
+    def create_derived_node_classification(
+        self, *, attempt_id: str, fence_token: int, derivation_node_id: str,
+        pit_reference_at: str, classification_policy_id: str,
+        parent_classification_ids: tuple[str, ...],
+        supersedes_classification_id: str | None = None,
+        derivation_node_classification_id: str | None = None,
+    ) -> DerivationNodeClassification:
+        _require_timestamp("pit_reference_at", pit_reference_at)
+        classification_id = derivation_node_classification_id or _new_id()
+        _require_uuid4("derivation_node_classification_id", classification_id)
+        if len(parent_classification_ids) != len(set(parent_classification_ids)):
+            raise ClassificationIntegrityError("parent classifications must be unique")
+        with self.transaction() as connection, self._internal_write(), self._classification_construction():
+            self._require_attempt_authority(attempt_id, fence_token)
+            policy = self.get_pit_classification_policy(classification_policy_id)
+            node = self.get_derivation_node(derivation_node_id)
+            if node.node_kind != "NORMALIZED_FACT" or node.entity_type != "artifact":
+                raise ClassificationIntegrityError("derived classification requires NORMALIZED_FACT")
+            required_nodes = {
+                edge.parent_node_id for edge in self.list_derivation_edges(derivation_node_id)
+                if edge.required == 1
+            }
+            parents = [self.get_node_classification(item) for item in parent_classification_ids]
+            if {item.derivation_node_id for item in parents} != required_nodes or len(parents) != len(required_nodes):
+                raise ClassificationIntegrityError("classification parents must exactly cover direct REQUIRED parents")
+            for parent in parents:
+                self.verify_node_classification(parent.derivation_node_classification_id)
+                parent_policy = self.get_pit_classification_policy(parent.classification_policy_id)
+                if parent.pit_reference_at != pit_reference_at or (
+                    parent_policy.policy_kind, parent_policy.policy_version
+                ) != (policy.policy_kind, policy.policy_version):
+                    raise ClassificationIntegrityError("classification parent reference or policy differs")
+            resolved_record = (
+                "LEGACY_NON_LEDGER_ARTIFACT"
+                if any(p.resolved_record_class == "LEGACY_NON_LEDGER_ARTIFACT" for p in parents)
+                else "LEDGER_NATIVE"
+            )
+            pit_class = _fold_pit_classes([p.pit_class for p in parents])
+            version, predecessor = self._classification_successor(
+                derivation_node_id, pit_reference_at, supersedes_classification_id
+            )
+            connection.execute(
+                """INSERT INTO derivation_node_classification VALUES
+                (?, ?, ?, ?, 'LEDGER_NATIVE', ?, ?, 'REQUIRED_PARENT_PROPAGATION',
+                 ?, NULL, ?, ?, ?)""",
+                (classification_id, derivation_node_id, pit_reference_at, version,
+                 resolved_record, pit_class, policy.classification_policy_id,
+                 attempt_id, _utc_now(), predecessor),
+            )
+            for parent in parents:
+                connection.execute(
+                    "INSERT INTO derivation_node_classification_parent VALUES (?, ?)",
+                    (classification_id, parent.derivation_node_classification_id),
+                )
+        return self.get_node_classification(classification_id)
+
+    def get_node_classification(
+        self, derivation_node_classification_id: str, *, verify: bool = True,
+    ) -> DerivationNodeClassification:
+        row = self.connection.execute(
+            "SELECT * FROM derivation_node_classification WHERE derivation_node_classification_id = ?",
+            (derivation_node_classification_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(derivation_node_classification_id)
+        value = _classification_from_row(row)
+        if verify:
+            self.verify_node_classification(derivation_node_classification_id)
+        return value
+
+    def get_current_node_classification(
+        self, derivation_node_id: str, pit_reference_at: str,
+    ) -> DerivationNodeClassification:
+        row = self.connection.execute(
+            """SELECT c.* FROM derivation_node_classification c
+               WHERE c.derivation_node_id = ? AND c.pit_reference_at = ?
+                 AND NOT EXISTS (SELECT 1 FROM derivation_node_classification n
+                                 WHERE n.supersedes_classification_id = c.derivation_node_classification_id)""",
+            (derivation_node_id, pit_reference_at),
+        ).fetchone()
+        if row is None:
+            raise KeyError((derivation_node_id, pit_reference_at))
+        return self.get_node_classification(row["derivation_node_classification_id"])
+
+    def verify_node_classification(self, classification_id: str) -> DerivationNodeClassification:
+        return self._verify_node_classification(classification_id, states={}, memo={})
+
+    def _verify_node_classification(self, classification_id: str, *, states: dict[str, int], memo: dict[str, DerivationNodeClassification]) -> DerivationNodeClassification:
+        if classification_id in memo:
+            return memo[classification_id]
+        if states.get(classification_id) == 1:
+            raise ClassificationIntegrityError("classification ancestry contains a cycle")
+        states[classification_id] = 1
+        row = self.connection.execute("SELECT * FROM derivation_node_classification WHERE derivation_node_classification_id = ?", (classification_id,)).fetchone()
+        if row is None:
+            raise ClassificationIntegrityError("classification ancestry is incomplete")
+        item = _classification_from_row(row)
+        chain_rows = self.connection.execute(
+            """SELECT derivation_node_classification_id, classification_version,
+                      supersedes_classification_id
+               FROM derivation_node_classification
+               WHERE derivation_node_id = ? AND pit_reference_at = ?
+               ORDER BY classification_version""",
+            (item.derivation_node_id, item.pit_reference_at),
+        ).fetchall()
+        expected_predecessor = None
+        for expected_version, chain_row in enumerate(chain_rows, 1):
+            if int(chain_row["classification_version"]) != expected_version or chain_row["supersedes_classification_id"] != expected_predecessor:
+                raise ClassificationIntegrityError("classification supersession chain is invalid")
+            expected_predecessor = str(chain_row["derivation_node_classification_id"])
+        policy = self.get_pit_classification_policy(item.classification_policy_id)
+        node = self.get_derivation_node(item.derivation_node_id)
+        if node.node_kind == "INPUT_OBSERVATION":
+            if self.connection.execute("SELECT 1 FROM derivation_node_classification_parent WHERE child_classification_id = ?", (classification_id,)).fetchone():
+                raise ClassificationIntegrityError("raw classification cannot have parents")
+            observation = self.get_input_observation(node.entity_id)
+            if item.evidence_artifact_id is None:
+                raise ClassificationIntegrityError("raw classification lacks evidence")
+            expected_record, expected_pit, expected_basis = self._validate_raw_evidence(
+                evidence=self.get_artifact(item.evidence_artifact_id), node=node,
+                observation=observation, pit_reference_at=item.pit_reference_at,
+                attempt_id=item.classified_by_attempt_id,
+            )
+            if (item.record_class, item.resolved_record_class, item.pit_class, item.classification_basis) != (expected_record, expected_record, expected_pit, expected_basis):
+                raise ClassificationIntegrityError("stored raw classification differs from evidence")
+        elif node.node_kind == "NORMALIZED_FACT":
+            required = {e.parent_node_id for e in self.list_derivation_edges(node.derivation_node_id) if e.required}
+            parent_rows = self.connection.execute("SELECT parent_classification_id FROM derivation_node_classification_parent WHERE child_classification_id = ? ORDER BY parent_classification_id", (classification_id,)).fetchall()
+            parents = [self._verify_node_classification(str(r[0]), states=states, memo=memo) for r in parent_rows]
+            if {p.derivation_node_id for p in parents} != required or len(parents) != len(required):
+                raise ClassificationIntegrityError("classification parent closure is incomplete")
+            if any(p.pit_reference_at != item.pit_reference_at for p in parents):
+                raise ClassificationIntegrityError("classification references differ")
+            for parent in parents:
+                pp = self.get_pit_classification_policy(parent.classification_policy_id)
+                if (pp.policy_kind, pp.policy_version) != (policy.policy_kind, policy.policy_version):
+                    raise ClassificationIntegrityError("classification policies differ")
+            expected_record = "LEGACY_NON_LEDGER_ARTIFACT" if any(p.resolved_record_class == "LEGACY_NON_LEDGER_ARTIFACT" for p in parents) else "LEDGER_NATIVE"
+            expected_pit = _fold_pit_classes([p.pit_class for p in parents])
+            if (item.record_class, item.resolved_record_class, item.pit_class, item.classification_basis, item.evidence_artifact_id) != ("LEDGER_NATIVE", expected_record, expected_pit, "REQUIRED_PARENT_PROPAGATION", None):
+                raise ClassificationIntegrityError("stored derived classification differs from required ancestry")
+        else:
+            raise ClassificationIntegrityError("unsupported classified node kind")
+        states[classification_id] = 2
+        memo[classification_id] = item
+        return item
+
+    def _verify_classification_policy(self, policy: PitClassificationPolicy) -> None:
+        if (policy.policy_kind, policy.policy_version) != ("PIT_CLASSIFICATION", REQUIRED_ANCESTRY_PIT_V1):
+            raise UnsupportedClassificationPolicy("unsupported classification policy")
+        artifact = self.get_artifact(policy.definition_artifact_id)
+        _require_artifact_envelope(artifact, _POLICY_ARTIFACT_KIND)
+        if json.loads(artifact.payload) != _pit_policy_definition_v1():
+            raise ClassificationIntegrityError("policy definition differs from frozen V1.3")
+
+    def _classification_successor(self, node_id: str, reference: str, requested: str | None) -> tuple[int, str | None]:
+        rows = self.connection.execute("SELECT c.* FROM derivation_node_classification c WHERE c.derivation_node_id = ? AND c.pit_reference_at = ? ORDER BY c.classification_version", (node_id, reference)).fetchall()
+        if not rows:
+            if requested is not None:
+                raise ClassificationIntegrityError("first classification cannot supersede")
+            return 1, None
+        head = next((r for r in rows if not self.connection.execute("SELECT 1 FROM derivation_node_classification WHERE supersedes_classification_id = ?", (r["derivation_node_classification_id"],)).fetchone()), None)
+        if head is None or requested != head["derivation_node_classification_id"]:
+            raise ClassificationIntegrityError("supersession must name the unique current head")
+        return int(head["classification_version"]) + 1, str(head["derivation_node_classification_id"])
+
+    def _validate_raw_evidence(self, *, evidence: Artifact, node: DerivationNode, observation: InputObservation, pit_reference_at: str, attempt_id: str) -> tuple[str, str, str]:
+        _require_artifact_envelope(evidence, _EVIDENCE_ARTIFACT_KIND)
+        try:
+            value = json.loads(evidence.payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ClassificationIntegrityError("invalid classification evidence JSON") from exc
+        if not isinstance(value, dict) or set(value) != _EVIDENCE_KEYS:
+            raise ClassificationIntegrityError("classification evidence must use the closed V1 schema")
+        if value["schema_name"] != "ledger.pit-classification-evidence" or value["schema_version"] != "1" or value["derivation_node_id"] != node.derivation_node_id or value["input_observation_id"] != observation.input_observation_id or value["artifact_id"] != observation.artifact_id or value["pit_reference_at"] != pit_reference_at:
+            raise ClassificationIntegrityError("classification evidence identity does not match raw node")
+        _require_timestamp("evidence pit_reference_at", value["pit_reference_at"])
+        support = value["supporting_artifact_ids"]
+        if not isinstance(support, list) or not all(isinstance(x, str) for x in support) or support != sorted(set(support)) or evidence.artifact_id in support:
+            raise ClassificationIntegrityError("supporting Artifact IDs must be sorted and unique")
+        attached = {r[0] for r in self.connection.execute("SELECT artifact_id FROM attempt_artifact WHERE attempt_id = ? AND role IN ('DIAGNOSTIC','OUTPUT')", (attempt_id,))}
+        if evidence.artifact_id not in attached or not set(support) <= attached:
+            raise ClassificationIntegrityError("classification evidence must be attached to classifying attempt")
+        for artifact_id in support:
+            self.get_artifact(artifact_id)
+        origin = value["record_origin_evidence_kind"]
+        if origin == "LEDGER_AUTHORIZED_CAPTURE":
+            if any(value[k] is not None for k in ("legacy_namespace", "legacy_record_key", "legacy_record_id")):
+                raise ClassificationIntegrityError("native evidence must have null legacy identity")
+            record = "LEDGER_NATIVE"
+        elif origin == "LEGACY_IMPORT":
+            namespace, key, legacy_id = value["legacy_namespace"], value["legacy_record_key"], value["legacy_record_id"]
+            if not isinstance(namespace, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", namespace) or not isinstance(key, str) or not key or "\0" in key:
+                raise ClassificationIntegrityError("invalid legacy identity")
+            digest = hashlib.sha256(canonicalize_json({"legacy_namespace": namespace, "legacy_record_key": key})).hexdigest()
+            if legacy_id != f"legacy:sha256:{digest}":
+                raise ClassificationIntegrityError("legacy_record_id does not match canonical identity")
+            record = "LEGACY_NON_LEDGER_ARTIFACT"
+        else:
+            raise ClassificationIntegrityError("unsupported record-origin evidence")
+        kind = value["pit_evidence_kind"]
+        matrix = {
+            "LEDGER_CONTEMPORANEOUS_CAPTURE": ("LEDGER_AUTHORIZED_CAPTURE_V1", "CONTEMPORANEOUS_CAPTURE_VERIFIED", "ARCHIVED_POINT_IN_TIME", "RAW_ARCHIVE_EVIDENCE"),
+            "INDEPENDENT_ARCHIVE_PROOF": ("INDEPENDENT_ARCHIVE_PROOF_V1", "INDEPENDENT_ARCHIVE_VERIFIED", "ARCHIVED_POINT_IN_TIME", "RAW_ARCHIVE_EVIDENCE"),
+            "POST_REFERENCE_RECONSTRUCTION": ("LEDGER_RECONSTRUCTION_EVIDENCE_V1", "POST_REFERENCE_RECONSTRUCTION_VERIFIED", "RECONSTRUCTED_NOT_ARCHIVED", "RAW_RECONSTRUCTION_EVIDENCE"),
+            "INSUFFICIENT_PIT_EVIDENCE": ("LEDGER_INSUFFICIENT_EVIDENCE_V1", "PIT_EVIDENCE_INSUFFICIENT", "UNKNOWN", "RAW_UNKNOWN_EVIDENCE"),
+            "PIT_IRRELEVANT_CONTENT": ("LEDGER_PIT_IRRELEVANCE_V1", "PIT_NOT_APPLICABLE_BY_ARTIFACT_KIND", "NOT_APPLICABLE", "RAW_NOT_APPLICABLE_EVIDENCE"),
+        }
+        if kind not in matrix or (value["verifier_id"], value["rationale_code"]) != matrix[kind][:2]:
+            raise ClassificationIntegrityError("evidence verifier or rationale is invalid")
+        archive, reconstruction = value["archive_captured_at"], value["reconstruction_completed_at"]
+        for timestamp_name, timestamp_value in (
+            ("archive_captured_at", archive),
+            ("reconstruction_completed_at", reconstruction),
+        ):
+            if timestamp_value is not None:
+                try:
+                    _require_timestamp(timestamp_name, timestamp_value)
+                except ValueError as exc:
+                    raise ClassificationIntegrityError(
+                        f"{timestamp_name} is not a normalized UTC timestamp"
+                    ) from exc
+        if kind == "LEDGER_CONTEMPORANEOUS_CAPTURE":
+            if origin != "LEDGER_AUTHORIZED_CAPTURE" or archive != observation.retrieved_at or archive > pit_reference_at or reconstruction is not None:
+                raise ClassificationIntegrityError("invalid contemporaneous-capture evidence")
+        elif kind == "INDEPENDENT_ARCHIVE_PROOF":
+            if archive is None or reconstruction is not None or not support:
+                raise ClassificationIntegrityError("independent archive proof is incomplete")
+            if archive > pit_reference_at:
+                raise ClassificationIntegrityError("archive proof is after PIT reference")
+        elif kind == "POST_REFERENCE_RECONSTRUCTION":
+            if archive is not None or reconstruction is None or not support:
+                raise ClassificationIntegrityError("reconstruction evidence is incomplete")
+            if not (pit_reference_at < reconstruction <= observation.retrieved_at):
+                raise ClassificationIntegrityError("reconstruction timestamps are invalid")
+        elif kind in {"INSUFFICIENT_PIT_EVIDENCE", "PIT_IRRELEVANT_CONTENT"}:
+            if archive is not None or reconstruction is not None:
+                raise ClassificationIntegrityError("evidence timestamps must be null")
+        if kind == "PIT_IRRELEVANT_CONTENT" and self.get_artifact(observation.artifact_id).artifact_kind != _POLICY_ARTIFACT_KIND:
+            raise ClassificationIntegrityError("Artifact kind is not PIT-irrelevant under policy")
+        return record, matrix[kind][2], matrix[kind][3]
+
     def commit_run(
         self,
         *,
@@ -1153,6 +1595,7 @@ class LedgerStorage:
         output_artifact_ids: tuple[str, ...] = (),
         run_inputs: tuple[RunInputBinding, ...] = (),
         derivation_node_ids: tuple[str, ...] = (),
+        derivation_node_classification_ids: tuple[str, ...] = (),
     ) -> Run:
         """Atomically commit a successful run and its exact derivation closure."""
 
@@ -1160,6 +1603,8 @@ class LedgerStorage:
             raise FinalizationConflict("output artifact IDs must be unique")
         if len(derivation_node_ids) != len(set(derivation_node_ids)):
             raise FinalizationConflict("selected derivation node IDs must be unique")
+        if len(derivation_node_classification_ids) != len(set(derivation_node_classification_ids)):
+            raise FinalizationConflict("classification IDs must be unique")
         sorted_outputs = tuple(sorted(output_artifact_ids))
         selected_nodes = tuple(sorted(derivation_node_ids))
         normalized_inputs = _validate_run_input_bindings(run_inputs)
@@ -1179,16 +1624,20 @@ class LedgerStorage:
             analysis_cutoff_at=request.analysis_cutoff_at,
             expected_run_id=effective_run_id if existing_row is not None else None,
         )
-        policy_references = (
-            (
-                {
-                    "policy_kind": "DERIVATION",
-                    "policy_version": MAX_REQUIRED_PARENTS_V1,
-                },
+        classified = request.request_kind in _CLASSIFIED_REQUEST_KINDS
+        if classified:
+            classification_ids, pit_reference_at, resolved_record, resolved_pit = self._prepare_classification_commit(
+                attempt_id=attempt_id, request=request, selected_node_ids=selected_nodes,
+                classification_ids=tuple(sorted(derivation_node_classification_ids)),
             )
-            if closure_ids
-            else ()
-        )
+        else:
+            if derivation_node_classification_ids:
+                raise FinalizationConflict("unclassified request kind cannot create manifest V2")
+            classification_ids, pit_reference_at, resolved_record, resolved_pit = (), None, None, None
+        policy_references = (() if not closure_ids else (
+            {"policy_kind": "DERIVATION", "policy_version": MAX_REQUIRED_PARENTS_V1},
+            *(({"policy_kind": "PIT_CLASSIFICATION", "policy_version": REQUIRED_ANCESTRY_PIT_V1},) if classified else ()),
+        ))
         manifest_value = _result_manifest_value(
             run_id=effective_run_id,
             request=request,
@@ -1197,10 +1646,15 @@ class LedgerStorage:
             input_observation_ids=input_observation_ids,
             derivation_node_ids=closure_ids,
             policy_references=policy_references,
+            pit_reference_at=pit_reference_at,
+            derivation_node_classification_ids=classification_ids,
+            resolved_record_class=resolved_record,
+            resolved_pit_class=resolved_pit,
         )
         manifest_payload = canonicalize_json(manifest_value)
+        manifest_kind = _MANIFEST_V2_KIND if classified else "ledger.run-result-manifest.v1"
         manifest_id = artifact_id_for(
-            "ledger.run-result-manifest.v1", CANONICAL_JSON_V1, manifest_payload
+            manifest_kind, CANONICAL_JSON_V1, manifest_payload
         )
         if existing_row is not None:
             existing = _run_from_row(existing_row)
@@ -1247,6 +1701,13 @@ class LedgerStorage:
             )
             if checked_closure != closure_ids or checked_inputs != input_observation_ids:
                 raise FinalizationConflict("derivation closure changed during finalization")
+            if classified:
+                checked_classification = self._prepare_classification_commit(
+                    attempt_id=attempt_id, request=request, selected_node_ids=selected_nodes,
+                    classification_ids=tuple(sorted(derivation_node_classification_ids)),
+                )
+                if checked_classification != (classification_ids, pit_reference_at, resolved_record, resolved_pit):
+                    raise FinalizationConflict("classification closure changed during finalization")
             attached_outputs = {
                 row[0]
                 for row in connection.execute(
@@ -1264,7 +1725,7 @@ class LedgerStorage:
             for artifact_id in sorted_outputs:
                 self.get_artifact(artifact_id)
             manifest = self.insert_artifact(
-                artifact_type="ledger.run-result-manifest.v1",
+                artifact_type=manifest_kind,
                 canonicalization_version=CANONICAL_JSON_V1,
                 payload=manifest_payload,
                 media_type="application/json",
@@ -1352,9 +1813,12 @@ class LedgerStorage:
             raise KeyError(run_id)
         run = _run_from_row(row)
         manifest = self.get_artifact(run.result_manifest_artifact_id)
-        if manifest.artifact_kind != "ledger.run-result-manifest.v1":
+        if manifest.artifact_kind not in {"ledger.run-result-manifest.v1", _MANIFEST_V2_KIND}:
             raise ArtifactIntegrityError("run manifest has incorrect artifact kind")
         value = json.loads(manifest.payload)
+        classified = manifest.artifact_kind == _MANIFEST_V2_KIND
+        if value.get("manifest_version") != ("2" if classified else "1"):
+            raise ArtifactIntegrityError("run manifest version does not match Artifact kind")
         list_fields = (
             "output_artifact_ids",
             "input_observation_ids",
@@ -1367,6 +1831,9 @@ class LedgerStorage:
         input_ids = value["input_observation_ids"]
         node_ids = value["derivation_node_ids"]
         policy_references = value["policy_references"]
+        classification_ids = value.get("derivation_node_classification_ids", [])
+        if classified and not isinstance(classification_ids, list):
+            raise ArtifactIntegrityError("run manifest classification closure is malformed")
         if not all(isinstance(item, str) for item in output_ids + input_ids + node_ids):
             raise ArtifactIntegrityError("run manifest identity arrays are malformed")
         expected = _result_manifest_value(
@@ -1377,6 +1844,10 @@ class LedgerStorage:
             input_observation_ids=tuple(input_ids),
             derivation_node_ids=tuple(node_ids),
             policy_references=tuple(policy_references),
+            pit_reference_at=value.get("pit_reference_at") if classified else None,
+            derivation_node_classification_ids=tuple(classification_ids),
+            resolved_record_class=value.get("resolved_record_class") if classified else None,
+            resolved_pit_class=value.get("resolved_pit_class") if classified else None,
         )
         if (
             value != expected
@@ -1413,6 +1884,10 @@ class LedgerStorage:
                     "policy_version": MAX_REQUIRED_PARENTS_V1,
                 }
             ]
+            if classified:
+                expected_policy.append(
+                    {"policy_kind": "PIT_CLASSIFICATION", "policy_version": REQUIRED_ANCESTRY_PIT_V1}
+                )
             if policy_references != expected_policy:
                 raise ArtifactIntegrityError("run manifest derivation policy is invalid")
             manifest_nodes = set(node_ids)
@@ -1436,7 +1911,82 @@ class LedgerStorage:
         }
         if set(input_ids) != stored_input_ids:
             raise ArtifactIntegrityError("manifest input-observation closure is incomplete")
+        if classified:
+            manifest_nodes = set(node_ids)
+            parent_nodes = {
+                edge.parent_node_id
+                for node_id in node_ids
+                for edge in self.list_derivation_edges(node_id)
+                if edge.parent_node_id in manifest_nodes
+            }
+            roots = tuple(sorted(manifest_nodes - parent_nodes))
+            try:
+                prepared = self._prepare_classification_commit(
+                    attempt_id=run.attempt_id,
+                    request=self.get_run_request(run.run_request_id),
+                    selected_node_ids=roots,
+                    classification_ids=tuple(classification_ids),
+                )
+            except (ClassificationIntegrityError, FinalizationConflict, KeyError) as exc:
+                raise ArtifactIntegrityError("run classification closure is invalid") from exc
+            if prepared != (
+                tuple(classification_ids), value["pit_reference_at"],
+                value["resolved_record_class"], value["resolved_pit_class"],
+            ):
+                raise ArtifactIntegrityError("run classification result is invalid")
         return run
+
+    def get_run_classification_status(self, run_id: str) -> str:
+        run = self.get_run(run_id)
+        artifact = self.get_artifact(run.result_manifest_artifact_id)
+        return "CLASSIFIED" if artifact.artifact_kind == _MANIFEST_V2_KIND else "UNCLASSIFIED"
+
+    def _prepare_classification_commit(
+        self, *, attempt_id: str, request: RunRequest,
+        selected_node_ids: tuple[str, ...], classification_ids: tuple[str, ...],
+    ) -> tuple[tuple[str, ...], str, str, str]:
+        if not selected_node_ids:
+            raise FinalizationConflict("classified run requires selected derivation roots")
+        required_nodes: set[str] = set()
+        for node_id in selected_node_ids:
+            required_nodes.update(self._derivation_closure((node_id,), required_only=True))
+        classifications = [self.verify_node_classification(item) for item in classification_ids]
+        by_node = {item.derivation_node_id: item for item in classifications}
+        if len(by_node) != len(classifications) or set(by_node) != required_nodes:
+            raise FinalizationConflict("classification IDs must exactly cover REQUIRED node closure")
+        if any(item.classified_by_attempt_id != attempt_id for item in classifications):
+            raise FinalizationConflict("classification belongs to a different consuming attempt")
+        references = {item.pit_reference_at for item in classifications}
+        if len(references) != 1:
+            raise FinalizationConflict("classification closure must share one PIT reference")
+        reference = next(iter(references))
+        policies = {
+            (p.policy_kind, p.policy_version)
+            for p in (
+                self.get_pit_classification_policy(item.classification_policy_id)
+                for item in classifications
+            )
+        }
+        if policies != {("PIT_CLASSIFICATION", REQUIRED_ANCESTRY_PIT_V1)}:
+            raise FinalizationConflict("classification closure uses unsupported policy")
+        expected_reference = _request_pit_reference(request)
+        if reference != expected_reference:
+            raise FinalizationConflict("classification PIT reference differs from request")
+        roots = [by_node[node_id] for node_id in selected_node_ids]
+        resolved_record = (
+            "LEGACY_NON_LEDGER_ARTIFACT"
+            if any(item.resolved_record_class == "LEGACY_NON_LEDGER_ARTIFACT" for item in roots)
+            else "LEDGER_NATIVE"
+        )
+        resolved_pit = _fold_pit_classes([item.pit_class for item in roots])
+        allowed = {
+            "PIT_SAFE_DECISION": {"ARCHIVED_POINT_IN_TIME", "NOT_APPLICABLE"},
+            "RECONSTRUCTION": {"ARCHIVED_POINT_IN_TIME", "RECONSTRUCTED_NOT_ARCHIVED", "NOT_APPLICABLE"},
+            "EXPLORATORY_NON_PIT": {"ARCHIVED_POINT_IN_TIME", "RECONSTRUCTED_NOT_ARCHIVED", "NOT_APPLICABLE", "UNKNOWN"},
+        }[request.request_kind]
+        if resolved_pit not in allowed:
+            raise FinalizationConflict("resolved PIT class is forbidden for request kind")
+        return tuple(sorted(classification_ids)), reference, resolved_record, resolved_pit
 
     def _prepare_derivation_commit(
         self,
@@ -1986,6 +2536,91 @@ def _derivation_edge_from_row(row: sqlite3.Row) -> DerivationEdge:
     )
 
 
+def _classification_policy_from_row(row: sqlite3.Row) -> PitClassificationPolicy:
+    return PitClassificationPolicy(
+        **{field: row[field] for field in PitClassificationPolicy.__dataclass_fields__}
+    )
+
+
+def _classification_from_row(row: sqlite3.Row) -> DerivationNodeClassification:
+    return DerivationNodeClassification(
+        **{field: row[field] for field in DerivationNodeClassification.__dataclass_fields__}
+    )
+
+
+def _require_uuid4(name: str, value: object) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a lowercase UUIDv4")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"{name} must be a lowercase UUIDv4") from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise ValueError(f"{name} must be a lowercase UUIDv4")
+
+
+def _require_artifact_envelope(artifact: Artifact, artifact_kind: str) -> None:
+    if (artifact.artifact_kind, artifact.canonicalization_version, artifact.media_type) != (
+        artifact_kind, CANONICAL_JSON_V1, "application/json"
+    ):
+        raise ClassificationIntegrityError("Artifact envelope differs from frozen V1.3")
+
+
+def _validate_classified_request_parameters(
+    request_kind: str, analysis_cutoff_at: str, parameters: Any
+) -> None:
+    if request_kind not in _CLASSIFIED_REQUEST_KINDS:
+        return
+    if not isinstance(parameters, dict):
+        raise ValueError("classification-aware request parameters must be an object")
+    historical = parameters.get("historical_as_of_at")
+    explicit = parameters.get("pit_reference_at")
+    if request_kind == "PIT_SAFE_DECISION":
+        if "historical_as_of_at" in parameters or "pit_reference_at" in parameters:
+            raise ValueError("PIT_SAFE_DECISION forbids explicit reference parameters")
+    elif request_kind == "RECONSTRUCTION":
+        if "historical_as_of_at" not in parameters or "pit_reference_at" in parameters:
+            raise ValueError("RECONSTRUCTION requires only historical_as_of_at")
+        _require_timestamp("historical_as_of_at", historical)
+        if historical > analysis_cutoff_at:
+            raise ValueError("historical_as_of_at exceeds analysis cutoff")
+    else:
+        if "pit_reference_at" not in parameters or "historical_as_of_at" in parameters:
+            raise ValueError("EXPLORATORY_NON_PIT requires only pit_reference_at")
+        _require_timestamp("pit_reference_at", explicit)
+        if explicit > analysis_cutoff_at:
+            raise ValueError("pit_reference_at exceeds analysis cutoff")
+
+
+def _request_pit_reference(request: RunRequest) -> str:
+    parameters = json.loads(request.parameters_json)
+    _validate_classified_request_parameters(
+        request.request_kind, request.analysis_cutoff_at, parameters
+    )
+    if request.request_kind == "PIT_SAFE_DECISION":
+        return request.analysis_cutoff_at
+    if request.request_kind == "RECONSTRUCTION":
+        return str(parameters["historical_as_of_at"])
+    if request.request_kind == "EXPLORATORY_NON_PIT":
+        return str(parameters["pit_reference_at"])
+    raise FinalizationConflict("request kind is not classification-aware")
+
+
+def _fold_pit_classes(values: list[str]) -> str:
+    if not values:
+        raise ClassificationIntegrityError("derived classification requires a parent")
+    rank = {
+        "NOT_APPLICABLE": 0,
+        "ARCHIVED_POINT_IN_TIME": 1,
+        "RECONSTRUCTED_NOT_ARCHIVED": 2,
+        "UNKNOWN": 3,
+    }
+    try:
+        return max(values, key=rank.__getitem__)
+    except KeyError as exc:
+        raise ClassificationIntegrityError("unsupported PIT class") from exc
+
+
 def _request_fingerprint(
     *,
     request_kind: str,
@@ -2020,9 +2655,14 @@ def _result_manifest_value(
     input_observation_ids: tuple[str, ...] = (),
     derivation_node_ids: tuple[str, ...] = (),
     policy_references: tuple[dict[str, str], ...] = (),
+    pit_reference_at: str | None = None,
+    derivation_node_classification_ids: tuple[str, ...] = (),
+    resolved_record_class: str | None = None,
+    resolved_pit_class: str | None = None,
 ) -> dict[str, Any]:
-    return {
-        "manifest_version": "1",
+    classified = pit_reference_at is not None
+    value = {
+        "manifest_version": "2" if classified else "1",
         "run_id": run_id,
         "run_request_id": request.run_request_id,
         "attempt_id": attempt.attempt_id,
@@ -2041,6 +2681,18 @@ def _result_manifest_value(
         "trade_ids": [],
         "outcome_ids": [],
     }
+    if classified:
+        value.update(
+            {
+                "pit_reference_at": pit_reference_at,
+                "derivation_node_classification_ids": list(
+                    derivation_node_classification_ids
+                ),
+                "resolved_record_class": resolved_record_class,
+                "resolved_pit_class": resolved_pit_class,
+            }
+        )
+    return value
 
 
 def _new_id(*, excluding: set[str] | None = None) -> str:
