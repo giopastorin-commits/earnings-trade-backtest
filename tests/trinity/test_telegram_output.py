@@ -15,6 +15,7 @@ from trinity.notifications.telegram import (
     render_telegram_message,
     send_telegram_message,
 )
+from trinity.pilots.jnj_telegram import materialize_jnj_telegram_pilot
 from trinity.usa_setup_v1 import build_setup
 
 
@@ -281,3 +282,32 @@ def test_jnj_exact_message_content_uses_existing_deterministic_fixture():
         "RECONSTRUCTED_NOT_ARCHIVED", "LEGACY_NON_LEDGER_ARTIFACT",
     ):
         assert expected in text
+
+
+def test_jnj_pilot_materializer_creates_committed_no_network_ledger(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda *_args, **_kwargs: pytest.fail("pilot materializer attempted network"),
+    )
+    path = tmp_path / "jnj-telegram-pilot.sqlite3"
+    identities = materialize_jnj_telegram_pilot(path)
+    assert identities.ledger_db == path.resolve()
+    assert path.exists()
+    from trinity.ledger import LedgerStorage
+
+    with LedgerStorage.open(path) as storage:
+        notification = load_committed_setup(
+            storage,
+            setup_id=identities.setup_id,
+            run_id=identities.run_id,
+        )
+        assert notification.research_id == identities.research_id
+        assert notification.resolved_pit_class == "RECONSTRUCTED_NOT_ARCHIVED"
+        assert notification.resolved_record_class == "LEGACY_NON_LEDGER_ARTIFACT"
+        assert "Setup: PULLBACK" in render_telegram_message(notification)
+        assert storage.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    with pytest.raises(FileExistsError):
+        materialize_jnj_telegram_pilot(path)
