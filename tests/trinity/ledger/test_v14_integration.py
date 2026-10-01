@@ -39,6 +39,10 @@ from trinity.ledger.schema import (
     research_llm_setup_migration,
     temporal_derivation_dag_migration,
 )
+from trinity.notifications.telegram import (
+    load_committed_setup,
+    render_telegram_message,
+)
 from trinity.usa_setup_v1 import build_setup
 
 
@@ -561,6 +565,16 @@ def test_jnj_v14_end_to_end_vertical_slice(tmp_path):
         assert manifest["resolved_pit_class"] == "RECONSTRUCTED_NOT_ARCHIVED"
         assert storage.get_research_record(research.research_id).run_id == run.run_id
         assert storage.get_setup(setup.setup_id).run_id == run.run_id
+        telegram_text = render_telegram_message(load_committed_setup(
+            storage, setup_id=setup.setup_id, run_id=run.run_id
+        ))
+        for expected in (
+            "JNJ", "PULLBACK", "UPTREND", "INVESTIGATE", "HIGH", "MEDIUM",
+            "264.022", "256.1417", "281.07", "287.6628", "2.16", "3.00",
+            "UPTREND_CONFIRMED", "SMA_SUPPORT_NEARBY",
+            "RECONSTRUCTED_NOT_ARCHIVED", "LEGACY_NON_LEDGER_ARTIFACT",
+        ):
+            assert expected in telegram_text
         assert storage.commit_run(**commit_arguments).run_id == run.run_id
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             storage.connection.execute(
