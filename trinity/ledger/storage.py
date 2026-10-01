@@ -20,6 +20,15 @@ from .canonical import (
     canonicalize_json_document,
     canonicalize_opaque,
 )
+from .contracts_v14 import (
+    RESEARCH_METHOD_DEFINITION,
+    SETUP_POLICY_DEFINITION,
+    analyst_response_schema,
+    critic_response_schema,
+    setup_rule_values,
+    validate_effective_prompt,
+    validate_json_artifact,
+)
 from .errors import (
     ArtifactIntegrityError,
     ArtifactMetadataConflict,
@@ -70,14 +79,18 @@ _SOURCE_METADATA_KEYS = frozenset(
 )
 MAX_REQUIRED_PARENTS_V1 = "MAX_REQUIRED_PARENTS_V1"
 REQUIRED_ANCESTRY_PIT_V1 = "REQUIRED_ANCESTRY_PIT_V1"
+REQUIRED_ANCESTRY_PIT_V2 = "REQUIRED_ANCESTRY_PIT_V2"
 _SUPPORTED_NODE_MAPPINGS = {
     "INPUT_OBSERVATION": "input_observation",
     "NORMALIZED_FACT": "artifact",
+    "RESEARCH": "research_record",
+    "SETUP": "setup",
 }
-_RESERVED_NODE_KINDS = {"RESEARCH", "SETUP", "ELIGIBILITY", "OUTCOME"}
+_RESERVED_NODE_KINDS = {"ELIGIBILITY", "OUTCOME"}
 _POLICY_ARTIFACT_KIND = "ledger.pit-classification-policy-definition.v1"
 _EVIDENCE_ARTIFACT_KIND = "ledger.pit-classification-evidence.v1"
 _MANIFEST_V2_KIND = "ledger.run-result-manifest.v2"
+_MANIFEST_V3_KIND = "ledger.run-result-manifest.v3"
 _CLASSIFIED_REQUEST_KINDS = {
     "PIT_SAFE_DECISION", "RECONSTRUCTION", "EXPLORATORY_NON_PIT"
 }
@@ -152,6 +165,16 @@ def _pit_policy_definition_v1() -> dict[str, Any]:
 def pit_classification_policy_definition_v1() -> dict[str, Any]:
     """Return a fresh value for the frozen V1.3 policy-definition Artifact."""
     return _pit_policy_definition_v1()
+
+
+def pit_classification_policy_definition_v2() -> dict[str, Any]:
+    """Return a fresh value for the frozen V1.4 policy-definition Artifact."""
+    value = json.loads(json.dumps(_pit_policy_definition_v1()))
+    value["policy_version"] = REQUIRED_ANCESTRY_PIT_V2
+    value["not_applicable_artifact_kinds"] = [
+        "ledger.llm-raw-response.v1", _POLICY_ARTIFACT_KIND,
+    ]
+    return value
 
 
 @dataclass(frozen=True)
@@ -305,6 +328,87 @@ class DerivationNodeClassification:
     classified_by_attempt_id: str
     created_at: str
     supersedes_classification_id: str | None
+
+
+@dataclass(frozen=True)
+class ResearchMethod:
+    research_method_id: str
+    research_kind: str
+    method_version: str
+    definition_artifact_id: str
+    code_commit: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class LLMInteraction:
+    llm_interaction_id: str
+    attempt_id: str
+    ordinal: int
+    provider: str
+    model: str
+    model_version: str
+    request_artifact_id: str
+    response_artifact_id: str | None
+    error_artifact_id: str | None
+    status: str
+    started_at: str
+    finished_at: str
+    input_tokens: int | None
+    output_tokens: int | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ResearchRecord:
+    research_id: str
+    attempt_id: str
+    run_id: str | None
+    research_kind: str
+    subject_key: str
+    content_artifact_id: str
+    research_method_id: str
+    method_version: str
+    as_of_at: str
+    derivation_node_id: str
+    supersedes_research_id: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class SetupPolicy:
+    setup_policy_id: str
+    policy_kind: str
+    policy_version: str
+    definition_artifact_id: str
+    code_commit: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class Setup:
+    setup_id: str
+    attempt_id: str
+    run_id: str | None
+    instrument_id: str
+    direction: str
+    setup_kind: str
+    signal_at: str
+    entry_rule_json: str
+    stop_rule_json: str
+    target_rule_json: str
+    valid_from: str | None
+    expires_at: str | None
+    invalidates_at: str | None
+    setup_policy_id: str
+    setup_policy_version: str
+    result_artifact_id: str
+    derivation_node_id: str
+    currency: str
+    venue_id: str
+    calendar_id: str
+    price_adjustment: str
+    created_at: str
 
 
 def artifact_preimage(
@@ -1267,11 +1371,407 @@ class LedgerStorage:
             self.get_artifact(artifact_id)
             return self._attach_attempt_artifact(attempt_id, artifact_id, role, _utc_now())
 
+    def validate_v14_artifact(self, artifact_id: str) -> Any:
+        """Validate one frozen V1.4 structured or byte-preserving Artifact."""
+        artifact = self.get_artifact(artifact_id)
+        if artifact.artifact_kind == "ledger.llm-effective-prompt.v1":
+            validate_effective_prompt(artifact)
+            return artifact.payload
+        return validate_json_artifact(artifact, resolver=self.get_artifact)
+
+    def register_research_method(
+        self, *, definition_artifact_id: str, code_commit: str,
+        research_method_id: str | None = None,
+    ) -> ResearchMethod:
+        method_id = research_method_id or _new_id()
+        _require_uuid4("research_method_id", method_id)
+        if not re.fullmatch(r"[0-9a-f]{40}", code_commit or ""):
+            raise ArtifactIntegrityError("code_commit must be 40 lowercase hexadecimal characters")
+        artifact = self.get_artifact(definition_artifact_id)
+        value = validate_json_artifact(artifact, resolver=self.get_artifact)
+        if value != RESEARCH_METHOD_DEFINITION:
+            raise ArtifactIntegrityError("Research method definition differs")
+        with self.transaction() as connection, self._internal_write():
+            connection.execute(
+                "INSERT INTO research_method VALUES (?, 'TRINITY_USA_RESEARCH', 'USA_V2', ?, ?, ?)",
+                (method_id, definition_artifact_id, code_commit, _utc_now()),
+            )
+        return self.get_research_method(method_id)
+
+    def get_research_method(self, research_method_id: str) -> ResearchMethod:
+        row = self.connection.execute(
+            "SELECT * FROM research_method WHERE research_method_id = ?",
+            (research_method_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(research_method_id)
+        result = _research_method_from_row(row)
+        if validate_json_artifact(self.get_artifact(result.definition_artifact_id)) != RESEARCH_METHOD_DEFINITION:
+            raise ArtifactIntegrityError("stored Research method differs")
+        return result
+
+    def register_setup_policy(
+        self, *, definition_artifact_id: str, code_commit: str,
+        setup_policy_id: str | None = None,
+    ) -> SetupPolicy:
+        policy_id = setup_policy_id or _new_id()
+        _require_uuid4("setup_policy_id", policy_id)
+        if not re.fullmatch(r"[0-9a-f]{40}", code_commit or ""):
+            raise ArtifactIntegrityError("code_commit must be 40 lowercase hexadecimal characters")
+        artifact = self.get_artifact(definition_artifact_id)
+        value = validate_json_artifact(artifact, resolver=self.get_artifact)
+        if value != SETUP_POLICY_DEFINITION:
+            raise ArtifactIntegrityError("Setup policy definition differs")
+        with self.transaction() as connection, self._internal_write():
+            connection.execute(
+                "INSERT INTO setup_policy VALUES (?, 'SETUP', 'USA_SETUP_V1', ?, ?, ?)",
+                (policy_id, definition_artifact_id, code_commit, _utc_now()),
+            )
+        return self.get_setup_policy(policy_id)
+
+    def get_setup_policy(self, setup_policy_id: str) -> SetupPolicy:
+        row = self.connection.execute(
+            "SELECT * FROM setup_policy WHERE setup_policy_id = ?", (setup_policy_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(setup_policy_id)
+        result = _setup_policy_from_row(row)
+        if validate_json_artifact(self.get_artifact(result.definition_artifact_id)) != SETUP_POLICY_DEFINITION:
+            raise ArtifactIntegrityError("stored Setup policy differs")
+        return result
+
+    def create_llm_interaction(
+        self, *, attempt_id: str, fence_token: int, ordinal: int,
+        request_artifact_id: str, status: str, started_at: str, finished_at: str,
+        response_artifact_id: str | None = None, error_artifact_id: str | None = None,
+        input_tokens: int | None = None, output_tokens: int | None = None,
+        llm_interaction_id: str | None = None,
+    ) -> LLMInteraction:
+        interaction_id = llm_interaction_id or _new_id()
+        _require_uuid4("llm_interaction_id", interaction_id)
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal <= 0:
+            raise ValueError("ordinal must be positive")
+        _require_timestamp("started_at", started_at); _require_timestamp("finished_at", finished_at)
+        if finished_at < started_at:
+            raise ValueError("finished_at precedes started_at")
+        request = self.get_artifact(request_artifact_id)
+        request_value = validate_json_artifact(request, resolver=self.get_artifact)
+        role = request_value["interaction_role"]
+        context_value = validate_json_artifact(
+            self.get_artifact(request_value["context_artifact_id"]), resolver=self.get_artifact
+        )
+        if context_value["interaction_role"] != role:
+            raise ArtifactIntegrityError("request/context interaction role differs")
+        response_schema = validate_json_artifact(
+            self.get_artifact(request_value["response_schema_artifact_id"]), resolver=self.get_artifact
+        )
+        expected_schema = analyst_response_schema() if role == "ANALYST" else critic_response_schema()
+        if response_schema != expected_schema:
+            raise ArtifactIntegrityError("request response schema differs from interaction role")
+        parameters = validate_json_artifact(
+            self.get_artifact(request_value["invocation_parameters_artifact_id"]), resolver=self.get_artifact
+        )
+        if parameters["response_schema_artifact_id"] != request_value["response_schema_artifact_id"]:
+            raise ArtifactIntegrityError("request and invocation parameters name different schemas")
+        for item in context_value["items"]:
+            context_node = self.get_derivation_node(item["derivation_node_id"])
+            if context_node.node_kind != "NORMALIZED_FACT" or context_node.entity_id != item["artifact_id"]:
+                raise ArtifactIntegrityError("context Artifact and derivation node differ")
+        if role == "CRITIC":
+            analyst_stage_id = context_value["items"][1]["artifact_id"]
+            analyst_stage = validate_json_artifact(self.get_artifact(analyst_stage_id), resolver=self.get_artifact)
+            try:
+                analyst_interaction = self.get_llm_interaction(analyst_stage["llm_interaction_id"])
+            except KeyError as exc:
+                raise ArtifactIntegrityError("Critic context names unknown Analyst interaction") from exc
+            analyst_success = validate_json_artifact(
+                self.get_artifact(analyst_interaction.response_artifact_id or ""), resolver=self.get_artifact
+            )
+            if analyst_interaction.status != "SUCCEEDED" or analyst_success["effective_stage_result_artifact_id"] != analyst_stage_id:
+                raise ArtifactIntegrityError("Critic context does not name exact successful Analyst stage")
+        if status == "SUCCEEDED":
+            if response_artifact_id is None or error_artifact_id is not None:
+                raise ArtifactIntegrityError("successful interaction requires only success Artifact")
+            result = self.get_artifact(response_artifact_id)
+            result_value = validate_json_artifact(result, resolver=self.get_artifact)
+            if result.artifact_kind != "ledger.llm-invocation-success.v1" or result_value["llm_interaction_id"] != interaction_id:
+                raise ArtifactIntegrityError("success bundle interaction identity differs")
+            parsed = validate_json_artifact(
+                self.get_artifact(result_value["parsed_response_artifact_id"]),
+                resolver=self.get_artifact,
+            )
+            stage = validate_json_artifact(
+                self.get_artifact(result_value["effective_stage_result_artifact_id"]),
+                resolver=self.get_artifact,
+            )
+            if (
+                parsed["interaction_role"] != role or stage["interaction_role"] != role
+                or stage["llm_interaction_id"] != interaction_id
+                or parsed["raw_response_artifact_id"] != result_value["raw_response_artifact_id"]
+                or parsed["response_schema_artifact_id"] != request_value["response_schema_artifact_id"]
+                or stage["parsed_response_artifact_id"] != result_value["parsed_response_artifact_id"]
+            ):
+                raise ArtifactIntegrityError("LLM success role or stage identity differs")
+        elif status == "FAILED":
+            if error_artifact_id is None or response_artifact_id is not None:
+                raise ArtifactIntegrityError("failed interaction requires only error Artifact")
+            error = self.get_artifact(error_artifact_id)
+            error_value = validate_json_artifact(error, resolver=self.get_artifact)
+            if error.artifact_kind != "ledger.llm-error.v1" or error_value["llm_interaction_id"] != interaction_id:
+                raise ArtifactIntegrityError("error bundle interaction identity differs")
+        else:
+            raise ArtifactIntegrityError("unsupported interaction status")
+        for name, value in (("input_tokens", input_tokens), ("output_tokens", output_tokens)):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise ValueError(f"{name} must be nonnegative integer or null")
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            connection.execute(
+                """INSERT INTO llm_interaction VALUES
+                (?, ?, ?, 'OPENAI_CODEX_CLI', 'gpt-5.6-sol', 'codex-cli:gpt-5.6-sol',
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (interaction_id, attempt_id, ordinal, request_artifact_id,
+                 response_artifact_id, error_artifact_id, status, started_at, finished_at,
+                 input_tokens, output_tokens, _utc_now()),
+            )
+        return self.get_llm_interaction(interaction_id)
+
+    def get_llm_interaction(self, llm_interaction_id: str) -> LLMInteraction:
+        row = self.connection.execute(
+            "SELECT * FROM llm_interaction WHERE llm_interaction_id = ?",
+            (llm_interaction_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(llm_interaction_id)
+        return _llm_interaction_from_row(row)
+
+    def create_research_record(
+        self, *, attempt_id: str, fence_token: int, subject_key: str,
+        content_artifact_id: str, research_method_id: str, as_of_at: str,
+        parents: tuple[DerivationParent, ...],
+        llm_links: tuple[tuple[str, str, int], ...],
+        research_id: str | None = None, derivation_node_id: str | None = None,
+    ) -> ResearchRecord:
+        research_identity = research_id or _new_id()
+        node_id = derivation_node_id or _new_id(excluding={research_identity})
+        _require_uuid4("research_id", research_identity)
+        _require_text("derivation_node_id", node_id); _require_text("subject_key", subject_key)
+        _require_timestamp("as_of_at", as_of_at)
+        normalized_parents = _validate_derivation_parents(parents)
+        if not any(item.required for item in normalized_parents):
+            raise DerivationIntegrityError("Research requires a REQUIRED parent")
+        method = self.get_research_method(research_method_id)
+        content = self.get_artifact(content_artifact_id)
+        content_value = validate_json_artifact(content, resolver=self.get_artifact)
+        if content.artifact_kind != "ledger.usa-v2-research-result.v1":
+            raise ArtifactIntegrityError("Research content has wrong Artifact kind")
+        if subject_key != f"ticker:{content_value['ticker']}":
+            raise ArtifactIntegrityError("Research subject differs from semantic content")
+        if as_of_at[:10] != content_value["as_of"]:
+            raise ArtifactIntegrityError("Research reference date differs from semantic content")
+        if not isinstance(llm_links, tuple) or len(llm_links) != 2:
+            raise ArtifactIntegrityError("USA_V2 Research requires exact Analyst and Critic links")
+        expected_links = {("PRIMARY", 1), ("CRITIQUE", 1)}
+        if {(item[1], item[2]) for item in llm_links} != expected_links:
+            raise ArtifactIntegrityError("Research LLM roles differ from frozen pilot")
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            parent_nodes = self._validated_attempt_local_parents(
+                attempt_id, node_id, normalized_parents
+            )
+            required_artifacts = {
+                node.entity_id for key, node in parent_nodes.items()
+                if next(p for p in normalized_parents if p.parent_node_id == key).required
+                and node.node_kind == "NORMALIZED_FACT"
+            }
+            stage_results: dict[str, dict[str, Any]] = {}
+            for interaction_id, role, ordinal in llm_links:
+                interaction = self.get_llm_interaction(interaction_id)
+                if interaction.attempt_id != attempt_id or interaction.status != "SUCCEEDED":
+                    raise ArtifactIntegrityError("Research interaction is not successful same-attempt evidence")
+                request_value = validate_json_artifact(
+                    self.get_artifact(interaction.request_artifact_id),
+                    resolver=self.get_artifact,
+                )
+                expected_interaction_role = "ANALYST" if role == "PRIMARY" else "CRITIC"
+                if request_value["interaction_role"] != expected_interaction_role:
+                    raise ArtifactIntegrityError("Research LLM role does not match interaction role")
+                success = validate_json_artifact(
+                    self.get_artifact(interaction.response_artifact_id or ""),
+                    resolver=self.get_artifact,
+                )
+                if success["effective_stage_result_artifact_id"] not in required_artifacts:
+                    raise DerivationIntegrityError("Research lacks required effective LLM stage node")
+                stage = validate_json_artifact(
+                    self.get_artifact(success["effective_stage_result_artifact_id"]),
+                    resolver=self.get_artifact,
+                )
+                stage_results[expected_interaction_role] = stage["result"]
+            _validate_research_stage_projection(
+                content_value, stage_results["ANALYST"], stage_results["CRITIC"]
+            )
+            derived_at = max(
+                parent_nodes[item.parent_node_id].derived_available_at
+                for item in normalized_parents if item.required
+            )
+            connection.execute(
+                """INSERT INTO research_record VALUES
+                (?, ?, NULL, 'TRINITY_USA_RESEARCH', ?, ?, ?, 'USA_V2', ?, ?, NULL, ?)""",
+                (research_identity, attempt_id, subject_key, content_artifact_id,
+                 method.research_method_id, as_of_at, node_id, _utc_now()),
+            )
+            self._insert_derivation_edges(node_id, normalized_parents, attempt_id)
+            connection.execute(
+                """INSERT INTO derivation_node VALUES
+                (?, NULL, ?, 'RESEARCH', 'research_record', ?, NULL, ?, ?)""",
+                (node_id, attempt_id, research_identity, derived_at, MAX_REQUIRED_PARENTS_V1),
+            )
+            for interaction_id, role, ordinal in llm_links:
+                connection.execute(
+                    "INSERT INTO research_llm_interaction VALUES (?, ?, ?, ?)",
+                    (research_identity, interaction_id, role, ordinal),
+                )
+        return self.get_research_record(research_identity)
+
+    def get_research_record(self, research_id: str, *, verify: bool = True) -> ResearchRecord:
+        row = self.connection.execute(
+            "SELECT * FROM research_record WHERE research_id = ?", (research_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(research_id)
+        result = _research_record_from_row(row)
+        if not verify:
+            return result
+        node = self.get_derivation_node(result.derivation_node_id)
+        if (node.node_kind, node.entity_type, node.entity_id, node.attempt_id, node.run_id) != (
+            "RESEARCH", "research_record", result.research_id, result.attempt_id, result.run_id
+        ):
+            raise DerivationIntegrityError("Research entity/node identity differs")
+        self.get_research_method(result.research_method_id)
+        content = validate_json_artifact(
+            self.get_artifact(result.content_artifact_id), resolver=self.get_artifact
+        )
+        if (
+            result.subject_key != f"ticker:{content['ticker']}"
+            or result.as_of_at[:10] != content["as_of"]
+        ):
+            raise ArtifactIntegrityError("Research entity/content identity differs")
+        return result
+
+    def create_setup(
+        self, *, attempt_id: str, fence_token: int, instrument_id: str,
+        setup_kind: str, signal_at: str, setup_policy_id: str,
+        result_artifact_id: str, research_id: str,
+        research_derivation_node_id: str, ohlcv_derivation_node_id: str,
+        setup_id: str | None = None, derivation_node_id: str | None = None,
+    ) -> Setup:
+        setup_identity = setup_id or _new_id()
+        node_id = derivation_node_id or _new_id(excluding={setup_identity})
+        _require_uuid4("setup_id", setup_identity); _require_text("derivation_node_id", node_id)
+        _require_text("instrument_id", instrument_id); _require_timestamp("signal_at", signal_at)
+        policy = self.get_setup_policy(setup_policy_id)
+        result_artifact = self.get_artifact(result_artifact_id)
+        result = validate_json_artifact(result_artifact, resolver=self.get_artifact)
+        if result_artifact.artifact_kind != "ledger.usa-setup-v1-result.v1" or result["setup_type"] != setup_kind:
+            raise ArtifactIntegrityError("Setup result identity differs")
+        if result["ticker"] != instrument_id:
+            raise ArtifactIntegrityError("Setup entity differs from semantic result")
+        research = self.get_research_record(research_id)
+        if research.derivation_node_id != research_derivation_node_id:
+            raise DerivationIntegrityError("Setup Research node differs from exact Research")
+        ohlcv = self.get_derivation_node(ohlcv_derivation_node_id)
+        if ohlcv.node_kind != "NORMALIZED_FACT" or ohlcv.entity_type != "artifact":
+            raise DerivationIntegrityError("Setup OHLCV parent must be NORMALIZED_FACT")
+        rules = setup_rule_values(setup_kind)
+        parents = (
+            DerivationParent(research_derivation_node_id, "RESEARCH", True),
+            DerivationParent(ohlcv_derivation_node_id, "OHLCV", True),
+        )
+        normalized_parents = _validate_derivation_parents(parents)
+        with self.transaction() as connection, self._internal_write():
+            self._require_attempt_authority(attempt_id, fence_token)
+            if research.attempt_id != attempt_id or research.run_id is not None:
+                raise DerivationIntegrityError("Setup Research must be same-attempt and unbound")
+            parent_nodes = self._validated_attempt_local_parents(
+                attempt_id, node_id, normalized_parents
+            )
+            derived_at = max(item.derived_available_at for item in parent_nodes.values())
+            connection.execute(
+                """INSERT INTO setup VALUES
+                (?, ?, NULL, ?, 'LONG', ?, ?, ?, ?, ?, NULL, NULL, NULL,
+                 ?, 'USA_SETUP_V1', ?, ?, 'USD', 'XNYS',
+                 'XNYS_PROVIDED_SESSIONS_V1', 'RAW', ?)""",
+                (setup_identity, attempt_id, instrument_id, setup_kind, signal_at,
+                 *rules, policy.setup_policy_id, result_artifact_id, node_id, _utc_now()),
+            )
+            connection.execute(
+                "INSERT INTO setup_research_lineage VALUES (?, ?, 'PRIMARY', ?)",
+                (setup_identity, research_id, research_derivation_node_id),
+            )
+            self._insert_derivation_edges(node_id, normalized_parents, attempt_id)
+            connection.execute(
+                """INSERT INTO derivation_node VALUES
+                (?, NULL, ?, 'SETUP', 'setup', ?, NULL, ?, ?)""",
+                (node_id, attempt_id, setup_identity, derived_at, MAX_REQUIRED_PARENTS_V1),
+            )
+        return self.get_setup(setup_identity)
+
+    def get_setup(self, setup_id: str, *, verify: bool = True) -> Setup:
+        row = self.connection.execute(
+            "SELECT * FROM setup WHERE setup_id = ?", (setup_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(setup_id)
+        result = _setup_from_row(row)
+        if not verify:
+            return result
+        node = self.get_derivation_node(result.derivation_node_id)
+        if (node.node_kind, node.entity_type, node.entity_id, node.attempt_id, node.run_id) != (
+            "SETUP", "setup", result.setup_id, result.attempt_id, result.run_id
+        ):
+            raise DerivationIntegrityError("Setup entity/node identity differs")
+        expected_rules = setup_rule_values(result.setup_kind)
+        if (result.entry_rule_json, result.stop_rule_json, result.target_rule_json) != expected_rules:
+            raise ArtifactIntegrityError("Setup rule JSON differs")
+        content = validate_json_artifact(
+            self.get_artifact(result.result_artifact_id), resolver=self.get_artifact
+        )
+        if (
+            content["ticker"] != result.instrument_id
+            or content["setup_type"] != result.setup_kind
+        ):
+            raise ArtifactIntegrityError("Setup entity/result identity differs")
+        return result
+
+    def _validated_attempt_local_parents(
+        self, attempt_id: str, node_id: str,
+        parents: tuple[DerivationParent, ...],
+    ) -> dict[str, DerivationNode]:
+        result: dict[str, DerivationNode] = {}
+        for parent in parents:
+            if parent.parent_node_id == node_id:
+                raise DerivationIntegrityError("derivation self-edge is forbidden")
+            node = self._verify_derivation_node(parent.parent_node_id, states={}, memo={})
+            if node.attempt_id != attempt_id or node.run_id is not None:
+                raise DerivationIntegrityError("derived parents must share attempt-local lineage")
+            result[parent.parent_node_id] = node
+        return result
+
+    def _insert_derivation_edges(
+        self, child_node_id: str, parents: tuple[DerivationParent, ...], attempt_id: str,
+    ) -> None:
+        for parent in parents:
+            self.connection.execute(
+                "INSERT INTO derivation_edge VALUES (?, ?, ?, ?, ?)",
+                (_new_id(excluding={child_node_id, attempt_id}), parent.parent_node_id,
+                 child_node_id, parent.edge_role, int(parent.required)),
+            )
+
     def register_pit_classification_policy(
         self, *, definition_artifact_id: str, code_commit: str,
         classification_policy_id: str | None = None,
     ) -> PitClassificationPolicy:
-        """Register the one frozen V1.3 classification policy immutably."""
+        """Register one exact frozen V1/V2 classification policy immutably."""
         _require_text("code_commit", code_commit)
         policy_id = classification_policy_id or _new_id()
         _require_uuid4("classification_policy_id", policy_id)
@@ -1281,12 +1781,16 @@ class LedgerStorage:
             value = json.loads(artifact.payload)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ClassificationIntegrityError("invalid policy definition JSON") from exc
-        if value != _pit_policy_definition_v1():
-            raise ClassificationIntegrityError("policy definition differs from frozen V1.3")
+        if value == _pit_policy_definition_v1():
+            policy_version = REQUIRED_ANCESTRY_PIT_V1
+        elif value == pit_classification_policy_definition_v2():
+            policy_version = REQUIRED_ANCESTRY_PIT_V2
+        else:
+            raise ClassificationIntegrityError("policy definition differs from frozen V1/V2")
         with self.transaction() as connection, self._internal_write():
             connection.execute(
                 "INSERT INTO pit_classification_policy VALUES (?, 'PIT_CLASSIFICATION', ?, ?, ?, ?)",
-                (policy_id, REQUIRED_ANCESTRY_PIT_V1, definition_artifact_id,
+                (policy_id, policy_version, definition_artifact_id,
                  code_commit, _utc_now()),
             )
         return self.get_pit_classification_policy(policy_id)
@@ -1325,6 +1829,7 @@ class LedgerStorage:
             record_class, pit_class, basis = self._validate_raw_evidence(
                 evidence=evidence, node=node, observation=observation,
                 pit_reference_at=pit_reference_at, attempt_id=attempt_id,
+                policy_version=policy.policy_version,
             )
             version, predecessor = self._classification_successor(
                 derivation_node_id, pit_reference_at, supersedes_classification_id
@@ -1360,8 +1865,10 @@ class LedgerStorage:
             self._require_attempt_authority(attempt_id, fence_token)
             policy = self.get_pit_classification_policy(classification_policy_id)
             node = self.get_derivation_node(derivation_node_id)
-            if node.node_kind != "NORMALIZED_FACT" or node.entity_type != "artifact":
-                raise ClassificationIntegrityError("derived classification requires NORMALIZED_FACT")
+            if node.node_kind not in {"NORMALIZED_FACT", "RESEARCH", "SETUP"}:
+                raise ClassificationIntegrityError("derived classification requires a supported derived node")
+            if node.node_kind in {"RESEARCH", "SETUP"} and policy.policy_version != REQUIRED_ANCESTRY_PIT_V2:
+                raise ClassificationIntegrityError("Research/Setup classification requires PIT V2")
             required_nodes = {
                 edge.parent_node_id for edge in self.list_derivation_edges(derivation_node_id)
                 if edge.required == 1
@@ -1466,10 +1973,13 @@ class LedgerStorage:
                 evidence=self.get_artifact(item.evidence_artifact_id), node=node,
                 observation=observation, pit_reference_at=item.pit_reference_at,
                 attempt_id=item.classified_by_attempt_id,
+                policy_version=policy.policy_version,
             )
             if (item.record_class, item.resolved_record_class, item.pit_class, item.classification_basis) != (expected_record, expected_record, expected_pit, expected_basis):
                 raise ClassificationIntegrityError("stored raw classification differs from evidence")
-        elif node.node_kind == "NORMALIZED_FACT":
+        elif node.node_kind in {"NORMALIZED_FACT", "RESEARCH", "SETUP"}:
+            if node.node_kind in {"RESEARCH", "SETUP"} and policy.policy_version != REQUIRED_ANCESTRY_PIT_V2:
+                raise ClassificationIntegrityError("Research/Setup classification requires PIT V2")
             required = {e.parent_node_id for e in self.list_derivation_edges(node.derivation_node_id) if e.required}
             parent_rows = self.connection.execute("SELECT parent_classification_id FROM derivation_node_classification_parent WHERE child_classification_id = ? ORDER BY parent_classification_id", (classification_id,)).fetchall()
             parents = [self._verify_node_classification(str(r[0]), states=states, memo=memo) for r in parent_rows]
@@ -1492,12 +2002,18 @@ class LedgerStorage:
         return item
 
     def _verify_classification_policy(self, policy: PitClassificationPolicy) -> None:
-        if (policy.policy_kind, policy.policy_version) != ("PIT_CLASSIFICATION", REQUIRED_ANCESTRY_PIT_V1):
+        if policy.policy_kind != "PIT_CLASSIFICATION" or policy.policy_version not in {
+            REQUIRED_ANCESTRY_PIT_V1, REQUIRED_ANCESTRY_PIT_V2,
+        }:
             raise UnsupportedClassificationPolicy("unsupported classification policy")
         artifact = self.get_artifact(policy.definition_artifact_id)
         _require_artifact_envelope(artifact, _POLICY_ARTIFACT_KIND)
-        if json.loads(artifact.payload) != _pit_policy_definition_v1():
-            raise ClassificationIntegrityError("policy definition differs from frozen V1.3")
+        expected = (
+            _pit_policy_definition_v1() if policy.policy_version == REQUIRED_ANCESTRY_PIT_V1
+            else pit_classification_policy_definition_v2()
+        )
+        if json.loads(artifact.payload) != expected:
+            raise ClassificationIntegrityError("policy definition differs from frozen version")
 
     def _classification_successor(self, node_id: str, reference: str, requested: str | None) -> tuple[int, str | None]:
         rows = self.connection.execute("SELECT c.* FROM derivation_node_classification c WHERE c.derivation_node_id = ? AND c.pit_reference_at = ? ORDER BY c.classification_version", (node_id, reference)).fetchall()
@@ -1510,7 +2026,7 @@ class LedgerStorage:
             raise ClassificationIntegrityError("supersession must name the unique current head")
         return int(head["classification_version"]) + 1, str(head["derivation_node_classification_id"])
 
-    def _validate_raw_evidence(self, *, evidence: Artifact, node: DerivationNode, observation: InputObservation, pit_reference_at: str, attempt_id: str) -> tuple[str, str, str]:
+    def _validate_raw_evidence(self, *, evidence: Artifact, node: DerivationNode, observation: InputObservation, pit_reference_at: str, attempt_id: str, policy_version: str) -> tuple[str, str, str]:
         _require_artifact_envelope(evidence, _EVIDENCE_ARTIFACT_KIND)
         try:
             value = json.loads(evidence.payload)
@@ -1582,8 +2098,12 @@ class LedgerStorage:
         elif kind in {"INSUFFICIENT_PIT_EVIDENCE", "PIT_IRRELEVANT_CONTENT"}:
             if archive is not None or reconstruction is not None:
                 raise ClassificationIntegrityError("evidence timestamps must be null")
-        if kind == "PIT_IRRELEVANT_CONTENT" and self.get_artifact(observation.artifact_id).artifact_kind != _POLICY_ARTIFACT_KIND:
-            raise ClassificationIntegrityError("Artifact kind is not PIT-irrelevant under policy")
+        if kind == "PIT_IRRELEVANT_CONTENT":
+            allowed = {_POLICY_ARTIFACT_KIND}
+            if policy_version == REQUIRED_ANCESTRY_PIT_V2:
+                allowed.add("ledger.llm-raw-response.v1")
+            if self.get_artifact(observation.artifact_id).artifact_kind not in allowed:
+                raise ClassificationIntegrityError("Artifact kind is not PIT-irrelevant under policy")
         return record, matrix[kind][2], matrix[kind][3]
 
     def commit_run(
@@ -1626,17 +2146,33 @@ class LedgerStorage:
         )
         classified = request.request_kind in _CLASSIFIED_REQUEST_KINDS
         if classified:
-            classification_ids, pit_reference_at, resolved_record, resolved_pit = self._prepare_classification_commit(
+            classification_ids, pit_reference_at, resolved_record, resolved_pit, pit_policy_version = self._prepare_classification_commit(
                 attempt_id=attempt_id, request=request, selected_node_ids=selected_nodes,
                 classification_ids=tuple(sorted(derivation_node_classification_ids)),
             )
         else:
             if derivation_node_classification_ids:
                 raise FinalizationConflict("unclassified request kind cannot create manifest V2")
-            classification_ids, pit_reference_at, resolved_record, resolved_pit = (), None, None, None
+            classification_ids, pit_reference_at, resolved_record, resolved_pit, pit_policy_version = (), None, None, None, None
+        manifest_version = (
+            "3" if pit_policy_version == REQUIRED_ANCESTRY_PIT_V2
+            else "2" if classified else "1"
+        )
+        research_ids = tuple(sorted(
+            self.get_derivation_node(node_id, verify=False).entity_id
+            for node_id in closure_ids
+            if self.get_derivation_node(node_id, verify=False).node_kind == "RESEARCH"
+        ))
+        setup_ids = tuple(sorted(
+            self.get_derivation_node(node_id, verify=False).entity_id
+            for node_id in closure_ids
+            if self.get_derivation_node(node_id, verify=False).node_kind == "SETUP"
+        ))
+        if manifest_version != "3" and (research_ids or setup_ids):
+            raise FinalizationConflict("Research/Setup closure requires Manifest V3")
         policy_references = (() if not closure_ids else (
             {"policy_kind": "DERIVATION", "policy_version": MAX_REQUIRED_PARENTS_V1},
-            *(({"policy_kind": "PIT_CLASSIFICATION", "policy_version": REQUIRED_ANCESTRY_PIT_V1},) if classified else ()),
+            *(({"policy_kind": "PIT_CLASSIFICATION", "policy_version": pit_policy_version},) if classified else ()),
         ))
         manifest_value = _result_manifest_value(
             run_id=effective_run_id,
@@ -1650,9 +2186,15 @@ class LedgerStorage:
             derivation_node_classification_ids=classification_ids,
             resolved_record_class=resolved_record,
             resolved_pit_class=resolved_pit,
+            manifest_version=manifest_version,
+            research_ids=research_ids,
+            setup_ids=setup_ids,
         )
         manifest_payload = canonicalize_json(manifest_value)
-        manifest_kind = _MANIFEST_V2_KIND if classified else "ledger.run-result-manifest.v1"
+        manifest_kind = (
+            _MANIFEST_V3_KIND if manifest_version == "3"
+            else _MANIFEST_V2_KIND if classified else "ledger.run-result-manifest.v1"
+        )
         manifest_id = artifact_id_for(
             manifest_kind, CANONICAL_JSON_V1, manifest_payload
         )
@@ -1706,7 +2248,7 @@ class LedgerStorage:
                     attempt_id=attempt_id, request=request, selected_node_ids=selected_nodes,
                     classification_ids=tuple(sorted(derivation_node_classification_ids)),
                 )
-                if checked_classification != (classification_ids, pit_reference_at, resolved_record, resolved_pit):
+                if checked_classification != (classification_ids, pit_reference_at, resolved_record, resolved_pit, pit_policy_version):
                     raise FinalizationConflict("classification closure changed during finalization")
             attached_outputs = {
                 row[0]
@@ -1754,6 +2296,16 @@ class LedgerStorage:
                 connection.execute(
                     "UPDATE derivation_node SET run_id = ? WHERE derivation_node_id = ?",
                     (effective_run_id, node_id),
+                )
+            for research_id in research_ids:
+                connection.execute(
+                    "UPDATE research_record SET run_id = ? WHERE research_id = ?",
+                    (effective_run_id, research_id),
+                )
+            for setup_id in setup_ids:
+                connection.execute(
+                    "UPDATE setup SET run_id = ? WHERE setup_id = ?",
+                    (effective_run_id, setup_id),
                 )
             for node_id in selected_nodes:
                 self.verify_derivation(node_id)
@@ -1813,11 +2365,14 @@ class LedgerStorage:
             raise KeyError(run_id)
         run = _run_from_row(row)
         manifest = self.get_artifact(run.result_manifest_artifact_id)
-        if manifest.artifact_kind not in {"ledger.run-result-manifest.v1", _MANIFEST_V2_KIND}:
+        if manifest.artifact_kind not in {"ledger.run-result-manifest.v1", _MANIFEST_V2_KIND, _MANIFEST_V3_KIND}:
             raise ArtifactIntegrityError("run manifest has incorrect artifact kind")
         value = json.loads(manifest.payload)
-        classified = manifest.artifact_kind == _MANIFEST_V2_KIND
-        if value.get("manifest_version") != ("2" if classified else "1"):
+        classified = manifest.artifact_kind in {_MANIFEST_V2_KIND, _MANIFEST_V3_KIND}
+        manifest_version = {
+            "ledger.run-result-manifest.v1": "1", _MANIFEST_V2_KIND: "2", _MANIFEST_V3_KIND: "3",
+        }[manifest.artifact_kind]
+        if value.get("manifest_version") != manifest_version:
             raise ArtifactIntegrityError("run manifest version does not match Artifact kind")
         list_fields = (
             "output_artifact_ids",
@@ -1848,6 +2403,9 @@ class LedgerStorage:
             derivation_node_classification_ids=tuple(classification_ids),
             resolved_record_class=value.get("resolved_record_class") if classified else None,
             resolved_pit_class=value.get("resolved_pit_class") if classified else None,
+            manifest_version=manifest_version,
+            research_ids=tuple(value.get("research_ids", [])),
+            setup_ids=tuple(value.get("setup_ids", [])),
         )
         if (
             value != expected
@@ -1886,7 +2444,9 @@ class LedgerStorage:
             ]
             if classified:
                 expected_policy.append(
-                    {"policy_kind": "PIT_CLASSIFICATION", "policy_version": REQUIRED_ANCESTRY_PIT_V1}
+                    {"policy_kind": "PIT_CLASSIFICATION", "policy_version": (
+                        REQUIRED_ANCESTRY_PIT_V2 if manifest_version == "3" else REQUIRED_ANCESTRY_PIT_V1
+                    )}
                 )
             if policy_references != expected_policy:
                 raise ArtifactIntegrityError("run manifest derivation policy is invalid")
@@ -1900,6 +2460,29 @@ class LedgerStorage:
                 }
                 if not parent_ids <= manifest_nodes:
                     raise ArtifactIntegrityError("manifest derivation closure is incomplete")
+            research_targets = sorted(
+                self.get_derivation_node(node_id, verify=False).entity_id
+                for node_id in node_ids
+                if self.get_derivation_node(node_id, verify=False).node_kind == "RESEARCH"
+            )
+            setup_targets = sorted(
+                self.get_derivation_node(node_id, verify=False).entity_id
+                for node_id in node_ids
+                if self.get_derivation_node(node_id, verify=False).node_kind == "SETUP"
+            )
+            if manifest_version == "3":
+                if value.get("research_ids") != research_targets or value.get("setup_ids") != setup_targets:
+                    raise ArtifactIntegrityError("Manifest V3 entity IDs differ from DAG targets")
+                if value.get("eligibility_ids") or value.get("trade_ids") or value.get("outcome_ids"):
+                    raise ArtifactIntegrityError("Manifest V3 future entity arrays must be empty")
+                for research_id in research_targets:
+                    if self.get_research_record(research_id, verify=False).run_id != run.run_id:
+                        raise ArtifactIntegrityError("Manifest V3 Research is not run-bound")
+                for setup_id in setup_targets:
+                    if self.get_setup(setup_id, verify=False).run_id != run.run_id:
+                        raise ArtifactIntegrityError("Manifest V3 Setup is not run-bound")
+            elif research_targets or setup_targets:
+                raise ArtifactIntegrityError("Research/Setup targets require Manifest V3")
         elif policy_references:
             raise ArtifactIntegrityError("manifest has policy without derivation graph")
         stored_input_ids = {
@@ -1932,6 +2515,7 @@ class LedgerStorage:
             if prepared != (
                 tuple(classification_ids), value["pit_reference_at"],
                 value["resolved_record_class"], value["resolved_pit_class"],
+                REQUIRED_ANCESTRY_PIT_V2 if manifest_version == "3" else REQUIRED_ANCESTRY_PIT_V1,
             ):
                 raise ArtifactIntegrityError("run classification result is invalid")
         return run
@@ -1939,12 +2523,12 @@ class LedgerStorage:
     def get_run_classification_status(self, run_id: str) -> str:
         run = self.get_run(run_id)
         artifact = self.get_artifact(run.result_manifest_artifact_id)
-        return "CLASSIFIED" if artifact.artifact_kind == _MANIFEST_V2_KIND else "UNCLASSIFIED"
+        return "CLASSIFIED" if artifact.artifact_kind in {_MANIFEST_V2_KIND, _MANIFEST_V3_KIND} else "UNCLASSIFIED"
 
     def _prepare_classification_commit(
         self, *, attempt_id: str, request: RunRequest,
         selected_node_ids: tuple[str, ...], classification_ids: tuple[str, ...],
-    ) -> tuple[tuple[str, ...], str, str, str]:
+    ) -> tuple[tuple[str, ...], str, str, str, str]:
         if not selected_node_ids:
             raise FinalizationConflict("classified run requires selected derivation roots")
         required_nodes: set[str] = set()
@@ -1967,8 +2551,11 @@ class LedgerStorage:
                 for item in classifications
             )
         }
-        if policies != {("PIT_CLASSIFICATION", REQUIRED_ANCESTRY_PIT_V1)}:
+        if len(policies) != 1 or next(iter(policies))[0] != "PIT_CLASSIFICATION" or next(iter(policies))[1] not in {
+            REQUIRED_ANCESTRY_PIT_V1, REQUIRED_ANCESTRY_PIT_V2,
+        }:
             raise FinalizationConflict("classification closure uses unsupported policy")
+        policy_version = next(iter(policies))[1]
         expected_reference = _request_pit_reference(request)
         if reference != expected_reference:
             raise FinalizationConflict("classification PIT reference differs from request")
@@ -1986,7 +2573,7 @@ class LedgerStorage:
         }[request.request_kind]
         if resolved_pit not in allowed:
             raise FinalizationConflict("resolved PIT class is forbidden for request kind")
-        return tuple(sorted(classification_ids)), reference, resolved_record, resolved_pit
+        return tuple(sorted(classification_ids)), reference, resolved_record, resolved_pit, policy_version
 
     def _prepare_derivation_commit(
         self,
@@ -2139,10 +2726,25 @@ class LedgerStorage:
                     )
             else:
                 try:
-                    self.get_artifact(node.entity_id)
+                    if node.node_kind == "NORMALIZED_FACT":
+                        self.get_artifact(node.entity_id)
+                    elif node.node_kind == "RESEARCH":
+                        target = self.connection.execute(
+                            "SELECT attempt_id, run_id, derivation_node_id FROM research_record WHERE research_id = ?",
+                            (node.entity_id,),
+                        ).fetchone()
+                        if target is None or (target["attempt_id"], target["run_id"], target["derivation_node_id"]) != (node.attempt_id, node.run_id, node.derivation_node_id):
+                            raise KeyError(node.entity_id)
+                    elif node.node_kind == "SETUP":
+                        target = self.connection.execute(
+                            "SELECT attempt_id, run_id, derivation_node_id FROM setup WHERE setup_id = ?",
+                            (node.entity_id,),
+                        ).fetchone()
+                        if target is None or (target["attempt_id"], target["run_id"], target["derivation_node_id"]) != (node.attempt_id, node.run_id, node.derivation_node_id):
+                            raise KeyError(node.entity_id)
                 except (KeyError, ArtifactIntegrityError) as exc:
                     raise DerivationIntegrityError(
-                        "normalized-fact Artifact target is invalid"
+                        "derived node target is invalid"
                     ) from exc
                 if node.direct_available_at is not None:
                     raise DerivationIntegrityError(
@@ -2542,6 +3144,26 @@ def _classification_policy_from_row(row: sqlite3.Row) -> PitClassificationPolicy
     )
 
 
+def _research_method_from_row(row: sqlite3.Row) -> ResearchMethod:
+    return ResearchMethod(**dict(row))
+
+
+def _llm_interaction_from_row(row: sqlite3.Row) -> LLMInteraction:
+    return LLMInteraction(**dict(row))
+
+
+def _research_record_from_row(row: sqlite3.Row) -> ResearchRecord:
+    return ResearchRecord(**dict(row))
+
+
+def _setup_policy_from_row(row: sqlite3.Row) -> SetupPolicy:
+    return SetupPolicy(**dict(row))
+
+
+def _setup_from_row(row: sqlite3.Row) -> Setup:
+    return Setup(**dict(row))
+
+
 def _classification_from_row(row: sqlite3.Row) -> DerivationNodeClassification:
     return DerivationNodeClassification(
         **{field: row[field] for field in DerivationNodeClassification.__dataclass_fields__}
@@ -2637,6 +3259,39 @@ def _request_fingerprint(
     return hashlib.sha256(canonicalize_json(value)).hexdigest()
 
 
+def _validate_research_stage_projection(
+    content: dict[str, Any], analyst: dict[str, Any], critic: dict[str, Any]
+) -> None:
+    analysis_fields = (
+        "fundamental_analysis", "earnings_and_news_analysis", "price_context",
+        "bull_case", "bear_case", "catalysts", "risks", "thesis_invalidation",
+    )
+    revised = critic["revised_analysis"]
+    accepted_claims = [
+        {key: value for key, value in item.items() if key != "validation_errors"}
+        for item in content["claim_refs"]
+    ]
+    expected = {
+        "status": critic["status"],
+        "evidence_confidence": critic["evidence_confidence"],
+        "thesis_strength": critic["thesis_strength"],
+        "critic_notes": critic["notes"],
+        "event_assessments": critic["event_assessments"],
+        "analyst_status": analyst["proposed_status"],
+        "analyst_thesis_strength": analyst["thesis_strength"],
+        "analyst_evidence_confidence": analyst["evidence_confidence"],
+        "critic_status": critic["critic_status"],
+        "critic_thesis_strength": critic["critic_thesis_strength"],
+        "critic_evidence_confidence": critic["critic_evidence_confidence"],
+    }
+    if any(content[key] != value for key, value in expected.items()):
+        raise ArtifactIntegrityError("Research content differs from exact Analyst/Critic stages")
+    if any(content[field] != revised[field] for field in analysis_fields):
+        raise ArtifactIntegrityError("Research analysis differs from Critic effective stage")
+    if accepted_claims != revised["claim_refs"]:
+        raise ArtifactIntegrityError("Research claims differ from Critic effective stage")
+
+
 def _request_fingerprint_from_request(request: RunRequest) -> str:
     return _request_fingerprint(
         request_kind=request.request_kind,
@@ -2659,10 +3314,16 @@ def _result_manifest_value(
     derivation_node_classification_ids: tuple[str, ...] = (),
     resolved_record_class: str | None = None,
     resolved_pit_class: str | None = None,
+    manifest_version: str | None = None,
+    research_ids: tuple[str, ...] = (),
+    setup_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     classified = pit_reference_at is not None
+    version = manifest_version or ("2" if classified else "1")
+    if version not in {"1", "2", "3"} or ((version == "1") == classified):
+        raise FinalizationConflict("manifest version is incompatible with classification")
     value = {
-        "manifest_version": "2" if classified else "1",
+        "manifest_version": version,
         "run_id": run_id,
         "run_request_id": request.run_request_id,
         "attempt_id": attempt.attempt_id,
@@ -2675,8 +3336,8 @@ def _result_manifest_value(
         "input_observation_ids": list(input_observation_ids),
         "derivation_node_ids": list(derivation_node_ids),
         "output_artifact_ids": list(output_artifact_ids),
-        "research_ids": [],
-        "setup_ids": [],
+        "research_ids": list(research_ids),
+        "setup_ids": list(setup_ids),
         "eligibility_ids": [],
         "trade_ids": [],
         "outcome_ids": [],

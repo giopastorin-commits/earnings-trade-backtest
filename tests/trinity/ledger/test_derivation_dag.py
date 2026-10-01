@@ -164,8 +164,8 @@ def test_reserved_and_invalid_node_mappings_are_not_instantiable(storage):
         storage.connection.execute(
             """
             INSERT INTO derivation_node VALUES (
-                'reserved-node', NULL, ?, 'RESEARCH', 'research_record',
-                'future-research', NULL, ?, 'MAX_REQUIRED_PARENTS_V1'
+                'reserved-node', NULL, ?, 'ELIGIBILITY', 'eligibility',
+                'future-eligibility', NULL, ?, 'MAX_REQUIRED_PARENTS_V1'
             )
             """,
             (attempt.attempt_id, T1),

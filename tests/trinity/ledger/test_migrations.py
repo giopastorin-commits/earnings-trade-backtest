@@ -22,6 +22,7 @@ from trinity.ledger.schema import (
     migration_registry,
     temporal_derivation_dag_migration,
     pit_classification_migration,
+    research_llm_setup_migration,
 )
 
 MILESTONE_1_COMMIT = "6055d0ec88ec3ac524981325fc8ae232cd2d76b3"
@@ -155,15 +156,20 @@ def test_fresh_database_applies_registered_production_migrations(tmp_path):
                 5,
                 pit_classification_migration().sha256,
             ),
+            (
+                research_llm_setup_migration().migration_id,
+                6,
+                research_llm_setup_migration().sha256,
+            ),
         ]
-        assert storage.current_migration_level() == 5
+        assert storage.current_migration_level() == 6
 
 
 def test_existing_milestone_one_database_is_recognized(tmp_path):
     path = tmp_path / "existing.sqlite3"
     _create_milestone_one_database(path)
     with LedgerStorage.open(path) as storage:
-        assert storage.current_migration_level() == 5
+        assert storage.current_migration_level() == 6
         assert storage.apply_migrations(migration_registry()) == 0
 
 
@@ -173,7 +179,7 @@ def test_existing_level_two_database_upgrades_to_input_observation(tmp_path):
     with LedgerStorage.open(path, registry=level_two) as storage:
         assert storage.current_migration_level() == 2
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 5
+        assert upgraded.current_migration_level() == 6
         assert upgraded.apply_migrations(migration_registry()) == 0
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert upgraded.connection.execute(
@@ -193,7 +199,7 @@ def test_existing_level_three_database_upgrades_to_temporal_dag(tmp_path):
     with LedgerStorage.open(path, registry=level_three) as storage:
         assert storage.current_migration_level() == 3
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 5
+        assert upgraded.current_migration_level() == 6
         assert upgraded.apply_migrations(migration_registry()) == 0
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -213,7 +219,7 @@ def test_populated_level_four_database_upgrades_to_pit_classification(tmp_path):
         artifact_id = artifact.artifact_id
         assert storage.current_migration_level() == 4
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 5
+        assert upgraded.current_migration_level() == 6
         assert upgraded.get_artifact(artifact_id).artifact_id == artifact_id
         assert upgraded.connection.execute(
             "SELECT count(*) FROM derivation_node_classification"
@@ -290,7 +296,7 @@ def test_unknown_applied_migration_is_rejected(tmp_path):
     _create_milestone_one_database(path)
     with LedgerStorage.open(path):
         pass
-    _insert_history(path, Migration("0006_unknown", 6, b"SELECT 1;"))
+    _insert_history(path, Migration("0007_unknown", 7, b"SELECT 1;"))
     with pytest.raises(UnknownAppliedMigration):
         LedgerStorage.open(path)
 
@@ -369,4 +375,4 @@ def test_later_migrations_do_not_recreate_or_mutate_schema_metadata(tmp_path):
 def test_production_registry_contains_temporal_derivation_migration():
     from trinity.ledger.schema import migration_registry
 
-    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3, 4, 5]
+    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3, 4, 5, 6]

@@ -28,6 +28,7 @@ from trinity.ledger.schema import (
     migration_registry,
     temporal_derivation_dag_migration,
     pit_classification_migration,
+    research_llm_setup_migration,
 )
 
 
@@ -61,6 +62,13 @@ def test_new_database_has_current_production_tables(storage):
         "pit_classification_policy",
         "derivation_node_classification",
         "derivation_node_classification_parent",
+        "research_method",
+        "llm_interaction",
+        "research_record",
+        "research_llm_interaction",
+        "setup_policy",
+        "setup",
+        "setup_research_lineage",
     }
 
 
@@ -81,7 +89,7 @@ def test_connection_pragmas_are_configured(storage):
 
 def test_migration_applies_once_and_is_idempotent(storage):
     rows_before = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
-    assert len(rows_before) == 5
+    assert len(rows_before) == 6
     assert storage.apply_migrations(migration_registry()) == 0
     rows_after = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
     assert [tuple(row) for row in rows_after] == [tuple(row) for row in rows_before]
@@ -99,6 +107,7 @@ def test_changed_applied_migration_is_rejected(storage):
                     input_observation_migration(),
                     temporal_derivation_dag_migration(),
                     pit_classification_migration(),
+                    research_llm_setup_migration(),
                 )
             )
         )
