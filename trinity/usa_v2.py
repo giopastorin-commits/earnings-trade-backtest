@@ -20,7 +20,7 @@ from typing import Any, Mapping
 
 from trinity.italia_real import CodexCLIProvider, _ANALYST_SCHEMA
 from trinity.italia_v1 import analyze_company, build_facts, save_thesis
-from trinity.usa_documents import load_document_coverage
+from trinity.usa_documents import DEFAULT_CACHE as DOCUMENT_CACHE, load_document_coverage
 
 
 AS_OF = "2026-09-12"
@@ -215,8 +215,12 @@ def _attach_fact_ids(
                 )
 
 
-def _read_prices(ticker: str, as_of: str) -> tuple[dict[str, object], dict[str, object]]:
-    path = PRICES / f"{ticker}.json"
+def _read_prices(
+    ticker: str, as_of: str, *, prices_dir: Path = PRICES,
+    source_name: str = "EODHD frozen daily USA cache",
+    retrieved_at: str = "2026-09-13",
+) -> tuple[dict[str, object], dict[str, object]]:
+    path = prices_dir / f"{ticker}.json"
     raw = path.read_bytes()
     bars = json.loads(raw)
     bars = [bar for bar in bars if bar["date"] <= as_of]
@@ -231,12 +235,12 @@ def _read_prices(ticker: str, as_of: str) -> tuple[dict[str, object], dict[str, 
                                     "close": bars[-period - 1]["close"]}
                       for period in (5, 20, 60)}
     evidence = {
-        "source": "EODHD frozen daily USA cache", "published_at": latest["date"],
+        "source": source_name, "published_at": latest["date"],
         "identifier": f"price:{ticker}:{latest['date']}", "url": None,
         "excerpt": json.dumps({"latest": {key: latest[key] for key in
                                             ("date", "open", "high", "low", "close", "volume")},
                                "reference_bars": reference_bars, "returns_percent": returns}),
-        "title": f"{ticker} daily OHLCV", "retrieved_at": "2026-09-13",
+        "title": f"{ticker} daily OHLCV", "retrieved_at": retrieved_at,
         "content_sha256": _digest(raw), "raw_path": str(path),
         "published_at_precision": "day", "document_kind": "PRICE",
     }
@@ -257,11 +261,15 @@ def _issuer_release(record: Mapping[str, object], ticker: str) -> bool:
             and any(alias.casefold() in content[:2000].casefold() for alias in aliases))
 
 
-def _news_records(ticker: str, as_of: str) -> tuple[list[dict[str, object]], int]:
+def _news_records(
+    ticker: str, as_of: str, *, news_dir: Path = NEWS, forward: bool = False,
+) -> tuple[list[dict[str, object]], int]:
     accepted: list[dict[str, object]] = []
     rejected = 0
-    for path in sorted((NEWS / ticker).glob("2026-*.jsonl")):
-        if path.stem < "2026-04" or path.stem > as_of[:7]:
+    pattern = "*.jsonl" if forward else "2026-*.jsonl"
+    for path in sorted((news_dir / ticker).glob(pattern)):
+        if ((not forward and path.stem < "2026-04") or
+                path.stem > as_of[:7]):
             continue
         with path.open(encoding="utf-8") as stream:
             for line_number, line in enumerate(stream, 1):
@@ -280,12 +288,15 @@ def _news_records(ticker: str, as_of: str) -> tuple[list[dict[str, object]], int
     return accepted, rejected
 
 
-def _record_evidence(record: Mapping[str, object], ticker: str) -> dict[str, object]:
+def _record_evidence(
+    record: Mapping[str, object], ticker: str,
+    *, source_name: str = "EODHD cached issuer wire release",
+) -> dict[str, object]:
     title = html.unescape(str(record["title"]))
     content = html.unescape(str(record["content"]))
     identifier = f"news:{ticker}:{str(record['canonical_record_sha256'])[:16]}"
     return {
-        "source": "EODHD cached issuer wire release", "published_at": str(record["published_ts"])[:10],
+        "source": source_name, "published_at": str(record["published_ts"])[:10],
         "identifier": identifier, "url": record.get("link"), "excerpt": content[:4500],
         "title": title, "retrieved_at": str(record.get("ingestion_ts") or "2026-09-13")[:10],
         "content_sha256": str(record["_line_sha256"]), "raw_path": f"{record['_path']}:{record['_line']}",
@@ -839,16 +850,25 @@ def _clean_citations(value: str, known: set[str]) -> str:
     return re.sub(r"\s+([,.!?])", r"\1", re.sub(r" {2,}", " ", cleaned)).strip()
 
 
-def load_company(ticker: str, as_of: str = AS_OF) -> EvidencePack:
+def load_company(
+    ticker: str, as_of: str = AS_OF, *, prices_dir: Path = PRICES,
+    news_dir: Path = NEWS, documents_dir: str | Path = DOCUMENT_CACHE,
+    forward: bool = False, price_retrieved_at: str = "2026-09-13",
+    price_source: str = "EODHD frozen daily USA cache",
+    news_source: str = "EODHD cached issuer wire release",
+) -> EvidencePack:
     """Assemble cached data and source-linked literal facts without network calls."""
     if ticker not in COMPANIES:
         raise ValueError(f"unsupported ticker: {ticker}")
     date.fromisoformat(as_of)
-    if as_of > AS_OF:
+    if not forward and as_of > AS_OF:
         raise ValueError("as_of exceeds frozen news coverage")
     company, sector, _ = COMPANIES[ticker]
-    price, price_evidence = _read_prices(ticker, as_of)
-    records, rejected = _news_records(ticker, as_of)
+    price, price_evidence = _read_prices(
+        ticker, as_of, prices_dir=prices_dir, source_name=price_source,
+        retrieved_at=price_retrieved_at,
+    )
+    records, rejected = _news_records(ticker, as_of, news_dir=news_dir, forward=forward)
     results = [r for r in records if RESULT.search(html.unescape(str(r["title"])))
                and not SCHEDULED.search(html.unescape(str(r["title"]))) ]
     announcement = [r for r in records if RESULT.search(html.unescape(str(r["title"])))
@@ -861,7 +881,9 @@ def load_company(ticker: str, as_of: str = AS_OF) -> EvidencePack:
         chosen.append(latest_other)
     # Retain publication order for novelty comparison, regardless of selection order.
     chosen.sort(key=lambda r: str(r["published_ts"]))
-    evidence = [price_evidence] + [_record_evidence(r, ticker) for r in chosen]
+    evidence = [price_evidence] + [
+        _record_evidence(r, ticker, source_name=news_source) for r in chosen
+    ]
     events = []
     prior_titles: set[str] = set()
     for record, item in zip(chosen, evidence[1:]):
@@ -880,7 +902,7 @@ def load_company(ticker: str, as_of: str = AS_OF) -> EvidencePack:
                                  "guidance_language": guidance, "evidence_identifier": item["identifier"],
                                  "issuer_release": True},
                        "guidance": guidance["source_excerpt"] if guidance else None})
-    document_coverage = load_document_coverage(ticker, as_of)
+    document_coverage = load_document_coverage(ticker, as_of, cache_dir=documents_dir)
     if document_coverage:
         documents = document_coverage["documents"]
         structured = document_coverage.get("structured_facts", [])

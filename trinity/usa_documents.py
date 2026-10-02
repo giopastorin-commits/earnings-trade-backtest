@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from bs4 import BeautifulSoup
 import requests
@@ -303,6 +303,8 @@ def acquire_sec_documents(
     as_of: str, *, cache_dir: str | Path = DEFAULT_CACHE,
     user_agent: str = "TRINITY research giopa@example.com",
     session: requests.Session | None = None,
+    tickers: Sequence[str] | None = None,
+    now: datetime | None = None,
 ) -> Path:
     """Acquire the fixed universe's primary filings and write an audited manifest."""
     date.fromisoformat(as_of)
@@ -313,10 +315,15 @@ def acquire_sec_documents(
         import truststore
         truststore.inject_into_ssl()
     client.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
-    retrieved_at = datetime.now(timezone.utc).isoformat()
+    requested = tuple(tickers) if tickers is not None else tuple(SEC_COMPANIES)
+    unsupported = sorted(set(requested) - set(SEC_COMPANIES))
+    if unsupported:
+        raise ValueError(f"unsupported SEC tickers: {', '.join(unsupported)}")
+    retrieved_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
     manifest: dict[str, Any] = {"as_of": as_of, "retrieved_at": retrieved_at,
                                 "source": "SEC EDGAR", "companies": {}}
-    for ticker, (cik, sector) in SEC_COMPANIES.items():
+    for ticker in requested:
+        cik, sector = SEC_COMPANIES[ticker]
         submissions_url = f"{SEC_DATA}/submissions/CIK{cik}.json"
         companyfacts_url = f"{SEC_DATA}/api/xbrl/companyfacts/CIK{cik}.json"
         submissions_raw = _fetch(client, submissions_url)

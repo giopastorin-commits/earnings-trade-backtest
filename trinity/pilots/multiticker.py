@@ -48,6 +48,7 @@ ANALYSIS_FIELDS = (
 )
 CODE_PATHS = (
     "trinity/italia_real.py", "trinity/italia_v1.py", "trinity/usa_v2.py",
+    "trinity/usa_forward.py",
 )
 
 
@@ -126,6 +127,11 @@ class TickerResult:
     telegram_message: str | None = None
     telegram_sent: bool = False
     error: str | None = None
+    fresh_price_timestamp: str = "-"
+    freshest_evidence_timestamp: str = "-"
+    price_provider: str = "-"
+    news_provider: str = "-"
+    primary_evidence_provider: str = "-"
 
 
 @dataclass(frozen=True)
@@ -270,12 +276,17 @@ def _new_attempt(storage: LedgerStorage, ticker: str, code_commit: str):
 
 def _persist_inputs(
     storage, attempt, ticker, pack, facts, bars, bars_bytes, pit_policy,
+    *, as_of: str = AS_OF, reference: str = REFERENCE,
+    research_source_bytes: bytes | None = None,
+    research_retrieved_at: str | None = None,
+    price_retrieved_at: str | None = None,
+    forward: bool = False,
 ):
     observed_at = _utc_now()
-    source_payload = json.dumps(
+    generated_source_payload = json.dumps(
         {
             "ticker": ticker,
-            "as_of": AS_OF,
+            "as_of": as_of,
             "company_input": pack.company_input,
             "triage": pack.triage,
         },
@@ -284,13 +295,18 @@ def _persist_inputs(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    source_payload = research_source_bytes or generated_source_payload
     source = storage.insert_opaque_artifact(
-        artifact_type="local.usa-v2-source-bundle.v1",
+        artifact_type=("ledger.forward-source-archive.v1" if forward
+                       else "local.usa-v2-source-bundle.v1"),
         payload=source_payload,
-        media_type="application/json",
+        media_type="application/zip" if forward else "application/json",
     )
     source_observation, source_raw = _observe(
-        storage, attempt, source, ticker.lower(), "research-source-bundle", observed_at,
+        storage, attempt, source, ticker.lower(), "research-source-bundle",
+        research_retrieved_at or observed_at,
+        provider="eodhd-sec-edgar" if forward else "local",
+        acquisition_method="live-api-capture" if forward else "checked-in-or-frozen-local",
     )
     ohlcv_source = storage.insert_opaque_artifact(
         artifact_type="local.eodhd-ohlcv.v1",
@@ -298,11 +314,14 @@ def _persist_inputs(
         media_type="application/json",
     )
     ohlcv_observation, ohlcv_raw = _observe(
-        storage, attempt, ohlcv_source, ticker.lower(), "ohlcv", observed_at,
+        storage, attempt, ohlcv_source, ticker.lower(), "ohlcv",
+        price_retrieved_at or observed_at,
+        provider="eodhd" if forward else "local",
+        acquisition_method="live-api-capture" if forward else "checked-in-or-frozen-local",
     )
     proof = _artifact(storage, "local.multiticker-source-proof.v1", {
         "ticker": ticker,
-        "as_of": AS_OF,
+        "as_of": as_of,
         "research_source_sha256": hashlib.sha256(source_payload).hexdigest(),
         "ohlcv_sha256": hashlib.sha256(bars_bytes).hexdigest(),
         "evidence": [
@@ -313,11 +332,11 @@ def _persist_inputs(
     })
     source_class = _classify_raw(
         storage, attempt, pit_policy, source, source_observation, source_raw,
-        ticker, observed_at, (proof.artifact_id,),
+        ticker, observed_at, (proof.artifact_id,), reference=reference, forward=forward,
     )
     ohlcv_source_class = _classify_raw(
         storage, attempt, pit_policy, ohlcv_source, ohlcv_observation, ohlcv_raw,
-        ticker, observed_at, (proof.artifact_id,),
+        ticker, observed_at, (proof.artifact_id,), reference=reference, forward=forward,
     )
     facts_artifact = _artifact(
         storage, "ledger.usa-v2-facts.v1", _canonical_fact_numbers(facts),
@@ -329,7 +348,7 @@ def _persist_inputs(
         parents=(DerivationParent(source_raw.derivation_node_id, "SOURCE_FACTS"),),
     )
     facts_class = _classify_derived(
-        storage, attempt, pit_policy, facts_node, (source_class,),
+        storage, attempt, pit_policy, facts_node, (source_class,), reference=reference,
     )
     ohlcv_artifact = _artifact(storage, "ledger.usa-setup-v1-ohlcv.v1", {
         "ticker": ticker,
@@ -348,7 +367,7 @@ def _persist_inputs(
         parents=(DerivationParent(ohlcv_raw.derivation_node_id, "OHLCV"),),
     )
     ohlcv_class = _classify_derived(
-        storage, attempt, pit_policy, ohlcv_node, (ohlcv_source_class,),
+        storage, attempt, pit_policy, ohlcv_node, (ohlcv_source_class,), reference=reference,
     )
     return {
         "pit_policy": pit_policy,
@@ -367,7 +386,8 @@ def _persist_inputs(
 
 def _persist_completed_pipeline(
     storage, root, code_commit, attempt, ticker, thesis, setup_record, provider,
-    persisted, method, setup_policy,
+    persisted, method, setup_policy, *, reference: str = REFERENCE,
+    research_as_of_at: str | None = None,
 ):
     analyst = _interaction(
         storage, root, code_commit, attempt,
@@ -406,18 +426,18 @@ def _persist_completed_pipeline(
     )
     pit_policy = persisted["pit_policy"]
     analyst_raw_class = _classify_llm_raw(
-        storage, attempt, pit_policy, analyst,
+        storage, attempt, pit_policy, analyst, reference=reference,
     )
     analyst_stage_class = _classify_derived(
         storage, attempt, pit_policy, analyst["stage_node"],
-        (analyst_raw_class, persisted["facts_class"]),
+        (analyst_raw_class, persisted["facts_class"]), reference=reference,
     )
     critic_raw_class = _classify_llm_raw(
-        storage, attempt, pit_policy, critic,
+        storage, attempt, pit_policy, critic, reference=reference,
     )
     critic_stage_class = _classify_derived(
         storage, attempt, pit_policy, critic["stage_node"],
-        (critic_raw_class, persisted["facts_class"], analyst_stage_class),
+        (critic_raw_class, persisted["facts_class"], analyst_stage_class), reference=reference,
     )
     research_artifact = _artifact(
         storage, "ledger.usa-v2-research-result.v1", research_result_value(thesis),
@@ -428,7 +448,7 @@ def _persist_completed_pipeline(
         subject_key=f"ticker:{ticker}",
         content_artifact_id=research_artifact.artifact_id,
         research_method_id=method.research_method_id,
-        as_of_at=REFERENCE,
+        as_of_at=research_as_of_at or reference,
         parents=(
             DerivationParent(persisted["facts_node"].derivation_node_id, "FACTS"),
             DerivationParent(analyst["stage_node"].derivation_node_id, "ANALYST"),
@@ -442,7 +462,7 @@ def _persist_completed_pipeline(
     research_node = storage.get_derivation_node(research.derivation_node_id)
     research_class = _classify_derived(
         storage, attempt, pit_policy, research_node,
-        (persisted["facts_class"], analyst_stage_class, critic_stage_class),
+        (persisted["facts_class"], analyst_stage_class, critic_stage_class), reference=reference,
     )
     setup_artifact = _artifact(
         storage, "ledger.usa-setup-v1-result.v1", setup_result_value(setup_record),
@@ -462,7 +482,7 @@ def _persist_completed_pipeline(
     setup_node = storage.get_derivation_node(setup.derivation_node_id)
     setup_class = _classify_derived(
         storage, attempt, pit_policy, setup_node,
-        (research_class, persisted["ohlcv_class"]),
+        (research_class, persisted["ohlcv_class"]), reference=reference,
     )
     for artifact in (research_artifact, setup_artifact):
         storage.attach_attempt_artifact(
@@ -655,8 +675,11 @@ def _canonical_fact_numbers(value):
     return value
 
 
-def _observe(storage, attempt, artifact, dataset, record, when):
-    source_id = f"local:{dataset}:v1"
+def _observe(
+    storage, attempt, artifact, dataset, record, when, *, provider="local",
+    acquisition_method="checked-in-or-frozen-local",
+):
+    source_id = f"{provider}:{dataset}:v1"
     observation = storage.create_input_observation(
         artifact_id=artifact.artifact_id,
         source_id=source_id,
@@ -668,8 +691,8 @@ def _observe(storage, attempt, artifact, dataset, record, when):
         observed_by_attempt_id=attempt.attempt_id,
         fence_token=attempt.fence_token,
         source_metadata={
-            "schema_version": "1", "provider": "local", "dataset_name": dataset,
-            "source_record_key": record, "acquisition_method": "checked-in-or-frozen-local",
+            "schema_version": "1", "provider": provider, "dataset_name": dataset,
+            "source_record_key": record, "acquisition_method": acquisition_method,
             "availability_rule_id": "retrieval-fallback",
             "availability_rule_version": "1", "evidence_artifact_ids": [],
             "provider_metadata": {}, "future_effective_at": None,
@@ -716,28 +739,33 @@ def _register_shared_definitions(storage, code_commit):
 
 def _classify_raw(
     storage, attempt, policy, artifact, observation, node, ticker,
-    reconstruction_at, support,
+    reconstruction_at, support, *, reference=REFERENCE, forward=False,
 ):
     namespace = f"local.usa-v2.{ticker.lower()}"
     key = observation.source_record_key
     legacy_id = "legacy:sha256:" + hashlib.sha256(canonicalize_json({
         "legacy_namespace": namespace, "legacy_record_key": key,
     })).hexdigest()
-    evidence = _artifact(storage, "ledger.pit-classification-evidence.v1", {
+    evidence_value = {
         "schema_name": "ledger.pit-classification-evidence", "schema_version": "1",
         "derivation_node_id": node.derivation_node_id,
         "input_observation_id": observation.input_observation_id,
-        "artifact_id": artifact.artifact_id, "pit_reference_at": REFERENCE,
-        "record_origin_evidence_kind": "LEGACY_IMPORT",
-        "legacy_namespace": namespace, "legacy_record_key": key,
-        "legacy_record_id": legacy_id,
-        "pit_evidence_kind": "POST_REFERENCE_RECONSTRUCTION",
-        "verifier_id": "LEDGER_RECONSTRUCTION_EVIDENCE_V1",
-        "archive_captured_at": None,
-        "reconstruction_completed_at": reconstruction_at,
-        "supporting_artifact_ids": sorted(support),
-        "rationale_code": "POST_REFERENCE_RECONSTRUCTION_VERIFIED",
-    })
+        "artifact_id": artifact.artifact_id, "pit_reference_at": reference,
+        "record_origin_evidence_kind": ("LEDGER_AUTHORIZED_CAPTURE" if forward else "LEGACY_IMPORT"),
+        "legacy_namespace": None if forward else namespace,
+        "legacy_record_key": None if forward else key,
+        "legacy_record_id": None if forward else legacy_id,
+        "pit_evidence_kind": ("LEDGER_CONTEMPORANEOUS_CAPTURE" if forward
+                              else "POST_REFERENCE_RECONSTRUCTION"),
+        "verifier_id": ("LEDGER_AUTHORIZED_CAPTURE_V1" if forward
+                        else "LEDGER_RECONSTRUCTION_EVIDENCE_V1"),
+        "archive_captured_at": observation.retrieved_at if forward else None,
+        "reconstruction_completed_at": None if forward else reconstruction_at,
+        "supporting_artifact_ids": [] if forward else sorted(support),
+        "rationale_code": ("CONTEMPORANEOUS_CAPTURE_VERIFIED" if forward
+                           else "POST_REFERENCE_RECONSTRUCTION_VERIFIED"),
+    }
+    evidence = _artifact(storage, "ledger.pit-classification-evidence.v1", evidence_value)
     for artifact_id in (*support, evidence.artifact_id):
         storage.attach_attempt_artifact(
             attempt_id=attempt.attempt_id, fence_token=attempt.fence_token,
@@ -745,13 +773,13 @@ def _classify_raw(
         )
     return storage.create_raw_node_classification(
         attempt_id=attempt.attempt_id, fence_token=attempt.fence_token,
-        derivation_node_id=node.derivation_node_id, pit_reference_at=REFERENCE,
+        derivation_node_id=node.derivation_node_id, pit_reference_at=reference,
         classification_policy_id=policy.classification_policy_id,
         evidence_artifact_id=evidence.artifact_id,
     )
 
 
-def _classify_llm_raw(storage, attempt, policy, interaction):
+def _classify_llm_raw(storage, attempt, policy, interaction, *, reference=REFERENCE):
     observation = interaction["observation"]
     node = interaction["raw_node"]
     artifact = interaction["raw"]
@@ -759,7 +787,7 @@ def _classify_llm_raw(storage, attempt, policy, interaction):
         "schema_name": "ledger.pit-classification-evidence", "schema_version": "1",
         "derivation_node_id": node.derivation_node_id,
         "input_observation_id": observation.input_observation_id,
-        "artifact_id": artifact.artifact_id, "pit_reference_at": REFERENCE,
+        "artifact_id": artifact.artifact_id, "pit_reference_at": reference,
         "record_origin_evidence_kind": "LEDGER_AUTHORIZED_CAPTURE",
         "legacy_namespace": None, "legacy_record_key": None, "legacy_record_id": None,
         "pit_evidence_kind": "PIT_IRRELEVANT_CONTENT",
@@ -774,16 +802,16 @@ def _classify_llm_raw(storage, attempt, policy, interaction):
     )
     return storage.create_raw_node_classification(
         attempt_id=attempt.attempt_id, fence_token=attempt.fence_token,
-        derivation_node_id=node.derivation_node_id, pit_reference_at=REFERENCE,
+        derivation_node_id=node.derivation_node_id, pit_reference_at=reference,
         classification_policy_id=policy.classification_policy_id,
         evidence_artifact_id=evidence.artifact_id,
     )
 
 
-def _classify_derived(storage, attempt, policy, node, parents):
+def _classify_derived(storage, attempt, policy, node, parents, *, reference=REFERENCE):
     return storage.create_derived_node_classification(
         attempt_id=attempt.attempt_id, fence_token=attempt.fence_token,
-        derivation_node_id=node.derivation_node_id, pit_reference_at=REFERENCE,
+        derivation_node_id=node.derivation_node_id, pit_reference_at=reference,
         classification_policy_id=policy.classification_policy_id,
         parent_classification_ids=tuple(
             item.derivation_node_classification_id for item in parents
@@ -894,14 +922,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run an explicit TRINITY multi-ticker pilot")
     parser.add_argument("--ledger-db", type=Path, default=DEFAULT_DATABASE)
     parser.add_argument("--tickers", nargs="+", required=True)
+    parser.add_argument(
+        "--forward", action="store_true",
+        help="acquire fresh EODHD/SEC data; V1 permits dry-run Telegram only",
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="render without Telegram API calls")
     mode.add_argument("--send-telegram", action="store_true", help="send each committed ticker")
     args = parser.parse_args(argv)
     try:
-        batch = run_multiticker_pilot(
-            args.ledger_db, args.tickers, dry_run=args.dry_run,
-        )
+        if args.forward:
+            if not args.dry_run:
+                raise ValueError("forward pilot V1 is dry-run only")
+            from trinity.pilots.forward import run_forward_pilot
+            batch = run_forward_pilot(
+                args.ledger_db, args.tickers, dry_run=True,
+            )
+        else:
+            batch = run_multiticker_pilot(
+                args.ledger_db, args.tickers, dry_run=args.dry_run,
+            )
     except (FileExistsError, OSError, RuntimeError, ValueError) as exc:
         parser.error(str(exc))
     for item in batch.results:
@@ -910,7 +950,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
         elif item.error:
             print(f"{item.ticker}: FAILED: {item.error}")
-    print(render_summary(batch.results))
+    if args.forward:
+        from trinity.pilots.forward import render_forward_summary
+        print(render_forward_summary(batch.results))
+        print("Prices: EODHD | News: EODHD | Primary evidence: SEC EDGAR")
+    else:
+        print(render_summary(batch.results))
     return 1 if any(item.run_status == "FAILED" for item in batch.results) else 0
 
 
