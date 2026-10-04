@@ -124,6 +124,23 @@ def canonical_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def validate_ready_entries(
+    rows: Sequence[Mapping[str, object]], *, expected_count: int | None = None,
+) -> list[dict[str, Any]]:
+    """Validate an explicit READY-only batch without changing Luna semantics."""
+
+    ready = [dict(row) for row in rows]
+    if any(row.get("screening_state") != "READY_TECHNICALLY" for row in ready):
+        raise TriageError("explicit Luna input contains a non-READY ticker")
+    ready.sort(key=lambda row: str(row.get("ticker", "")))
+    tickers = [str(row.get("ticker", "")).upper() for row in ready]
+    if any(not ticker for ticker in tickers) or len(set(tickers)) != len(tickers):
+        raise TriageError("READY input contains empty or duplicate tickers")
+    if expected_count is not None and len(ready) != expected_count:
+        raise TriageError(f"expected {expected_count} READY inputs, found {len(ready)}")
+    return ready
+
+
 def load_ready_entries(path: str | Path, *, expected_count: int | None = None) -> list[dict[str, Any]]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -132,15 +149,11 @@ def load_ready_entries(path: str | Path, *, expected_count: int | None = None) -
     rows = value.get("survivors") if isinstance(value, dict) else None
     if not isinstance(rows, list):
         raise TriageError("pre-research funnel artifact has no survivors list")
-    ready = [dict(row) for row in rows if isinstance(row, dict)
-             and row.get("screening_state") == "READY_TECHNICALLY"]
-    ready.sort(key=lambda row: str(row.get("ticker", "")))
-    tickers = [str(row.get("ticker", "")).upper() for row in ready]
-    if any(not ticker for ticker in tickers) or len(set(tickers)) != len(tickers):
-        raise TriageError("READY input contains empty or duplicate tickers")
-    if expected_count is not None and len(ready) != expected_count:
-        raise TriageError(f"expected {expected_count} READY inputs, found {len(ready)}")
-    return ready
+    return validate_ready_entries(
+        [row for row in rows if isinstance(row, dict)
+         and row.get("screening_state") == "READY_TECHNICALLY"],
+        expected_count=expected_count,
+    )
 
 
 def _clean_text(value: object, limit: int = 360) -> str:
@@ -458,9 +471,14 @@ def run_triage(
     luna: Any | None = None, universe_path: str | Path = CANONICAL_UNIVERSE,
     expected_count: int | None = EXPECTED_READY_COUNT,
     clock: Callable[[], datetime] = utc_now,
+    ready_entries: Sequence[Mapping[str, object]] | None = None,
 ) -> dict[str, Any]:
     batch_started_wall, batch_started = clock(), time.perf_counter()
-    rows = load_ready_entries(funnel_path, expected_count=expected_count)
+    rows = (
+        load_ready_entries(funnel_path, expected_count=expected_count)
+        if ready_entries is None else
+        validate_ready_entries(ready_entries, expected_count=expected_count)
+    )
     mapping = {item.ticker: item.provider_ticker for item in load_canonical_universe(universe_path)}
     if any(str(row["ticker"]) not in mapping for row in rows):
         raise TriageError("READY input includes a ticker outside the canonical universe")
