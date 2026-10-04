@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 import uuid
 
-from trinity.italia_v1 import analyze_company, build_facts
+from trinity.italia_v1 import analyze_company, build_facts_v2
 from trinity.ledger import LedgerStorage
 from trinity.notifications.telegram import load_committed_setup, render_telegram_message
 from trinity.pilots.multiticker import (
@@ -82,7 +82,7 @@ def run_forward_pilot(
                     or pack.company_input.get("as_of") != sources.as_of
                 ):
                     raise ValueError(f"{ticker}: fresh source bundle identity mismatch")
-                facts = build_facts(pack.company_input, sources.as_of)
+                facts = build_facts_v2(pack.company_input, sources.as_of)
                 persisted = _persist_inputs(
                     storage, attempt, ticker, pack, facts, sources.bars,
                     sources.price_raw, shared["pit_policy"],
@@ -93,7 +93,10 @@ def run_forward_pilot(
                     forward=True,
                 )
                 provider = llm_provider_factory(ticker)
-                thesis = analyze_company(pack.company_input, sources.as_of, provider)
+                thesis = analyze_company(
+                    pack.company_input, sources.as_of, provider,
+                    facts_builder=build_facts_v2,
+                )
                 thesis = replace(
                     thesis, **provider.revisions,
                     claim_refs=provider.validated_claim_refs,

@@ -1,7 +1,8 @@
-"""Read-only USA thesis slice over the existing frozen EODHD caches.
+"""USA V2 normalization over captured EODHD and SEC evidence.
 
-The cache is a historical observation, not a live feed. News is only admitted
-when the issuer is explicit in the title and the cached text is a wire release.
+Historical V1 keeps its issuer-release-only contract. Forward Facts Contract
+V2 also admits narrowly validated third-party corporate-action reporting while
+preserving its non-primary provenance and uncertainty.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import re
 from typing import Any, Mapping
 
 from trinity.italia_real import CodexCLIProvider, _ANALYST_SCHEMA
-from trinity.italia_v1 import analyze_company, build_facts, save_thesis
+from trinity.italia_v1 import analyze_company, build_facts, build_facts_v2, save_thesis
 from trinity.usa_issuer_registry import REGISTRY, get_issuer
 from trinity.usa_documents import DEFAULT_CACHE as DOCUMENT_CACHE, load_document_coverage
 
@@ -48,6 +49,18 @@ COMPANIES = {
     for record in REGISTRY.supported
 }
 WIRE = re.compile(r"(?:BUSINESS WIRE|PRNewswire|PR NEWSWIRE)", re.I)
+CORPORATE_ACTION = re.compile(
+    r"\b(?:takeover|take[- ]private|go[- ]private|acquisition (?:offer|proposal|approach)|"
+    r"merger (?:talks?|negotiations?|agreement)|definitive (?:merger|transaction) agreement|"
+    r"regulatory (?:approval|clearance|review)|shareholder approval|tender offer)\b",
+    re.I,
+)
+REPORTED_LANGUAGE = re.compile(
+    r"\b(?:reports?|reported|according to|citing|people familiar|sources?|talks?|approach|"
+    r"financing efforts?)\b",
+    re.I,
+)
+RUMORED_LANGUAGE = re.compile(r"\b(?:rumou?rs?|chatter|speculation|unconfirmed)\b", re.I)
 RESULT = re.compile(r"(?:first|second|third|fourth)[- ]quarter.{0,35}results|quarterly.{0,20}results|revenue growth", re.I)
 SCHEDULED = re.compile(r"to host|conference call|available on|to release|to announce|date for release|to report", re.I)
 GUIDANCE = re.compile(r"\b(?:raises?|raised|reiterates?|reaffirm(?:s|ed)?|lowers?|lowered|updates?|provides?|issues?)\b.{0,75}\b(?:guidance|outlook)\b|\b(?:guidance|outlook)\b.{0,60}\b(?:raises?|raised|reiterates?|reaffirm(?:s|ed)?|lowers?|lowered|updates?|provides?|issues?)\b", re.I)
@@ -271,11 +284,68 @@ def _issuer_release(record: Mapping[str, object], ticker: str) -> bool:
             and any(alias.casefold() in content[:2000].casefold() for alias in aliases))
 
 
+def _news_evidence_id(record: Mapping[str, object], ticker: str) -> str:
+    return f"news:{ticker}:{str(record.get('canonical_record_sha256') or '')[:16]}"
+
+
+def _third_party_corporate_action(
+    record: Mapping[str, object], ticker: str,
+) -> tuple[bool, str, str]:
+    """Validate a narrow company-specific corporate-action report."""
+
+    issuer = get_issuer(ticker)
+    symbols = [str(item).upper() for item in (record.get("symbols") or [])]
+    if issuer.provider_symbol not in symbols:
+        return False, "UNKNOWN", "PROVIDER_TICKER_MISMATCH"
+    title = html.unescape(str(record.get("title") or "")).strip()
+    content = html.unescape(str(record.get("content") or "")).strip()
+    published = str(record.get("published_ts") or record.get("date") or "")
+    if not published:
+        return False, "UNKNOWN", "MISSING_PUBLICATION_TIMESTAMP"
+    aliases = issuer.aliases
+    matching_aliases = [alias for alias in aliases if alias.casefold() in title.casefold()]
+    if not matching_aliases:
+        return False, "UNKNOWN", "ISSUER_NOT_SPECIFIC_IN_TITLE"
+    if not any(title.casefold().startswith(alias.casefold()) for alias in matching_aliases) and not (
+        CORPORATE_ACTION.search(title)
+    ):
+        return False, "UNKNOWN", "ISSUER_NOT_PRIMARY_SUBJECT"
+    # Only the headline and opening report establish the subject. Related-link
+    # modules and company-history boilerplate later in an article must not turn
+    # an otherwise unrelated story into a corporate-action event.
+    material_text = f"{title}\n{content[:650]}"
+    if not CORPORATE_ACTION.search(material_text):
+        return False, "UNKNOWN", "NO_SUPPORTED_CORPORATE_ACTION"
+    if not REPORTED_LANGUAGE.search(material_text) and not RUMORED_LANGUAGE.search(material_text):
+        return False, "UNKNOWN", "NO_REPORTING_ATTRIBUTION"
+    if not str(record.get("link") or "").strip():
+        return False, "UNKNOWN", "MISSING_SOURCE_URL"
+    # Explicit rumor/unconfirmed language is the conservative controlling state,
+    # even when the prose also calls the underlying communication an approach.
+    state = "RUMORED" if RUMORED_LANGUAGE.search(material_text) else "REPORTED"
+    return True, state, "ADMITTED_MATERIAL_THIRD_PARTY_REPORT"
+
+
+def _third_party_event_summary(record: Mapping[str, object]) -> str:
+    """Preserve report uncertainty and the material sentence in event facts."""
+
+    title = html.unescape(str(record.get("title") or "")).strip()
+    content = html.unescape(str(record.get("content") or "")).strip()[:650]
+    sentence = title if CORPORATE_ACTION.search(title) else next(
+        (part.strip() for part in re.split(r"(?<=[.!?])\s+", content)
+         if CORPORATE_ACTION.search(part)), title,
+    )
+    sentence = re.sub(r"\s+", " ", sentence)[:320].rstrip()
+    state = str(record.get("_confirmation_state") or "REPORTED")
+    return f"Third-party {state.lower()} information: {sentence}"
+
+
 def _news_records(
     ticker: str, as_of: str, *, news_dir: Path = NEWS, forward: bool = False,
-) -> tuple[list[dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], int, dict[str, str]]:
     accepted: list[dict[str, object]] = []
     rejected = 0
+    decisions: dict[str, str] = {}
     pattern = "*.jsonl" if forward else "2026-*.jsonl"
     for path in sorted((news_dir / ticker).glob(pattern)):
         if ((not forward and path.stem < "2026-04") or
@@ -287,7 +357,19 @@ def _news_records(
                 published = str(record.get("published_ts") or "")[:10]
                 if not published or published > as_of:
                     continue
-                if not _issuer_release(record, ticker):
+                evidence_id = _news_evidence_id(record, ticker)
+                if _issuer_release(record, ticker):
+                    record["_source_class"] = "ISSUER_RELEASE"
+                    record["_confirmation_state"] = "CONFIRMED"
+                elif forward:
+                    admitted, state, reason = _third_party_corporate_action(record, ticker)
+                    decisions[evidence_id] = reason
+                    if not admitted:
+                        rejected += 1
+                        continue
+                    record["_source_class"] = "THIRD_PARTY_REPORT"
+                    record["_confirmation_state"] = state
+                else:
                     rejected += 1
                     continue
                 record["_path"] = str(path)
@@ -295,7 +377,7 @@ def _news_records(
                 record["_line_sha256"] = _digest(line.encode("utf-8"))
                 accepted.append(record)
     accepted.sort(key=lambda r: str(r["published_ts"]), reverse=True)
-    return accepted, rejected
+    return accepted, rejected, decisions
 
 
 def _record_evidence(
@@ -304,14 +386,62 @@ def _record_evidence(
 ) -> dict[str, object]:
     title = html.unescape(str(record["title"]))
     content = html.unescape(str(record["content"]))
-    identifier = f"news:{ticker}:{str(record['canonical_record_sha256'])[:16]}"
+    identifier = _news_evidence_id(record, ticker)
     return {
         "source": source_name, "published_at": str(record["published_ts"])[:10],
         "identifier": identifier, "url": record.get("link"), "excerpt": content[:4500],
         "title": title, "retrieved_at": str(record.get("ingestion_ts") or "2026-09-13")[:10],
         "content_sha256": str(record["_line_sha256"]), "raw_path": f"{record['_path']}:{record['_line']}",
-        "published_at_precision": "timestamp", "document_kind": "ISSUER_RELEASE",
+        "published_at_precision": "timestamp",
+        "document_kind": str(record.get("_source_class") or "ISSUER_RELEASE"),
     }
+
+
+def _material_8k_items(document: Mapping[str, object]) -> tuple[str, ...]:
+    """Return material non-earnings items supported by a mixed-purpose 8-K."""
+
+    if document.get("document_kind") != "SEC_8_K_EARNINGS":
+        return ()
+    return tuple(dict.fromkeys(re.findall(
+        r"\bItem\s+(1\.01|2\.01|2\.05|5\.02|8\.01)\b",
+        str(document.get("excerpt") or ""), re.I,
+    )))
+
+
+def _apply_material_evidence_continuity(
+    required_ids: tuple[str, ...], *, ticker: str,
+    records_by_id: Mapping[str, dict[str, object]],
+    decisions: Mapping[str, str], chosen: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    """Admit validated upstream evidence or record why it was excluded."""
+
+    continuity: list[dict[str, str]] = []
+    expected_prefix = f"news:{ticker}:"
+    for evidence_id in dict.fromkeys(required_ids):
+        if not evidence_id.startswith(expected_prefix):
+            continuity.append({
+                "evidence_id": evidence_id, "status": "EXCLUDED",
+                "reason": (
+                    "INVALID_TICKER_EVIDENCE_IDENTIFIER"
+                    if evidence_id.startswith("news:")
+                    else "UNSUPPORTED_CONTINUITY_EVIDENCE_CLASS"
+                ),
+            })
+            continue
+        record = records_by_id.get(evidence_id)
+        if record is not None:
+            if record not in chosen:
+                chosen.append(record)
+            continuity.append({
+                "evidence_id": evidence_id, "status": "ADMITTED",
+                "reason": decisions.get(evidence_id, "ADMITTED_VALID_ISSUER_RELEASE"),
+            })
+        else:
+            continuity.append({
+                "evidence_id": evidence_id, "status": "EXCLUDED",
+                "reason": decisions.get(evidence_id, "NOT_PRESENT_IN_CAPTURE"),
+            })
+    return continuity
 
 
 def _reported_period(text: str) -> str:
@@ -866,6 +996,7 @@ def load_company(
     forward: bool = False, price_retrieved_at: str = "2026-09-13",
     price_source: str = "EODHD frozen daily USA cache",
     news_source: str = "EODHD cached issuer wire release",
+    continuity_evidence_ids: tuple[str, ...] = (),
 ) -> EvidencePack:
     """Assemble cached data and source-linked literal facts without network calls."""
     try:
@@ -880,17 +1011,34 @@ def load_company(
         ticker, as_of, prices_dir=prices_dir, source_name=price_source,
         retrieved_at=price_retrieved_at,
     )
-    records, rejected = _news_records(ticker, as_of, news_dir=news_dir, forward=forward)
-    results = [r for r in records if RESULT.search(html.unescape(str(r["title"])))
+    records, rejected, news_decisions = _news_records(
+        ticker, as_of, news_dir=news_dir, forward=forward
+    )
+    issuer_records = [r for r in records if r.get("_source_class") == "ISSUER_RELEASE"]
+    third_party_records = [
+        r for r in records if r.get("_source_class") == "THIRD_PARTY_REPORT"
+    ]
+    results = [r for r in issuer_records if RESULT.search(html.unescape(str(r["title"])))
                and not SCHEDULED.search(html.unescape(str(r["title"]))) ]
-    announcement = [r for r in records if RESULT.search(html.unescape(str(r["title"])))
+    announcement = [r for r in issuer_records if RESULT.search(html.unescape(str(r["title"])))
                     and r not in results]
     chosen = results[:2] or announcement[:1]
-    latest_other = next((r for r in records if r not in chosen and
+    latest_other = next((r for r in issuer_records if r not in chosen and
                          not RESULT.search(html.unescape(str(r["title"]))) and
                          re.search(r"guidance|acqui|approv|trial|dividend|buyback|contract|invest", str(r["title"]), re.I)), None)
     if latest_other:
         chosen.append(latest_other)
+    required = tuple(dict.fromkeys(str(item) for item in continuity_evidence_ids))
+    by_evidence_id = {_news_evidence_id(record, ticker): record for record in records}
+    continuity = _apply_material_evidence_continuity(
+        required, ticker=ticker, records_by_id=by_evidence_id,
+        decisions=news_decisions, chosen=chosen,
+    )
+    latest_corporate = next(
+        (r for r in third_party_records if r not in chosen), None
+    ) if not required else None
+    if latest_corporate:
+        chosen.append(latest_corporate)
     # Retain publication order for novelty comparison, regardless of selection order.
     chosen.sort(key=lambda r: str(r["published_ts"]))
     evidence = [price_evidence] + [
@@ -907,12 +1055,24 @@ def load_company(
         is_result = bool(RESULT.search(title) and not SCHEDULED.search(title))
         metrics = _literal_metrics(item["excerpt"], item["identifier"]) if is_result else []
         guidance_ranges = _guidance_ranges(item["excerpt"], item["identifier"]) if is_result else []
+        event_facts = {"novelty": novelty, "reported_metrics": metrics,
+                       "guidance_ranges": guidance_ranges,
+                       "guidance_language": guidance, "evidence_identifier": item["identifier"],
+                       "issuer_release": True}
+        if forward:
+            event_facts.update({
+                "source_class": str(record["_source_class"]),
+                "confirmation_state": str(record["_confirmation_state"]),
+            })
+            if record["_source_class"] == "THIRD_PARTY_REPORT":
+                event_facts["issuer_release"] = None
+        summary = (
+            _third_party_event_summary(record)
+            if record.get("_source_class") == "THIRD_PARTY_REPORT" else title
+        )
         events.append({"kind": "RESULTS" if is_result else "CORPORATE_EVENT",
-                       "published_at": item["published_at"], "summary": title,
-                       "facts": {"novelty": novelty, "reported_metrics": metrics,
-                                 "guidance_ranges": guidance_ranges,
-                                 "guidance_language": guidance, "evidence_identifier": item["identifier"],
-                                 "issuer_release": True},
+                       "published_at": item["published_at"], "summary": summary,
+                       "facts": event_facts,
                        "guidance": guidance["source_excerpt"] if guidance else None})
     document_coverage = load_document_coverage(ticker, as_of, cache_dir=documents_dir)
     if document_coverage:
@@ -945,21 +1105,41 @@ def load_company(
                 guidance_observations.extend({**item, "published_at": document["published_at"]}
                                              for item in ranges)
                 metrics = _literal_metrics(document["excerpt"], document["evidence_id"])
+                result_facts = {"novelty": "NEW_PRIMARY_DOCUMENT", "reported_metrics": metrics,
+                                "guidance_ranges": ranges, "guidance_language": None,
+                                "evidence_identifier": document["evidence_id"],
+                                "primary_source": True}
+                if forward:
+                    result_facts.update({"source_class": "PRIMARY_SEC",
+                                         "confirmation_state": "CONFIRMED"})
                 events.append({
                     "kind": "RESULTS", "published_at": document["published_at"],
                     "summary": document["title"],
-                    "facts": {"novelty": "NEW_PRIMARY_DOCUMENT", "reported_metrics": metrics,
-                              "guidance_ranges": ranges, "guidance_language": None,
-                              "evidence_identifier": document["evidence_id"],
-                              "primary_source": True},
+                    "facts": result_facts,
                     "guidance": (ranges[0]["source_excerpt"] if ranges else None),
                 })
             elif document["document_kind"] == "SEC_8_K_MATERIAL":
+                material_facts = {"evidence_identifier": document["evidence_id"],
+                                  "primary_source": True}
+                if forward:
+                    material_facts.update({"source_class": "PRIMARY_SEC",
+                                           "confirmation_state": "CONFIRMED"})
                 events.append({
                     "kind": "CORPORATE_EVENT", "published_at": document["published_at"],
                     "summary": document["title"],
+                    "facts": material_facts, "guidance": None,
+                })
+            elif forward and (material_items := _material_8k_items(document)):
+                events.append({
+                    "kind": "CORPORATE_EVENT", "published_at": document["published_at"],
+                    "summary": (
+                        f"{document['title']}; material SEC "
+                        + ", ".join(f"Item {item}" for item in material_items)
+                    ),
                     "facts": {"evidence_identifier": document["evidence_id"],
-                              "primary_source": True}, "guidance": None,
+                              "primary_source": True, "source_class": "PRIMARY_SEC",
+                              "confirmation_state": "CONFIRMED"},
+                    "guidance": None,
                 })
         for current in sorted(guidance_observations,
                               key=lambda item: str(item["published_at"]), reverse=True):
@@ -990,19 +1170,23 @@ def load_company(
         periodic = next((item for item in documents
                          if item["document_kind"] == "SEC_PERIODIC_REPORT"), None)
         if periodic:
+            periodic_facts = {"structured_sec_facts": structured,
+                              "evidence_identifier": periodic["evidence_id"],
+                              "primary_source": True}
+            if forward:
+                periodic_facts.update({"source_class": "PRIMARY_SEC",
+                                       "confirmation_state": "CONFIRMED"})
             events.append({
                 "kind": "SEC_PERIODIC_REPORT", "published_at": periodic["published_at"],
                 "summary": periodic["title"],
-                "facts": {"structured_sec_facts": structured,
-                          "evidence_identifier": periodic["evidence_id"],
-                          "primary_source": True}, "guidance": None,
+                "facts": periodic_facts, "guidance": None,
             })
     _attach_fact_ids(ticker, price, str(price_evidence["identifier"]), events)
     company_input = {"company_name": company, "ticker": ticker, "provider_symbol": issuer.provider_symbol,
                      "as_of": as_of, "schema_type": sector, "price": price,
                      "fundamentals": {}, "financial_facts": {}, "events": events, "evidence": evidence}
     # Run the reused point-in-time/provenance validator before any LLM call.
-    build_facts(company_input, as_of)
+    (build_facts_v2 if forward else build_facts)(company_input, as_of)
     limitations = (["SEC periodic report and earnings filings are primary but issuer facts remain unaudited",
                     "Some non-GAAP and guidance metrics are only available in issuer exhibits"]
                    if document_coverage else
@@ -1012,6 +1196,7 @@ def load_company(
               "selected_release_count": len(chosen), "selected_titles": [r["title"] for r in chosen],
               "sec_document_count": len(document_coverage["documents"]) if document_coverage else 0,
               "sec_structured_fact_count": len(document_coverage.get("structured_facts", [])) if document_coverage else 0,
+              "material_evidence_continuity": continuity,
               "limitations": limitations}
     return EvidencePack(ticker, as_of, company_input, triage)
 

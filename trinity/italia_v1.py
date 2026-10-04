@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Protocol
+from typing import Callable, Protocol
 from uuid import uuid4
 
 
@@ -267,6 +267,56 @@ def build_facts(company_input: Mapping[str, object], as_of: str | date) -> dict[
     }
 
 
+def build_facts_v2(company_input: Mapping[str, object], as_of: str | date) -> dict[str, object]:
+    """Build additive USA facts V2 while preserving the complete V1 projection."""
+
+    facts = build_facts(company_input, as_of)
+    source_classes = {"PRIMARY_SEC", "ISSUER_RELEASE", "THIRD_PARTY_REPORT"}
+    confirmation_states = {"CONFIRMED", "REPORTED", "RUMORED", "UNKNOWN"}
+    for index, event in enumerate(facts["events"]):
+        event_facts = _mapping(event["facts"], f"events[{index}].facts")
+        source_class = _required_text(
+            event_facts.get("source_class"), f"events[{index}].facts.source_class"
+        )
+        confirmation_state = _required_text(
+            event_facts.get("confirmation_state"),
+            f"events[{index}].facts.confirmation_state",
+        )
+        if source_class not in source_classes:
+            raise ItaliaV1InputError(
+                f"events[{index}].facts.source_class must be one of {sorted(source_classes)}"
+            )
+        if confirmation_state not in confirmation_states:
+            raise ItaliaV1InputError(
+                "events[{}].facts.confirmation_state must be one of {}".format(
+                    index, sorted(confirmation_states)
+                )
+            )
+        issuer_release = event_facts.get("issuer_release")
+        primary_source = event_facts.get("primary_source")
+        if source_class == "PRIMARY_SEC":
+            if primary_source is not True or issuer_release is True or confirmation_state != "CONFIRMED":
+                raise ItaliaV1InputError(
+                    f"events[{index}] PRIMARY_SEC provenance is inconsistent"
+                )
+        elif source_class == "ISSUER_RELEASE":
+            if issuer_release is not True or primary_source is True or confirmation_state != "CONFIRMED":
+                raise ItaliaV1InputError(
+                    f"events[{index}] ISSUER_RELEASE provenance is inconsistent"
+                )
+        elif (
+            event["kind"] != "CORPORATE_EVENT"
+            or issuer_release is not None
+            or primary_source is not None
+            or confirmation_state not in {"REPORTED", "RUMORED"}
+        ):
+            raise ItaliaV1InputError(
+                f"events[{index}] THIRD_PARTY_REPORT provenance is inconsistent"
+            )
+    facts["facts_contract_version"] = "2"
+    return facts
+
+
 @dataclass(frozen=True)
 class ThesisRecord:
     """Serializable, validated result of one Italia V1 analysis."""
@@ -369,7 +419,10 @@ class ThesisRecord:
             self.company_name, self.ticker, self.isin, day
         ):
             raise ItaliaV1InputError("facts.identity must match the thesis identity")
-        canonical_facts = build_facts({
+        facts_builder = (
+            build_facts_v2 if facts.get("facts_contract_version") == "2" else build_facts
+        )
+        canonical_facts = facts_builder({
             **identity,
             "price": facts.get("price"),
             "fundamentals": facts.get("fundamentals"),
@@ -396,10 +449,11 @@ class ThesisRecord:
 def analyze_company(
     company_input: Mapping[str, object], as_of: str | date,
     provider: AnalystCriticProvider,
+    *, facts_builder: Callable[[Mapping[str, object], str | date], dict[str, object]] = build_facts,
 ) -> ThesisRecord:
     """Build facts, request analyst and critic outputs, then assemble a thesis."""
 
-    facts = build_facts(company_input, as_of)
+    facts = facts_builder(company_input, as_of)
     draft = _mapping(provider.analyze(_json_copy(facts, "facts")), "analyst result")
     analysis = {field: _required_text(draft.get(field), field) for field in _ANALYSIS_TEXT_FIELDS}
     for field in ("catalysts", "risks"):

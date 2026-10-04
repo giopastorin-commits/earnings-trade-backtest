@@ -22,6 +22,7 @@ from trinity.usa_v2 import EvidencePack, load_company
 EODHD_EOD = "https://eodhd.com/api/eod/{provider_symbol}"
 EODHD_NEWS = "https://eodhistoricaldata.com/api/news"
 MAX_PRICE_AGE_DAYS = 7
+DEFAULT_CONTINUITY_PATH = Path("data/local/luna_triage_v1_latest.json")
 MIN_SETUP_BARS = 201
 
 
@@ -88,6 +89,7 @@ class EODHDSECForwardProvider:
         session: requests.Session | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sec_acquirer: Callable[..., Path] = acquire_sec_documents,
+        continuity_path: str | Path | None = DEFAULT_CONTINUITY_PATH,
     ) -> None:
         self.source_root = Path(source_root).resolve()
         self.api_key = api_key or os.getenv("EODHD_API_KEY")
@@ -99,6 +101,7 @@ class EODHDSECForwardProvider:
             truststore.inject_into_ssl()
         self.clock = clock
         self.sec_acquirer = sec_acquirer
+        self.continuity_path = Path(continuity_path) if continuity_path is not None else None
 
     def acquire(self, ticker: str) -> ForwardTickerSources:
         issuer = get_issuer(ticker)
@@ -152,6 +155,7 @@ class EODHDSECForwardProvider:
             price_retrieved_at=utc_timestamp(price_time),
             price_source="EODHD live daily USA API",
             news_source="EODHD live issuer/news API",
+            continuity_evidence_ids=self._continuity_evidence_ids(ticker),
         )
         if not any(str(item.get("source", "")).startswith("SEC EDGAR")
                    for item in pack.company_input.get("evidence", [])):
@@ -170,6 +174,25 @@ class EODHDSECForwardProvider:
             fresh_price_timestamp=as_of,
             freshest_evidence_timestamp=max((item for item in evidence_times if item), default="-"),
         )
+
+    def _continuity_evidence_ids(self, ticker: str) -> tuple[str, ...]:
+        path = self.continuity_path
+        if path is None or not path.is_file():
+            return ()
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            results = value.get("results", [])
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, AttributeError) as exc:
+            raise ForwardAcquisitionError("invalid Luna evidence-continuity file") from exc
+        match = next((item for item in results if isinstance(item, dict) and
+                      str(item.get("ticker") or "").upper() == ticker and
+                      item.get("decision") == "ESCALATE"), None)
+        if match is None:
+            return ()
+        selected = match.get("selected_evidence_ids", [])
+        if not isinstance(selected, list) or any(not isinstance(item, str) for item in selected):
+            raise ForwardAcquisitionError(f"{ticker}: invalid Luna selected evidence IDs")
+        return tuple(selected)
 
     def _now(self) -> datetime:
         value = self.clock()

@@ -341,9 +341,12 @@ def _persist_inputs(
         storage, attempt, pit_policy, ohlcv_source, ohlcv_observation, ohlcv_raw,
         ticker, observed_at, (proof.artifact_id,), reference=reference, forward=forward,
     )
-    facts_artifact = _artifact(
-        storage, "ledger.usa-v2-facts.v1", _canonical_fact_numbers(facts),
+    facts_kind = (
+        "ledger.usa-v2-facts.v2"
+        if facts.get("facts_contract_version") == "2"
+        else "ledger.usa-v2-facts.v1"
     )
+    facts_artifact = _artifact(storage, facts_kind, _canonical_fact_numbers(facts))
     facts_node = storage.create_normalized_fact_node(
         attempt_id=attempt.attempt_id,
         fence_token=attempt.fence_token,

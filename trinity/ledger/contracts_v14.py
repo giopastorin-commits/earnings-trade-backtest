@@ -223,6 +223,8 @@ def research_result_value(record: object) -> dict[str, Any]:
         "reported_metrics", "guidance_ranges", "guidance_language",
         "guidance_changes", "structured_sec_facts",
     }
+    if facts.get("facts_contract_version") == "2":
+        fact_keys.update({"source_class", "confirmation_state"})
     for event in facts["events"]:
         branch = event["facts"]
         for key in fact_keys:
@@ -326,6 +328,7 @@ def validate_json_artifact(
         "ledger.llm-invocation-success.v1": _validate_success,
         "ledger.llm-error.v1": _validate_error,
         "ledger.usa-v2-stage-result.v1": _validate_stage,
+        "ledger.usa-v2-facts.v2": _validate_facts_v2,
         "ledger.usa-v2-research-method-definition.v1": lambda item: _equal(item, RESEARCH_METHOD_DEFINITION, "Research method"),
         "ledger.usa-setup-v1-policy-definition.v1": lambda item: _equal(item, SETUP_POLICY_DEFINITION, "Setup policy"),
         "ledger.usa-setup-v1-result.v1": validate_setup_result,
@@ -551,7 +554,10 @@ def _validate_research_result(value: Any) -> None:
         _fail("Research confidence/prompt contract differs")
     _claim_refs(value["claim_refs"], include_errors=True, errors_empty=True)
     _claim_refs(value["rejected_claim_refs"], include_errors=True, errors_empty=False)
-    _validate_facts(value["facts"])
+    if value["facts"].get("facts_contract_version") == "2":
+        _validate_facts_v2(value["facts"])
+    else:
+        _validate_facts(value["facts"])
     if value["evidence"] != value["facts"]["evidence"]:
         _fail("Research evidence must exactly copy facts.evidence")
     assessments = _event_assessments(value["event_assessments"])
@@ -561,7 +567,20 @@ def _validate_research_result(value: Any) -> None:
 
 
 def _validate_facts(value: Any) -> None:
-    _closed(value, {"identity", "price", "fundamentals", "financial_facts", "events", "evidence", "missing_fields"}, "USA facts")
+    _validate_facts_contract(value, v2=False)
+
+
+def _validate_facts_v2(value: Any) -> None:
+    _validate_facts_contract(value, v2=True)
+
+
+def _validate_facts_contract(value: Any, *, v2: bool) -> None:
+    keys = {"identity", "price", "fundamentals", "financial_facts", "events", "evidence", "missing_fields"}
+    if v2:
+        keys.add("facts_contract_version")
+    _closed(value, keys, "USA facts")
+    if v2 and value["facts_contract_version"] != "2":
+        _fail("USA facts V2 version marker differs")
     identity = value["identity"]
     _closed(identity, {"company_name", "ticker", "provider_symbol", "isin", "as_of", "schema_type"}, "identity")
     _text(identity["company_name"], "company_name"); _text(identity["ticker"], "ticker")
@@ -583,7 +602,8 @@ def _validate_facts(value: Any) -> None:
     if fundamentals["published_at"] is not None and (not isinstance(fundamentals["published_at"], str) or not DATE_RE.fullmatch(fundamentals["published_at"])): _fail("fundamentals published_at invalid")
     if not isinstance(value["events"], list): _fail("events must be an array")
     fact_ids: set[str] = set()
-    for event in value["events"]: _validate_event(event, fact_ids)
+    for event in value["events"]:
+        (_validate_event_v2 if v2 else _validate_event)(event, fact_ids)
     _validate_evidence(value["evidence"])
     _unique_strings(value["missing_fields"], "missing_fields")
 
@@ -646,6 +666,59 @@ def _validate_event(event: Any, fact_ids: set[str]) -> None:
         _closed(language, {"source_excerpt", "evidence_identifier", "extraction_method"}, "guidance language")
         for field in language: _text(language[field], field)
         if language["extraction_method"] != "literal_guidance_language": _fail("guidance-language method invalid")
+
+
+def _validate_event_v2(event: Any, fact_ids: set[str]) -> None:
+    facts = event.get("facts") if isinstance(event, dict) else None
+    if not isinstance(facts, dict):
+        _fail("event facts must be an object")
+    keys = {
+        "evidence_identifier", "novelty", "issuer_release", "primary_source",
+        "reported_metrics", "guidance_ranges", "guidance_language",
+        "guidance_changes", "structured_sec_facts", "source_class",
+        "confirmation_state",
+    }
+    _closed(facts, keys, "event facts V2")
+    source_class = _enum(
+        facts["source_class"],
+        ("PRIMARY_SEC", "ISSUER_RELEASE", "THIRD_PARTY_REPORT"),
+        "source_class",
+    )
+    confirmation = _enum(
+        facts["confirmation_state"],
+        ("CONFIRMED", "REPORTED", "RUMORED", "UNKNOWN"),
+        "confirmation_state",
+    )
+    if source_class == "THIRD_PARTY_REPORT":
+        _closed(event, {"kind", "published_at", "summary", "facts", "guidance"}, "event")
+        if event["kind"] != "CORPORATE_EVENT":
+            _fail("third-party report must be a corporate event")
+        if confirmation not in {"REPORTED", "RUMORED"}:
+            _fail("third-party report confirmation state invalid")
+        if facts["issuer_release"] is not None or facts["primary_source"] is not None:
+            _fail("third-party report source flags invalid")
+        if facts["novelty"] not in {"NEW_RELEASE", "REITERATION"}:
+            _fail("third-party report novelty invalid")
+        if any(facts[name] for name in (
+            "reported_metrics", "guidance_ranges", "guidance_changes",
+            "structured_sec_facts",
+        )) or facts["guidance_language"] is not None or event["guidance"] is not None:
+            _fail("third-party report may not create structured primary facts")
+        _text(facts["evidence_identifier"], "evidence_identifier")
+        _text(event["summary"], "event summary")
+        if not isinstance(event["published_at"], str) or not DATE_RE.fullmatch(event["published_at"]):
+            _fail("event date invalid")
+        return
+    if confirmation != "CONFIRMED":
+        _fail("primary or issuer event must be confirmed")
+    if source_class == "PRIMARY_SEC" and facts["primary_source"] is not True:
+        _fail("PRIMARY_SEC event lacks primary source flag")
+    if source_class == "ISSUER_RELEASE" and facts["issuer_release"] is not True:
+        _fail("ISSUER_RELEASE event lacks issuer release flag")
+    legacy = json.loads(json.dumps(event))
+    legacy["facts"].pop("source_class")
+    legacy["facts"].pop("confirmation_state")
+    _validate_event(legacy, fact_ids)
 
 
 def _reported_metric(item: Any) -> None:

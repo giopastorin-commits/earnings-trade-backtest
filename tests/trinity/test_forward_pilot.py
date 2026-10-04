@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -33,6 +34,14 @@ class _FixtureSource:
         if ticker == "JPM":
             raise ForwardAcquisitionError("JPM: injected missing fresh source")
         pack = load_company(ticker, AS_OF)
+        company_input = deepcopy(pack.company_input)
+        for event in company_input["events"]:
+            facts = event["facts"]
+            facts["source_class"] = (
+                "PRIMARY_SEC" if facts.get("primary_source") is True else "ISSUER_RELEASE"
+            )
+            facts["confirmation_state"] = "CONFIRMED"
+        pack = replace(pack, company_input=company_input)
         raw = (PRICE_CACHE / f"{ticker}.json").read_bytes()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         return ForwardTickerSources(
@@ -85,6 +94,24 @@ def test_forward_mode_is_dry_run_only_and_makes_no_provider_call(tmp_path):
             source_provider_factory=lambda root: calls.append(root),
         )
     assert calls == []
+
+
+def test_forward_continuity_preserves_every_luna_selected_evidence_id(tmp_path):
+    continuity = tmp_path / "luna.json"
+    continuity.write_text(json.dumps({"results": [{
+        "ticker": "AAPL", "decision": "ESCALATE",
+        "selected_evidence_ids": [
+            "news:AAPL:0123456789abcdef",
+            "earnings-calendar:AAPL.US:2026-10-29",
+        ],
+    }]}), encoding="utf-8")
+    provider = EODHDSECForwardProvider(
+        tmp_path / "sources", api_key="test-only", continuity_path=continuity,
+    )
+    assert provider._continuity_evidence_ids("AAPL") == (
+        "news:AAPL:0123456789abcdef",
+        "earnings-calendar:AAPL.US:2026-10-29",
+    )
 
 
 def test_mocked_fresh_provider_uses_only_execution_paths(monkeypatch, tmp_path):
