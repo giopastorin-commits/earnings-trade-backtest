@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 from trinity.italia_real import CodexCLIProvider, _ANALYST_SCHEMA
 from trinity.italia_v1 import analyze_company, build_facts, save_thesis
+from trinity.usa_issuer_registry import REGISTRY, get_issuer
 from trinity.usa_documents import DEFAULT_CACHE as DOCUMENT_CACHE, load_document_coverage
 
 
@@ -27,7 +28,7 @@ AS_OF = "2026-09-12"
 DATASET = Path("C:/Users/giopa/trinity-scanner-v1/historical/raw")
 PRICES = DATASET / "eodhd_prices_518_daily_20220101_20260913_v1/provider_raw"
 NEWS = DATASET / "eodhd_news/eodhd_news_historical_20250101_20260912_v2/records"
-COMPANIES = {
+_ORIGINAL_COMPANIES = {
     "AAPL": ("Apple", "TECHNOLOGY", ("Apple",)),
     "JPM": ("JPMorgan Chase", "BANK", ("JPMorganChase", "JPMorgan Chase")),
     "JNJ": ("Johnson & Johnson", "HEALTHCARE", ("Johnson & Johnson",)),
@@ -38,6 +39,13 @@ COMPANIES = {
     "AMZN": ("Amazon", "CONSUMER_DISCRETIONARY", ("Amazon.com",)),
     "PLD": ("Prologis", "REAL_ESTATE", ("Prologis",)),
     "LIN": ("Linde", "MATERIALS", ("Linde",)),
+}
+ORIGINAL_TICKERS = tuple(_ORIGINAL_COMPANIES)
+# Compatibility view retained for callers; values now come from one validated
+# canonical registry.  The original ten entries are identical to USA V2 V1.
+COMPANIES = {
+    record.ticker: (record.company_name, record.schema_type, record.aliases)
+    for record in REGISTRY.supported
 }
 WIRE = re.compile(r"(?:BUSINESS WIRE|PRNewswire|PR NEWSWIRE)", re.I)
 RESULT = re.compile(r"(?:first|second|third|fourth)[- ]quarter.{0,35}results|quarterly.{0,20}results|revenue growth", re.I)
@@ -220,6 +228,7 @@ def _read_prices(
     source_name: str = "EODHD frozen daily USA cache",
     retrieved_at: str = "2026-09-13",
 ) -> tuple[dict[str, object], dict[str, object]]:
+    issuer = get_issuer(ticker)
     path = prices_dir / f"{ticker}.json"
     raw = path.read_bytes()
     bars = json.loads(raw)
@@ -245,7 +254,7 @@ def _read_prices(
         "published_at_precision": "day", "document_kind": "PRICE",
     }
     price = {"current_price": latest["close"], **returns, "published_at": latest["date"],
-             "acquisition": {"currency": "USD", "market": "USA", "provider_symbol": f"{ticker}.US",
+             "acquisition": {"currency": "USD", "market": "USA", "provider_symbol": issuer.provider_symbol,
                              "last_bar": latest, "reference_bars": reference_bars,
                              "raw_path": str(path), "sha256": evidence["content_sha256"]}}
     return price, evidence
@@ -254,8 +263,9 @@ def _read_prices(
 def _issuer_release(record: Mapping[str, object], ticker: str) -> bool:
     title = html.unescape(str(record.get("title") or ""))
     content = html.unescape(str(record.get("content") or ""))
-    aliases = COMPANIES[ticker][2]
-    return (f"{ticker}.US" in record.get("symbols", [])
+    issuer = get_issuer(ticker)
+    aliases = issuer.aliases
+    return (issuer.provider_symbol in record.get("symbols", [])
             and any(title.casefold().startswith(alias.casefold()) for alias in aliases)
             and bool(WIRE.search(content[:650]))
             and any(alias.casefold() in content[:2000].casefold() for alias in aliases))
@@ -858,12 +868,14 @@ def load_company(
     news_source: str = "EODHD cached issuer wire release",
 ) -> EvidencePack:
     """Assemble cached data and source-linked literal facts without network calls."""
-    if ticker not in COMPANIES:
-        raise ValueError(f"unsupported ticker: {ticker}")
+    try:
+        issuer = get_issuer(ticker)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
     date.fromisoformat(as_of)
     if not forward and as_of > AS_OF:
         raise ValueError("as_of exceeds frozen news coverage")
-    company, sector, _ = COMPANIES[ticker]
+    company, sector = issuer.company_name, issuer.schema_type
     price, price_evidence = _read_prices(
         ticker, as_of, prices_dir=prices_dir, source_name=price_source,
         retrieved_at=price_retrieved_at,
@@ -986,7 +998,7 @@ def load_company(
                           "primary_source": True}, "guidance": None,
             })
     _attach_fact_ids(ticker, price, str(price_evidence["identifier"]), events)
-    company_input = {"company_name": company, "ticker": ticker, "provider_symbol": f"{ticker}.US",
+    company_input = {"company_name": company, "ticker": ticker, "provider_symbol": issuer.provider_symbol,
                      "as_of": as_of, "schema_type": sector, "price": price,
                      "fundamentals": {}, "financial_facts": {}, "events": events, "evidence": evidence}
     # Run the reused point-in-time/provenance validator before any LLM call.

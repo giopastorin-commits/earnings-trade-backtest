@@ -18,22 +18,18 @@ from typing import Any, Mapping, Sequence
 from bs4 import BeautifulSoup
 import requests
 
+from trinity.usa_issuer_registry import REGISTRY, get_issuer
+
 
 SEC_BASE = "https://www.sec.gov"
 SEC_DATA = "https://data.sec.gov"
 DEFAULT_CACHE = Path("data/trinity_usa_documents")
 SEC_COMPANIES: dict[str, tuple[str, str]] = {
-    "AAPL": ("0000320193", "TECHNOLOGY"),
-    "JPM": ("0000019617", "BANK"),
-    "JNJ": ("0000200406", "HEALTHCARE"),
-    "XOM": ("0000034088", "ENERGY"),
-    "WMT": ("0000104169", "CONSUMER_STAPLES"),
-    "CAT": ("0000018230", "INDUSTRIAL"),
-    "NEE": ("0000753308", "UTILITY"),
-    "AMZN": ("0001018724", "CONSUMER_DISCRETIONARY"),
-    "PLD": ("0001045609", "REAL_ESTATE"),
-    "LIN": ("0001707925", "MATERIALS"),
+    record.ticker: (record.sec_cik, record.schema_type) for record in REGISTRY.supported
 }
+ORIGINAL_SEC_TICKERS = (
+    "AAPL", "JPM", "JNJ", "XOM", "WMT", "CAT", "NEE", "AMZN", "PLD", "LIN",
+)
 _DURATION_TAGS = {
     "revenue": (
         "RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues",
@@ -315,7 +311,9 @@ def acquire_sec_documents(
         import truststore
         truststore.inject_into_ssl()
     client.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
-    requested = tuple(tickers) if tickers is not None else tuple(SEC_COMPANIES)
+    # Preserve the original no-argument ten-ticker acquisition behavior. The
+    # production forward path always supplies its explicit ticker list.
+    requested = tuple(tickers) if tickers is not None else ORIGINAL_SEC_TICKERS
     unsupported = sorted(set(requested) - set(SEC_COMPANIES))
     if unsupported:
         raise ValueError(f"unsupported SEC tickers: {', '.join(unsupported)}")
@@ -323,7 +321,8 @@ def acquire_sec_documents(
     manifest: dict[str, Any] = {"as_of": as_of, "retrieved_at": retrieved_at,
                                 "source": "SEC EDGAR", "companies": {}}
     for ticker in requested:
-        cik, sector = SEC_COMPANIES[ticker]
+        issuer = get_issuer(ticker)
+        cik, sector = issuer.sec_cik, issuer.schema_type
         submissions_url = f"{SEC_DATA}/submissions/CIK{cik}.json"
         companyfacts_url = f"{SEC_DATA}/api/xbrl/companyfacts/CIK{cik}.json"
         submissions_raw = _fetch(client, submissions_url)

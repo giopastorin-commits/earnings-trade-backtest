@@ -15,10 +15,11 @@ import zipfile
 import requests
 
 from trinity.usa_documents import acquire_sec_documents
+from trinity.usa_issuer_registry import get_issuer
 from trinity.usa_v2 import EvidencePack, load_company
 
 
-EODHD_EOD = "https://eodhd.com/api/eod/{ticker}.US"
+EODHD_EOD = "https://eodhd.com/api/eod/{provider_symbol}"
 EODHD_NEWS = "https://eodhistoricaldata.com/api/news"
 MAX_PRICE_AGE_DAYS = 7
 MIN_SETUP_BARS = 201
@@ -100,6 +101,7 @@ class EODHDSECForwardProvider:
         self.sec_acquirer = sec_acquirer
 
     def acquire(self, ticker: str) -> ForwardTickerSources:
+        issuer = get_issuer(ticker)
         root = self.source_root / ticker
         prices_dir = root / "prices"
         news_dir = root / "news"
@@ -110,7 +112,7 @@ class EODHDSECForwardProvider:
         price_time = self._now()
         start = (price_time.date() - timedelta(days=450)).isoformat()
         price_raw = self._get(
-            EODHD_EOD.format(ticker=ticker),
+            EODHD_EOD.format(provider_symbol=issuer.provider_symbol),
             {"api_token": self.api_key, "from": start,
              "to": price_time.date().isoformat(), "fmt": "json"},
             ticker, "price",
@@ -126,7 +128,7 @@ class EODHDSECForwardProvider:
         news_time = self._now()
         news_raw = self._get(
             EODHD_NEWS,
-            {"api_token": self.api_key, "s": f"{ticker}.US",
+            {"api_token": self.api_key, "s": issuer.provider_symbol,
              "from": (date.fromisoformat(as_of) - timedelta(days=190)).isoformat(),
              "to": as_of, "limit": 1000, "fmt": "json"},
             ticker, "news",

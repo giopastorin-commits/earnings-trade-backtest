@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from trinity.usa_documents import (
-    DEFAULT_CACHE, SEC_COMPANIES, SECAcquisitionError, _selected_filings,
+    DEFAULT_CACHE, ORIGINAL_SEC_TICKERS, SEC_COMPANIES, SECAcquisitionError, _selected_filings,
     _submission_documents, extract_xbrl_facts, load_document_coverage,
 )
 from trinity.usa_v2 import AS_OF, load_company
@@ -77,7 +77,7 @@ class USADocumentCoverageTests(unittest.TestCase):
 
     @unittest.skipUnless((DEFAULT_CACHE / "manifest.json").is_file(), "SEC cache unavailable")
     def test_all_ten_have_primary_periodic_and_earnings_8k(self):
-        for ticker in SEC_COMPANIES:
+        for ticker in ORIGINAL_SEC_TICKERS:
             with self.subTest(ticker=ticker):
                 company = load_document_coverage(ticker, AS_OF)
                 kinds = [item["document_kind"] for item in company["documents"]]
@@ -92,7 +92,7 @@ class USADocumentCoverageTests(unittest.TestCase):
 
     @unittest.skipUnless((DEFAULT_CACHE / "manifest.json").is_file(), "SEC cache unavailable")
     def test_primary_release_replaces_cached_result_news_and_guidance_changes_are_deterministic(self):
-        for ticker in SEC_COMPANIES:
+        for ticker in ORIGINAL_SEC_TICKERS:
             with self.subTest(ticker=ticker):
                 pack = load_company(ticker)
                 self.assertTrue(any(item["source"] == "SEC EDGAR" for item in pack.company_input["evidence"]))

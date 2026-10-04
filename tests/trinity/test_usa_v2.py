@@ -6,7 +6,7 @@ from pathlib import Path
 
 from trinity.italia_v1 import analyze_company
 from trinity.usa_v2 import (
-    AS_OF, COMPANIES, NEWS, PRICES, _issuer_release, _literal_metrics,
+    AS_OF, COMPANIES, NEWS, ORIGINAL_TICKERS, PRICES, _issuer_release, _literal_metrics,
     USAProvider, _bounded_evidence_confidence, _event_id, _numeric_audit, _clean_citations,
     _guidance_ranges, calibrate_decision, load_company, validate_claim_refs,
 )
@@ -406,7 +406,7 @@ class USAV2Tests(unittest.TestCase):
 
     @unittest.skipUnless(PRICES.is_dir() and NEWS.is_dir(), "frozen EODHD cache unavailable")
     def test_all_ten_cache_and_end_to_end_contract(self):
-        for ticker in COMPANIES:
+        for ticker in ORIGINAL_TICKERS:
             with self.subTest(ticker=ticker):
                 pack = load_company(ticker, AS_OF)
                 self.assertEqual(pack.company_input["price"]["published_at"], "2026-09-11")
@@ -423,7 +423,7 @@ class USAV2Tests(unittest.TestCase):
 
     @unittest.skipUnless(PRICES.is_dir() and NEWS.is_dir(), "frozen EODHD cache unavailable")
     def test_all_numeric_facts_have_stable_identity_and_existing_evidence(self):
-        for ticker in COMPANIES:
+        for ticker in ORIGINAL_TICKERS:
             with self.subTest(ticker=ticker):
                 pack = load_company(ticker, AS_OF)
                 evidence_ids = {item["identifier"] for item in pack.company_input["evidence"]}

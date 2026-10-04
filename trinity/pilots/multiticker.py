@@ -36,6 +36,7 @@ from trinity.notifications.telegram import (
     render_telegram_message,
     send_telegram_message,
 )
+from trinity.usa_issuer_registry import REGISTRY
 from trinity.usa_setup_v1 import PRICE_CACHE, build_setup
 from trinity.usa_v2 import AS_OF, COMPANIES, USAProvider, load_company
 
@@ -250,7 +251,9 @@ def _validate_tickers(tickers: Sequence[str]) -> tuple[str, ...]:
         raise ValueError("ticker values must be non-empty")
     if len(selected) != len(set(selected)):
         raise ValueError("duplicate tickers are not allowed")
-    unsupported = [item for item in selected if item not in COMPANIES]
+    records = {item: REGISTRY.get(item) for item in selected}
+    unsupported = [item for item, record in records.items()
+                   if record is None or not record.supported]
     if unsupported:
         raise ValueError(f"unsupported ticker(s): {', '.join(unsupported)}")
     return selected
