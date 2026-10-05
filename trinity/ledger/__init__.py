@@ -67,6 +67,7 @@ from .storage import (
 from .contracts_v14 import (
     CONFIG_DEFINITION,
     RESEARCH_METHOD_DEFINITION,
+    RESEARCH_METHOD_DEFINITION_V3,
     SETUP_POLICY_DEFINITION,
     analyst_response_schema,
     canonical_decimal,
@@ -130,6 +131,7 @@ __all__ = [
     "pit_classification_policy_definition_v2",
     "CONFIG_DEFINITION",
     "RESEARCH_METHOD_DEFINITION",
+    "RESEARCH_METHOD_DEFINITION_V3",
     "SETUP_POLICY_DEFINITION",
     "analyst_response_schema",
     "canonical_decimal",

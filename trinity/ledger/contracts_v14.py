@@ -59,6 +59,15 @@ RESEARCH_METHOD_DEFINITION = {
     "implicit_latest_input_allowed": False,
 }
 
+RESEARCH_METHOD_DEFINITION_V3 = {
+    **RESEARCH_METHOD_DEFINITION,
+    "schema_version": "2",
+    "method_version": "USA_V2_FACTS_V3",
+    "facts_builder": "trinity.italia_v1.build_facts_v3",
+    "expectation_normalization": "FACTS_V3_PRIMARY_EXPECTATION_COMPARISON_V1",
+    "event_precedence": "VERIFIED_EXPECTATION_CHANGE_PRECEDES_NEW_INFORMATION_V1",
+}
+
 SETUP_POLICY_DEFINITION = {
     "schema_name": "ledger.usa-setup-v1-policy-definition",
     "schema_version": "1",
@@ -223,13 +232,16 @@ def research_result_value(record: object) -> dict[str, Any]:
         "reported_metrics", "guidance_ranges", "guidance_language",
         "guidance_changes", "structured_sec_facts",
     }
-    if facts.get("facts_contract_version") == "2":
+    if facts.get("facts_contract_version") in {"2", "3"}:
         fact_keys.update({"source_class", "confirmation_state"})
+    if facts.get("facts_contract_version") == "3":
+        fact_keys.add("expectation_comparisons")
     for event in facts["events"]:
         branch = event["facts"]
         for key in fact_keys:
             branch.setdefault(key, [] if key in {
-                "reported_metrics", "guidance_ranges", "guidance_changes", "structured_sec_facts"
+                "reported_metrics", "guidance_ranges", "guidance_changes", "structured_sec_facts",
+                "expectation_comparisons",
             } else None)
         for item in branch["reported_metrics"]:
             item["value"] = canonical_decimal(item["value"])
@@ -240,6 +252,13 @@ def research_result_value(record: object) -> dict[str, Any]:
         for item in branch["guidance_changes"]:
             for field in ("previous_range", "current_range"):
                 item[field] = [canonical_decimal(x) for x in item[field]]
+        for item in branch.get("expectation_comparisons", []):
+            for field in ("current_value", "prior_value"):
+                if item[field] is not None:
+                    if isinstance(item[field], list):
+                        item[field] = [canonical_decimal(x) for x in item[field]]
+                    else:
+                        item[field] = canonical_decimal(item[field])
         for item in branch["structured_sec_facts"]:
             item["value"] = canonical_decimal(item["value"])
             item.setdefault("xbrl_tag", None)
@@ -329,7 +348,9 @@ def validate_json_artifact(
         "ledger.llm-error.v1": _validate_error,
         "ledger.usa-v2-stage-result.v1": _validate_stage,
         "ledger.usa-v2-facts.v2": _validate_facts_v2,
+        "ledger.usa-v2-facts.v3": _validate_facts_v3,
         "ledger.usa-v2-research-method-definition.v1": lambda item: _equal(item, RESEARCH_METHOD_DEFINITION, "Research method"),
+        "ledger.usa-v2-research-method-definition.v2": lambda item: _equal(item, RESEARCH_METHOD_DEFINITION_V3, "Research method V2 definition revision 2"),
         "ledger.usa-setup-v1-policy-definition.v1": lambda item: _equal(item, SETUP_POLICY_DEFINITION, "Setup policy"),
         "ledger.usa-setup-v1-result.v1": validate_setup_result,
         "ledger.usa-v2-research-result.v1": _validate_research_result,
@@ -554,7 +575,9 @@ def _validate_research_result(value: Any) -> None:
         _fail("Research confidence/prompt contract differs")
     _claim_refs(value["claim_refs"], include_errors=True, errors_empty=True)
     _claim_refs(value["rejected_claim_refs"], include_errors=True, errors_empty=False)
-    if value["facts"].get("facts_contract_version") == "2":
+    if value["facts"].get("facts_contract_version") == "3":
+        _validate_facts_v3(value["facts"])
+    elif value["facts"].get("facts_contract_version") == "2":
         _validate_facts_v2(value["facts"])
     else:
         _validate_facts(value["facts"])
@@ -567,20 +590,24 @@ def _validate_research_result(value: Any) -> None:
 
 
 def _validate_facts(value: Any) -> None:
-    _validate_facts_contract(value, v2=False)
+    _validate_facts_contract(value, version=1)
 
 
 def _validate_facts_v2(value: Any) -> None:
-    _validate_facts_contract(value, v2=True)
+    _validate_facts_contract(value, version=2)
 
 
-def _validate_facts_contract(value: Any, *, v2: bool) -> None:
+def _validate_facts_v3(value: Any) -> None:
+    _validate_facts_contract(value, version=3)
+
+
+def _validate_facts_contract(value: Any, *, version: int = 1) -> None:
     keys = {"identity", "price", "fundamentals", "financial_facts", "events", "evidence", "missing_fields"}
-    if v2:
+    if version >= 2:
         keys.add("facts_contract_version")
     _closed(value, keys, "USA facts")
-    if v2 and value["facts_contract_version"] != "2":
-        _fail("USA facts V2 version marker differs")
+    if version >= 2 and value["facts_contract_version"] != str(version):
+        _fail(f"USA facts V{version} version marker differs")
     identity = value["identity"]
     _closed(identity, {"company_name", "ticker", "provider_symbol", "isin", "as_of", "schema_type"}, "identity")
     _text(identity["company_name"], "company_name"); _text(identity["ticker"], "ticker")
@@ -603,7 +630,10 @@ def _validate_facts_contract(value: Any, *, v2: bool) -> None:
     if not isinstance(value["events"], list): _fail("events must be an array")
     fact_ids: set[str] = set()
     for event in value["events"]:
-        (_validate_event_v2 if v2 else _validate_event)(event, fact_ids)
+        if version == 3:
+            _validate_event_v3(event, fact_ids, identity["ticker"])
+        else:
+            (_validate_event_v2 if version == 2 else _validate_event)(event, fact_ids)
     _validate_evidence(value["evidence"])
     _unique_strings(value["missing_fields"], "missing_fields")
 
@@ -719,6 +749,146 @@ def _validate_event_v2(event: Any, fact_ids: set[str]) -> None:
     legacy["facts"].pop("source_class")
     legacy["facts"].pop("confirmation_state")
     _validate_event(legacy, fact_ids)
+
+
+def _expectation_value(item: Any, field: str, *, nullable: bool) -> list[Decimal] | None:
+    if item is None:
+        if nullable:
+            return None
+        _fail(f"{field} must be a point or two-element range")
+    values = item if isinstance(item, list) else [item]
+    if len(values) not in {1, 2}:
+        _fail(f"{field} must be a point or two-element range")
+    for value in values:
+        _decimal(value, field)
+    if len(values) == 2 and Decimal(values[0]) > Decimal(values[1]):
+        _fail(f"{field} range must be nondecreasing")
+    return [Decimal(value) for value in values]
+
+
+def _expectation_comparison(item: Any, current_evidence_id: str) -> None:
+    keys = {
+        "expectation_comparison_state", "current_evidence_id", "prior_evidence_id",
+        "issuer", "metric", "target_fiscal_period", "prior_target_fiscal_period",
+        "target_period_granularity", "prior_target_period_granularity",
+        "unit", "prior_unit", "current_value", "prior_value", "direction",
+        "currency", "prior_currency",
+        "current_basis", "prior_basis", "comparability_reason_codes",
+    }
+    _closed(item, keys, "expectation comparison")
+    state = _enum(item["expectation_comparison_state"], (
+        "VERIFIED_CHANGE", "VERIFIED_UNCHANGED", "NOT_ESTABLISHED", "AMBIGUOUS",
+    ), "expectation comparison state")
+    for field in ("current_evidence_id", "issuer", "metric", "target_fiscal_period", "unit"):
+        _text(item[field], field)
+    if item["current_evidence_id"] != current_evidence_id:
+        _fail("expectation comparison current evidence differs from event")
+    for field in ("prior_evidence_id", "prior_target_fiscal_period", "prior_unit"):
+        if item[field] is not None:
+            _text(item[field], field)
+    granularity = _enum(item["target_period_granularity"], (
+        "ANNUAL", "QUARTERLY", "UNKNOWN",
+    ), "target period granularity")
+    prior_granularity = item["prior_target_period_granularity"]
+    if prior_granularity is not None:
+        _enum(prior_granularity, ("ANNUAL", "QUARTERLY", "UNKNOWN"), "prior period granularity")
+    currency_values = ("USD", "EUR", "GBP", "CAD", "AUD", "NONE", "UNKNOWN")
+    currency = _enum(item["currency"], currency_values, "currency")
+    prior_currency = item["prior_currency"]
+    if prior_currency is not None:
+        _enum(prior_currency, currency_values, "prior currency")
+    basis_values = (
+        "UNSPECIFIED", "INCLUDES_TRANSACTION_IMPACT", "EXCLUDES_TRANSACTION_IMPACT",
+        "DISCONTINUED_OPERATIONS", "CONTINUING_OPERATIONS", "ORGANIC_BASIS",
+        "REPORTED_BASIS", "SEGMENT_SPECIFIC", "WORLDWIDE", "CONSOLIDATED",
+    )
+    _enum(item["current_basis"], basis_values, "current basis")
+    if item["prior_basis"] is not None:
+        _enum(item["prior_basis"], basis_values, "prior basis")
+    direction = item["direction"]
+    if direction is not None:
+        _enum(direction, ("RAISED", "LOWERED", "UNCHANGED", "MIXED"), "direction")
+    current_values = _expectation_value(
+        item["current_value"], "current expectation value", nullable=True,
+    )
+    prior_values = _expectation_value(
+        item["prior_value"], "prior expectation value", nullable=True,
+    )
+    _unique_strings(item["comparability_reason_codes"], "comparability reason codes")
+    if not item["comparability_reason_codes"]:
+        _fail("comparability reason codes must not be empty")
+    if state == "VERIFIED_CHANGE" and direction not in {"RAISED", "LOWERED", "MIXED"}:
+        _fail("verified expectation change direction invalid")
+    if state == "VERIFIED_UNCHANGED" and direction != "UNCHANGED":
+        _fail("verified unchanged expectation direction invalid")
+    if state in {"NOT_ESTABLISHED", "AMBIGUOUS"} and direction is not None:
+        _fail("unresolved expectation comparison cannot establish direction")
+    if state in {"VERIFIED_CHANGE", "VERIFIED_UNCHANGED"}:
+        if current_values is None or item["prior_evidence_id"] is None or prior_values is None:
+            _fail("verified expectation comparison needs prior baseline")
+        if len(current_values) != len(prior_values):
+            _fail("verified expectation comparison value shapes differ")
+        if item["prior_evidence_id"] == item["current_evidence_id"]:
+            _fail("expectation evidence cannot compare with itself")
+        if (item["prior_target_fiscal_period"] != item["target_fiscal_period"]
+                or prior_granularity != granularity
+                or item["prior_unit"] != item["unit"]
+                or prior_currency != currency
+                or item["prior_basis"] != item["current_basis"]):
+            _fail("verified expectation comparison is not comparable")
+        expected_direction = (
+            "UNCHANGED" if current_values == prior_values else
+            "RAISED" if current_values[0] >= prior_values[0]
+            and current_values[-1] >= prior_values[-1] else
+            "LOWERED" if current_values[0] <= prior_values[0]
+            and current_values[-1] <= prior_values[-1] else "MIXED"
+        )
+        if direction != expected_direction:
+            _fail("expectation direction differs from explicit values")
+    if state == "AMBIGUOUS":
+        unresolved_current = "MULTIPLE_CURRENT_VALUES" in item["comparability_reason_codes"]
+        if not unresolved_current and (item["prior_evidence_id"] is None or prior_values is None
+                or item["prior_target_fiscal_period"] is None
+                or prior_granularity is None or item["prior_unit"] is None
+                or prior_currency is None or item["prior_basis"] is None):
+            _fail("ambiguous expectation comparison needs prior baseline")
+        if (item["prior_evidence_id"] is not None
+                and item["prior_evidence_id"] == item["current_evidence_id"]):
+            _fail("expectation evidence cannot compare with itself")
+        if current_values is None and not unresolved_current:
+            _fail("missing current expectation value lacks ambiguity reason")
+    elif current_values is None:
+        _fail("current expectation value is required")
+
+
+def _validate_event_v3(event: Any, fact_ids: set[str], issuer: str) -> None:
+    facts = event.get("facts") if isinstance(event, dict) else None
+    if not isinstance(facts, dict):
+        _fail("event facts must be an object")
+    expected = {
+        "evidence_identifier", "novelty", "issuer_release", "primary_source",
+        "reported_metrics", "guidance_ranges", "guidance_language", "guidance_changes",
+        "structured_sec_facts", "source_class", "confirmation_state",
+        "expectation_comparisons",
+    }
+    _closed(facts, expected, "event facts V3")
+    legacy = json.loads(json.dumps(event))
+    comparisons = legacy["facts"].pop("expectation_comparisons")
+    _validate_event_v2(legacy, fact_ids)
+    if not isinstance(comparisons, list):
+        _fail("expectation comparisons must be array")
+    seen: set[tuple[str, str, str, str]] = set()
+    for item in comparisons:
+        _expectation_comparison(item, facts["evidence_identifier"])
+        if item["issuer"] != issuer:
+            _fail("expectation comparison issuer differs from facts identity")
+        key = (
+            item["current_evidence_id"], item["metric"],
+            item["target_fiscal_period"], item["target_period_granularity"],
+        )
+        if key in seen:
+            _fail("duplicate expectation comparison")
+        seen.add(key)
 
 
 def _reported_metric(item: Any) -> None:

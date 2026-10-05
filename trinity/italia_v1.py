@@ -317,6 +317,166 @@ def build_facts_v2(company_input: Mapping[str, object], as_of: str | date) -> di
     return facts
 
 
+_EXPECTATION_COMPARISON_STATES = frozenset({
+    "VERIFIED_CHANGE", "VERIFIED_UNCHANGED", "NOT_ESTABLISHED", "AMBIGUOUS",
+})
+_EXPECTATION_DIRECTIONS = frozenset({"RAISED", "LOWERED", "UNCHANGED", "MIXED"})
+_EXPECTATION_BASES = frozenset({
+    "UNSPECIFIED", "INCLUDES_TRANSACTION_IMPACT", "EXCLUDES_TRANSACTION_IMPACT",
+    "DISCONTINUED_OPERATIONS", "CONTINUING_OPERATIONS", "ORGANIC_BASIS",
+    "REPORTED_BASIS", "SEGMENT_SPECIFIC", "WORLDWIDE", "CONSOLIDATED",
+})
+_EXPECTATION_PERIOD_GRANULARITIES = frozenset({"ANNUAL", "QUARTERLY", "UNKNOWN"})
+_EXPECTATION_CURRENCIES = frozenset({"USD", "EUR", "GBP", "CAD", "AUD", "NONE", "UNKNOWN"})
+
+
+def _expectation_value(value: object, field: str, *, nullable: bool) -> list[float] | None:
+    if value is None:
+        if nullable:
+            return None
+        raise ItaliaV1InputError(f"{field} must be a point or two-element range")
+    values = value if isinstance(value, list) else [value]
+    if len(values) not in {1, 2}:
+        raise ItaliaV1InputError(f"{field} must be a point or two-element range")
+    parsed = [_number(item, field) for item in values]
+    if len(parsed) == 2 and parsed[0] > parsed[1]:
+        raise ItaliaV1InputError(f"{field} range must be nondecreasing")
+    return parsed
+
+
+def _validate_expectation_comparison_input(value: object, field: str) -> None:
+    item = _mapping(value, field)
+    required = {
+        "expectation_comparison_state", "current_evidence_id", "prior_evidence_id",
+        "issuer", "metric", "target_fiscal_period", "prior_target_fiscal_period",
+        "target_period_granularity", "prior_target_period_granularity",
+        "unit", "prior_unit", "current_value", "prior_value", "direction",
+        "currency", "prior_currency",
+        "current_basis", "prior_basis", "comparability_reason_codes",
+    }
+    if set(item) != required:
+        raise ItaliaV1InputError(f"{field} must contain exactly {sorted(required)}")
+    state = _required_text(item["expectation_comparison_state"], f"{field}.state")
+    if state not in _EXPECTATION_COMPARISON_STATES:
+        raise ItaliaV1InputError(f"{field}.state is invalid")
+    for key in ("current_evidence_id", "issuer", "metric", "target_fiscal_period", "unit"):
+        _required_text(item[key], f"{field}.{key}")
+    for key in ("prior_evidence_id", "prior_target_fiscal_period", "prior_unit"):
+        _optional_text(item[key], f"{field}.{key}")
+    granularity = _required_text(
+        item["target_period_granularity"], f"{field}.target_period_granularity",
+    )
+    if granularity not in _EXPECTATION_PERIOD_GRANULARITIES:
+        raise ItaliaV1InputError(f"{field}.target_period_granularity is invalid")
+    prior_granularity = _optional_text(
+        item["prior_target_period_granularity"], f"{field}.prior_target_period_granularity",
+    )
+    if (prior_granularity is not None
+            and prior_granularity not in _EXPECTATION_PERIOD_GRANULARITIES):
+        raise ItaliaV1InputError(f"{field}.prior_target_period_granularity is invalid")
+    currency = _required_text(item["currency"], f"{field}.currency")
+    if currency not in _EXPECTATION_CURRENCIES:
+        raise ItaliaV1InputError(f"{field}.currency is invalid")
+    prior_currency = _optional_text(item["prior_currency"], f"{field}.prior_currency")
+    if prior_currency is not None and prior_currency not in _EXPECTATION_CURRENCIES:
+        raise ItaliaV1InputError(f"{field}.prior_currency is invalid")
+    current_basis = _required_text(item["current_basis"], f"{field}.current_basis")
+    if current_basis not in _EXPECTATION_BASES:
+        raise ItaliaV1InputError(f"{field}.current_basis is invalid")
+    prior_basis = _optional_text(item["prior_basis"], f"{field}.prior_basis")
+    if prior_basis is not None and prior_basis not in _EXPECTATION_BASES:
+        raise ItaliaV1InputError(f"{field}.prior_basis is invalid")
+    direction = _optional_text(item["direction"], f"{field}.direction")
+    if direction is not None and direction not in _EXPECTATION_DIRECTIONS:
+        raise ItaliaV1InputError(f"{field}.direction is invalid")
+    current_values = _expectation_value(
+        item["current_value"], f"{field}.current_value", nullable=True,
+    )
+    prior_values = _expectation_value(
+        item["prior_value"], f"{field}.prior_value", nullable=True,
+    )
+    reasons = _items(item["comparability_reason_codes"], f"{field}.reason_codes")
+    if not reasons:
+        raise ItaliaV1InputError(f"{field}.reason_codes must not be empty")
+    for index, reason in enumerate(reasons):
+        _required_text(reason, f"{field}.reason_codes[{index}]")
+    if len(set(reasons)) != len(reasons):
+        raise ItaliaV1InputError(f"{field}.reason_codes must be unique")
+    if state == "VERIFIED_CHANGE" and direction not in {"RAISED", "LOWERED", "MIXED"}:
+        raise ItaliaV1InputError(f"{field}: verified change needs changed direction")
+    if state == "VERIFIED_UNCHANGED" and direction != "UNCHANGED":
+        raise ItaliaV1InputError(f"{field}: verified unchanged needs UNCHANGED direction")
+    if state in {"NOT_ESTABLISHED", "AMBIGUOUS"} and direction is not None:
+        raise ItaliaV1InputError(f"{field}: unresolved comparison cannot establish direction")
+    if state in {"VERIFIED_CHANGE", "VERIFIED_UNCHANGED"}:
+        if current_values is None or item["prior_evidence_id"] is None or prior_values is None:
+            raise ItaliaV1InputError(f"{field}: verified comparison needs a prior baseline")
+        if len(current_values) != len(prior_values):
+            raise ItaliaV1InputError(f"{field}: verified comparison value shapes differ")
+        if item["prior_evidence_id"] == item["current_evidence_id"]:
+            raise ItaliaV1InputError(f"{field}: evidence cannot compare with itself")
+        if (item["prior_target_fiscal_period"] != item["target_fiscal_period"]
+                or prior_granularity != granularity
+                or item["prior_unit"] != item["unit"]
+                or prior_currency != currency
+                or prior_basis != current_basis):
+            raise ItaliaV1InputError(f"{field}: verified comparison is not comparable")
+        expected_direction = (
+            "UNCHANGED" if current_values == prior_values else
+            "RAISED" if current_values[0] >= prior_values[0]
+            and current_values[-1] >= prior_values[-1] else
+            "LOWERED" if current_values[0] <= prior_values[0]
+            and current_values[-1] <= prior_values[-1] else "MIXED"
+        )
+        if direction != expected_direction:
+            raise ItaliaV1InputError(f"{field}: direction differs from explicit values")
+    if state == "AMBIGUOUS":
+        unresolved_current = "MULTIPLE_CURRENT_VALUES" in reasons
+        if not unresolved_current and (item["prior_evidence_id"] is None or prior_values is None
+                or item["prior_target_fiscal_period"] is None
+                or prior_granularity is None or item["prior_unit"] is None
+                or prior_currency is None or prior_basis is None):
+            raise ItaliaV1InputError(f"{field}: ambiguous comparison needs a prior baseline")
+        if (item["prior_evidence_id"] is not None
+                and item["prior_evidence_id"] == item["current_evidence_id"]):
+            raise ItaliaV1InputError(f"{field}: evidence cannot compare with itself")
+        if current_values is None and not unresolved_current:
+            raise ItaliaV1InputError(f"{field}: missing current value lacks ambiguity reason")
+    elif current_values is None:
+        raise ItaliaV1InputError(f"{field}: current value is required")
+
+
+def build_facts_v3(company_input: Mapping[str, object], as_of: str | date) -> dict[str, object]:
+    """Build additive Facts V3 with audited, non-classifying expectation comparisons."""
+
+    facts = build_facts_v2(company_input, as_of)
+    for event_index, event in enumerate(facts["events"]):
+        event_facts = _mapping(event["facts"], f"events[{event_index}].facts")
+        comparisons = _items(
+            event_facts.get("expectation_comparisons"),
+            f"events[{event_index}].facts.expectation_comparisons",
+        )
+        seen: set[tuple[str, str, str, str]] = set()
+        for comparison_index, comparison in enumerate(comparisons):
+            field = f"events[{event_index}].facts.expectation_comparisons[{comparison_index}]"
+            _validate_expectation_comparison_input(comparison, field)
+            item = _mapping(comparison, field)
+            if item["current_evidence_id"] != event_facts["evidence_identifier"]:
+                raise ItaliaV1InputError(f"{field}: current evidence differs from event")
+            if item["issuer"] != facts["identity"]["ticker"]:
+                raise ItaliaV1InputError(f"{field}: issuer differs from facts identity")
+            key = (
+                str(item["current_evidence_id"]), str(item["metric"]),
+                str(item["target_fiscal_period"]),
+                str(item["target_period_granularity"]),
+            )
+            if key in seen:
+                raise ItaliaV1InputError(f"{field}: duplicate expectation facet")
+            seen.add(key)
+    facts["facts_contract_version"] = "3"
+    return facts
+
+
 @dataclass(frozen=True)
 class ThesisRecord:
     """Serializable, validated result of one Italia V1 analysis."""
@@ -419,8 +579,11 @@ class ThesisRecord:
             self.company_name, self.ticker, self.isin, day
         ):
             raise ItaliaV1InputError("facts.identity must match the thesis identity")
+        facts_version = facts.get("facts_contract_version")
         facts_builder = (
-            build_facts_v2 if facts.get("facts_contract_version") == "2" else build_facts
+            build_facts_v3 if facts_version == "3" else
+            build_facts_v2 if facts_version == "2" else
+            build_facts
         )
         canonical_facts = facts_builder({
             **identity,

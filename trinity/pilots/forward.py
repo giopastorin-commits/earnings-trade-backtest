@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 import uuid
 
-from trinity.italia_v1 import analyze_company, build_facts_v2
+from trinity.italia_v1 import analyze_company, build_facts_v3
 from trinity.ledger import LedgerStorage
 from trinity.notifications.telegram import load_committed_setup, render_telegram_message
 from trinity.pilots.multiticker import (
@@ -26,6 +26,7 @@ from trinity.pilots.multiticker import (
 )
 from trinity.usa_forward import EODHDSECForwardProvider, ForwardTickerSources
 from trinity.usa_setup_v1 import build_setup
+from trinity.usa_v2 import with_expectation_comparisons
 
 
 DEFAULT_FORWARD_DATABASE = Path("data/local/trinity_forward_pilot.sqlite3")
@@ -65,7 +66,7 @@ def run_forward_pilot(
     results: list[TickerResult] = []
 
     with LedgerStorage.open(database_path) as storage:
-        shared = _register_shared_definitions(storage, code_commit)
+        shared = _register_shared_definitions(storage, code_commit, facts_version="3")
         for ticker in selected:
             attempt = None
             sources: ForwardTickerSources | None = None
@@ -82,7 +83,8 @@ def run_forward_pilot(
                     or pack.company_input.get("as_of") != sources.as_of
                 ):
                     raise ValueError(f"{ticker}: fresh source bundle identity mismatch")
-                facts = build_facts_v2(pack.company_input, sources.as_of)
+                company_input = with_expectation_comparisons(pack.company_input)
+                facts = build_facts_v3(company_input, sources.as_of)
                 persisted = _persist_inputs(
                     storage, attempt, ticker, pack, facts, sources.bars,
                     sources.price_raw, shared["pit_policy"],
@@ -94,8 +96,8 @@ def run_forward_pilot(
                 )
                 provider = llm_provider_factory(ticker)
                 thesis = analyze_company(
-                    pack.company_input, sources.as_of, provider,
-                    facts_builder=build_facts_v2,
+                    company_input, sources.as_of, provider,
+                    facts_builder=build_facts_v3,
                 )
                 thesis = replace(
                     thesis, **provider.revisions,

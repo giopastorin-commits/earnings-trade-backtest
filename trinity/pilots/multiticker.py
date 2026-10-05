@@ -17,6 +17,7 @@ from trinity.italia_v1 import analyze_company, build_facts
 from trinity.ledger import (
     CONFIG_DEFINITION,
     RESEARCH_METHOD_DEFINITION,
+    RESEARCH_METHOD_DEFINITION_V3,
     SETUP_POLICY_DEFINITION,
     DerivationParent,
     LedgerStorage,
@@ -341,10 +342,11 @@ def _persist_inputs(
         storage, attempt, pit_policy, ohlcv_source, ohlcv_observation, ohlcv_raw,
         ticker, observed_at, (proof.artifact_id,), reference=reference, forward=forward,
     )
+    facts_version = facts.get("facts_contract_version")
     facts_kind = (
-        "ledger.usa-v2-facts.v2"
-        if facts.get("facts_contract_version") == "2"
-        else "ledger.usa-v2-facts.v1"
+        "ledger.usa-v2-facts.v3" if facts_version == "3" else
+        "ledger.usa-v2-facts.v2" if facts_version == "2" else
+        "ledger.usa-v2-facts.v1"
     )
     facts_artifact = _artifact(storage, facts_kind, _canonical_fact_numbers(facts))
     facts_node = storage.create_normalized_fact_node(
@@ -712,10 +714,13 @@ def _observe(
     return observation, node
 
 
-def _register_shared_definitions(storage, code_commit):
+def _register_shared_definitions(storage, code_commit, *, facts_version="1"):
+    v3 = facts_version == "3"
     method_definition = _artifact(
-        storage, "ledger.usa-v2-research-method-definition.v1",
-        RESEARCH_METHOD_DEFINITION,
+        storage,
+        "ledger.usa-v2-research-method-definition.v2" if v3
+        else "ledger.usa-v2-research-method-definition.v1",
+        RESEARCH_METHOD_DEFINITION_V3 if v3 else RESEARCH_METHOD_DEFINITION,
     )
     method = storage.register_research_method(
         definition_artifact_id=method_definition.artifact_id,

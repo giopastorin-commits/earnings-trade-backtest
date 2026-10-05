@@ -29,6 +29,7 @@ from trinity.ledger.schema import (
     temporal_derivation_dag_migration,
     pit_classification_migration,
     research_llm_setup_migration,
+    research_method_versions_migration,
 )
 
 
@@ -89,7 +90,7 @@ def test_connection_pragmas_are_configured(storage):
 
 def test_migration_applies_once_and_is_idempotent(storage):
     rows_before = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
-    assert len(rows_before) == 6
+    assert len(rows_before) == 7
     assert storage.apply_migrations(migration_registry()) == 0
     rows_after = storage.connection.execute("SELECT * FROM schema_migration").fetchall()
     assert [tuple(row) for row in rows_after] == [tuple(row) for row in rows_before]
@@ -108,6 +109,7 @@ def test_changed_applied_migration_is_rejected(storage):
                     temporal_derivation_dag_migration(),
                     pit_classification_migration(),
                     research_llm_setup_migration(),
+                    research_method_versions_migration(),
                 )
             )
         )

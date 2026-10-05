@@ -20,7 +20,9 @@ import re
 from typing import Any, Mapping
 
 from trinity.italia_real import CodexCLIProvider, _ANALYST_SCHEMA
-from trinity.italia_v1 import analyze_company, build_facts, build_facts_v2, save_thesis
+from trinity.italia_v1 import (
+    analyze_company, build_facts, build_facts_v2, save_thesis,
+)
 from trinity.usa_issuer_registry import REGISTRY, get_issuer
 from trinity.usa_documents import DEFAULT_CACHE as DOCUMENT_CACHE, load_document_coverage
 
@@ -541,6 +543,510 @@ def _guidance_ranges(text: str, evidence_id: str) -> list[dict[str, object]]:
         if not any(old["metric"] == metric and old["period"] == claim["period"] for old in ranges):
             ranges.append(claim)
     return ranges
+
+
+_EXPECTATION_RANGE_PATTERNS = (
+    (
+        "SUBSCRIPTION_REVENUE", "DOLLAR_SCALED",
+        re.compile(
+            r"subscription\s+revenues?(?:(?!\.).){0,120}?"
+            r"\$\s*(?P<low>[\d,.]+)\s*(?P<low_scale>billion|million)\s+"
+            r"(?:and|to|[-–—])\s+\$?\s*(?P<high>[\d,.]+)\s*"
+            r"(?P<high_scale>billion|million)",
+            re.I,
+        ),
+    ),
+    (
+        "SALES", "DOLLAR_SCALED",
+        re.compile(
+            r"(?:worldwide\s+)?sales(?:\s+range)?(?:(?!\.).){0,120}?"
+            r"\$\s*(?P<low>[\d,.]+)\s*(?P<low_scale>billion|million)\s+"
+            r"(?:and|to|[-–—])\s+\$?\s*(?P<high>[\d,.]+)\s*"
+            r"(?P<high_scale>billion|million)",
+            re.I,
+        ),
+    ),
+    (
+        "NON_GAAP_EPS", "DOLLAR_PER_SHARE",
+        re.compile(
+            r"non-gaap\s+eps(?:(?!\.).){0,120}?\$\s*(?P<low>[\d,.]+)\s+"
+            r"(?:and|to|[-–—])\s+\$?\s*(?P<high>[\d,.]+)",
+            re.I,
+        ),
+    ),
+    (
+        "ADJUSTED_EPS", "DOLLAR_PER_SHARE",
+        re.compile(
+            r"adjusted\s+eps(?:(?!\.).){0,120}?\$\s*(?P<low>[\d,.]+)\s*"
+            r"(?:and|to|[-–—])\s*\$?\s*(?P<high>[\d,.]+)",
+            re.I,
+        ),
+    ),
+    (
+        "CORE_FFO", "DOLLAR_PER_SHARE",
+        re.compile(
+            r"core\s+ffo(?:(?!\.).){0,160}?\$\s*(?P<low>[\d,.]+)\s*"
+            r"(?:and|to|[-–—])\s*\$?\s*(?P<high>[\d,.]+)",
+            re.I,
+        ),
+    ),
+)
+
+_FORWARD_EXPECTATION_INTENT = re.compile(
+    r"\b(?:expects?|expected|outlook|guidance|forecasts?|projects?|anticipates?|"
+    r"raises?|lowers?|narrows?|reaffirms?|now\s+expects?)\b",
+    re.I,
+)
+_QUARTERS = {"first": "Q1", "second": "Q2", "third": "Q3", "fourth": "Q4"}
+
+_EXPECTATION_POINT_PATTERNS = (
+    (
+        "NON_GAAP_OPERATING_MARGIN", "PERCENT",
+        re.compile(
+            r"non-gaap\s+operating\s+margin(?:\s+guidance)?(?:(?!\.).){0,80}?"
+            r"(?P<value>[\d,.]+)\s*%",
+            re.I,
+        ),
+    ),
+)
+
+
+def _expectation_period(text: str, position: int) -> tuple[str, str] | None:
+    context = text[max(0, position - 500):position]
+    candidates: list[tuple[int, str, str]] = []
+    annual_patterns = (
+        r"full[- ]year\s+(?:fiscal\s+)?(?P<year>20\d{2})",
+        r"fiscal\s+(?P<year>20\d{2}).{0,45}?\bfull\s+year\b",
+    )
+    quarter_patterns = (
+        r"fiscal\s+(?P<year>20\d{2})\s+(?P<quarter>first|second|third|fourth|q[1-4])(?:[- ]quarter)?",
+        r"(?P<quarter>first|second|third|fourth|q[1-4])[- ]quarter(?:\s+of)?\s+fiscal\s+(?P<year>20\d{2})",
+        r"(?P<quarter>q[1-4])\s+(?:fiscal\s+)?(?P<year>20\d{2})",
+    )
+    for pattern in annual_patterns:
+        for match in re.finditer(pattern, context, re.I):
+            candidates.append((match.start(), f"FY{match.group('year')}", "ANNUAL"))
+    for pattern in quarter_patterns:
+        for match in re.finditer(pattern, context, re.I):
+            quarter = match.group("quarter").lower()
+            quarter = quarter.upper() if quarter.startswith("q") else _QUARTERS[quarter]
+            candidates.append((match.start(), f"{match.group('year')}{quarter}", "QUARTERLY"))
+    if not candidates:
+        fiscal_years = list(re.finditer(r"\bfiscal\s+(20\d{2})\b", context, re.I))
+        if not fiscal_years:
+            return None
+        return fiscal_years[-1].group(1), "UNKNOWN"
+    _, target, granularity = max(candidates, key=lambda item: item[0])
+    return target, granularity
+
+
+def _expectation_basis(segment: str) -> str:
+    if re.search(
+        r"(?:outlook|guidance).{0,100}?(?:does\s+not\s+reflect|excludes?|excluding)"
+        r".{0,120}?(?:acquisition|transaction)",
+        segment, re.I,
+    ):
+        return "EXCLUDES_TRANSACTION_IMPACT"
+    if re.search(
+        r"(?:outlook|guidance).{0,100}?(?:includes?|including)"
+        r".{0,120}?(?:acquisition|transaction)",
+        segment, re.I,
+    ):
+        return "INCLUDES_TRANSACTION_IMPACT"
+    if re.search(r"\bdiscontinued\s+operations\b", segment, re.I):
+        return "DISCONTINUED_OPERATIONS"
+    if re.search(r"\bcontinuing\s+operations\b", segment, re.I):
+        return "CONTINUING_OPERATIONS"
+    if re.search(r"\borganic\s+basis\b|\borganic\s+(?:sales|revenue|growth)\b", segment, re.I):
+        return "ORGANIC_BASIS"
+    if re.search(r"\breported\s+basis\b", segment, re.I):
+        return "REPORTED_BASIS"
+    if re.search(r"\bsegment\s+(?:sales|revenue|guidance|outlook)\b", segment, re.I):
+        return "SEGMENT_SPECIFIC"
+    if re.search(r"\bworldwide\s+sales\b", segment, re.I):
+        return "WORLDWIDE"
+    if re.search(r"\bconsolidated\b", segment, re.I):
+        return "CONSOLIDATED"
+    return "UNSPECIFIED"
+
+
+def _decimal_text(value: str) -> float:
+    return float(value.rstrip(".").replace(",", ""))
+
+
+def _has_forward_expectation_intent(text: str, start: int, end: int) -> bool:
+    return bool(_FORWARD_EXPECTATION_INTENT.search(text[max(0, start - 350):end + 80]))
+
+
+def _candidate_role(text: str, start: int, end: int) -> str:
+    context = text[max(0, start - 100):end + 30]
+    if re.search(r"\b(?:previously|prior\s+(?:range|guidance|outlook)|formerly)\b", context, re.I):
+        return "PRIOR_REFERENCE"
+    if re.search(
+        r"\b(?:now|current|updated|updating|raises?|lowers?|narrows?|reaffirms?)\b",
+        context, re.I,
+    ):
+        return "CURRENT"
+    return "UNSPECIFIED"
+
+
+def _literal_expectation_ranges(text: str) -> list[dict[str, object]]:
+    """Extract explicit expectation ranges without inferring a period, unit, or perimeter."""
+
+    normalized = re.sub(r"\s+", " ", text)
+    found: list[dict[str, object]] = []
+    for metric, unit_kind, pattern in _EXPECTATION_RANGE_PATTERNS:
+        for match in pattern.finditer(normalized):
+            if not _has_forward_expectation_intent(normalized, match.start(), match.end()):
+                continue
+            period = _expectation_period(normalized, match.start())
+            if period is None:
+                continue
+            target_period, granularity = period
+            unit = unit_kind
+            if unit_kind == "DOLLAR_SCALED":
+                low_scale = match.group("low_scale").upper()
+                high_scale = match.group("high_scale").upper()
+                if low_scale != high_scale:
+                    continue
+                unit = f"DOLLAR_{low_scale}S"
+            found.append({
+                "metric": metric,
+                "target_fiscal_period": target_period,
+                "period_granularity": granularity,
+                "unit": unit,
+                "value": [_decimal_text(match.group("low")), _decimal_text(match.group("high"))],
+                "origin": "RAW_TEXT",
+                "candidate_role": _candidate_role(normalized, match.start(), match.end()),
+                "start": match.start(),
+                "end": match.end(),
+            })
+    for metric, unit, pattern in _EXPECTATION_POINT_PATTERNS:
+        for match in pattern.finditer(normalized):
+            if not _has_forward_expectation_intent(normalized, match.start(), match.end()):
+                continue
+            period = _expectation_period(normalized, match.start())
+            if period is None:
+                continue
+            target_period, granularity = period
+            found.append({
+                "metric": metric,
+                "target_fiscal_period": target_period,
+                "period_granularity": granularity,
+                "unit": unit,
+                "value": [_decimal_text(match.group("value"))],
+                "origin": "RAW_TEXT",
+                "candidate_role": _candidate_role(normalized, match.start(), match.end()),
+                "start": match.start(),
+                "end": match.end(),
+            })
+    found.sort(key=lambda item: (int(item["start"]), str(item["metric"])))
+    for index, item in enumerate(found):
+        segment_end = int(found[index + 1]["start"]) if index + 1 < len(found) else min(
+            len(normalized), int(item["end"]) + 500
+        )
+        item["basis"] = _expectation_basis(
+            normalized[max(0, int(item["start"]) - 140):segment_end]
+        )
+        item["source_start"] = item.pop("start")
+        item["source_end"] = item.pop("end")
+    return found
+
+
+def _structured_period(item: Mapping[str, object]) -> tuple[str, str]:
+    raw = str(item.get("period") or "")
+    if match := re.fullmatch(r"FY(20\d{2})", raw, re.I):
+        return f"FY{match.group(1)}", "ANNUAL"
+    if match := re.fullmatch(r"(20\d{2})Q([1-4])", raw, re.I):
+        return f"{match.group(1)}Q{match.group(2)}", "QUARTERLY"
+    if match := re.fullmatch(r"Q([1-4])\s+(20\d{2})", raw, re.I):
+        return f"{match.group(2)}Q{match.group(1)}", "QUARTERLY"
+    excerpt = str(item.get("source_excerpt") or "")
+    if re.fullmatch(r"20\d{2}", raw):
+        if re.search(r"\b(?:full[- ]year|annual)\b", excerpt, re.I):
+            return f"FY{raw}", "ANNUAL"
+        quarter = re.search(r"\b(?:q([1-4])|(first|second|third|fourth)[- ]quarter)\b", excerpt, re.I)
+        if quarter:
+            number = quarter.group(1) or _QUARTERS[quarter.group(2).lower()][1]
+            return f"{raw}Q{number}", "QUARTERLY"
+    return raw, "UNKNOWN"
+
+
+def _unit_currency(unit: str) -> str:
+    if unit == "PERCENT":
+        return "NONE"
+    match = re.match(r"^(USD|EUR|GBP|CAD|AUD)_", unit)
+    return match.group(1) if match else "UNKNOWN"
+
+
+def _unique_excerpt_span(text: str, excerpt: str) -> tuple[int | None, int | None]:
+    normalized_excerpt = re.sub(r"\s+", " ", excerpt).strip()
+    if not normalized_excerpt or text.count(normalized_excerpt) != 1:
+        return None, None
+    start = text.index(normalized_excerpt)
+    return start, start + len(normalized_excerpt)
+
+
+def _suppress_dominated_unknown_candidates(
+    candidates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Drop only UNKNOWN candidates textually contained by the same specific observation."""
+
+    result: list[dict[str, object]] = []
+    for candidate in candidates:
+        if candidate["period_granularity"] != "UNKNOWN":
+            result.append(candidate)
+            continue
+        start = candidate.get("source_start")
+        end = candidate.get("source_end")
+        dominated = any(
+            specific["period_granularity"] != "UNKNOWN"
+            and specific["metric"] == candidate["metric"]
+            and specific["unit"] == candidate["unit"]
+            and specific["currency"] == candidate["currency"]
+            and specific["value"] == candidate["value"]
+            and isinstance(start, int) and isinstance(end, int)
+            and isinstance(specific.get("source_start"), int)
+            and isinstance(specific.get("source_end"), int)
+            and max(start, int(specific["source_start"]))
+            < min(end, int(specific["source_end"]))
+            for specific in candidates
+        )
+        if not dominated:
+            result.append(candidate)
+    return result
+
+
+def _expectation_direction(previous: list[float], current: list[float]) -> str | None:
+    if len(previous) != len(current) or len(current) not in {1, 2}:
+        return None
+    if current == previous:
+        return "UNCHANGED"
+    if len(current) == 1:
+        return "RAISED" if current[0] > previous[0] else "LOWERED"
+    if current[0] >= previous[0] and current[-1] >= previous[-1]:
+        return "RAISED"
+    if current[0] <= previous[0] and current[-1] <= previous[-1]:
+        return "LOWERED"
+    return "MIXED"
+
+
+def _is_primary_expectation_event(event: Mapping[str, object]) -> bool:
+    facts = event.get("facts")
+    if not isinstance(facts, Mapping):
+        return False
+    return (
+        facts.get("confirmation_state") == "CONFIRMED"
+        and facts.get("source_class") in {"PRIMARY_SEC", "ISSUER_RELEASE"}
+    )
+
+
+def _expectation_observations(
+    events: list[dict[str, object]], evidence: list[dict[str, object]], issuer: str,
+    provider_symbol: str,
+) -> list[dict[str, object]]:
+    evidence_text = {
+        str(item.get("identifier")): str(item.get("excerpt") or "") for item in evidence
+    }
+    observations: list[dict[str, object]] = []
+    for event in events:
+        facts = event["facts"]
+        evidence_id = str(facts.get("evidence_identifier") or "")
+        normalized_text = re.sub(r"\s+", " ", evidence_text.get(evidence_id, ""))
+        candidates = _literal_expectation_ranges(normalized_text)
+        for item in facts.get("guidance_ranges", []):
+            target_period, granularity = _structured_period(item)
+            source_start, source_end = _unique_excerpt_span(
+                normalized_text, str(item.get("source_excerpt") or ""),
+            )
+            candidates.append({
+                "metric": item["metric"], "target_fiscal_period": target_period,
+                "period_granularity": granularity,
+                "unit": item["unit"], "value": list(item["current_range"]),
+                "basis": _expectation_basis(str(item.get("source_excerpt") or "")),
+                "origin": "STRUCTURED_GUIDANCE",
+                "candidate_role": "CURRENT",
+                "source_start": source_start,
+                "source_end": source_end,
+            })
+        primary = _is_primary_expectation_event(event)
+        for item in candidates:
+            currency = _unit_currency(str(item["unit"]))
+            if str(item["unit"]).startswith("DOLLAR_"):
+                currency = "USD" if primary and provider_symbol.upper().endswith(".US") else "UNKNOWN"
+                if currency == "USD":
+                    item["unit"] = str(item["unit"]).replace("DOLLAR_", "USD_", 1)
+            item["currency"] = currency
+        candidates = _suppress_dominated_unknown_candidates(candidates)
+        grouped: dict[tuple[str, str, str, str], list[dict[str, object]]] = {}
+        for item in candidates:
+            key = (
+                str(item["metric"]), str(item["target_fiscal_period"]),
+                str(item["period_granularity"]), str(item["unit"]),
+            )
+            grouped.setdefault(key, []).append(item)
+        for group in grouped.values():
+            unique_values = {json.dumps(item["value"]) for item in group}
+            current_items = [item for item in group if item["candidate_role"] == "CURRENT"]
+            if len(unique_values) == 1:
+                item = next((value for value in group if value["origin"] == "RAW_TEXT"), group[0])
+                candidate_ambiguity = False
+            elif len(current_items) == 1 and all(
+                value is current_items[0] or value["candidate_role"] == "PRIOR_REFERENCE"
+                for value in group
+            ):
+                item = current_items[0]
+                candidate_ambiguity = False
+            else:
+                item = dict(group[0])
+                item["value"] = None
+                candidate_ambiguity = True
+            observations.append({
+                **item,
+                "issuer": issuer,
+                "evidence_id": evidence_id,
+                "published_at": str(event["published_at"]),
+                "primary": primary,
+                "currency": item["currency"],
+                "candidate_ambiguity": candidate_ambiguity,
+            })
+    return observations
+
+
+def _comparison_record(
+    current: Mapping[str, object], prior: Mapping[str, object] | None,
+) -> dict[str, object]:
+    common = {
+        "current_evidence_id": current["evidence_id"],
+        "prior_evidence_id": prior["evidence_id"] if prior else None,
+        "issuer": current["issuer"],
+        "metric": current["metric"],
+        "target_fiscal_period": current["target_fiscal_period"],
+        "prior_target_fiscal_period": prior["target_fiscal_period"] if prior else None,
+        "target_period_granularity": current["period_granularity"],
+        "prior_target_period_granularity": prior["period_granularity"] if prior else None,
+        "unit": current["unit"],
+        "prior_unit": prior["unit"] if prior else None,
+        "currency": current["currency"],
+        "prior_currency": prior["currency"] if prior else None,
+        "current_value": current["value"],
+        "prior_value": prior["value"] if prior else None,
+        "current_basis": current["basis"],
+        "prior_basis": prior["basis"] if prior else None,
+    }
+    if current["candidate_ambiguity"]:
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["MULTIPLE_CURRENT_VALUES"]}
+    if not current["primary"]:
+        return {**common, "expectation_comparison_state": "NOT_ESTABLISHED",
+                "direction": None,
+                "comparability_reason_codes": ["CURRENT_EVIDENCE_NOT_PRIMARY"]}
+    if current["period_granularity"] == "UNKNOWN":
+        return {**common, "expectation_comparison_state": "NOT_ESTABLISHED",
+                "direction": None,
+                "comparability_reason_codes": ["PERIOD_GRANULARITY_NOT_ESTABLISHED"]}
+    if prior is None:
+        return {**common, "expectation_comparison_state": "NOT_ESTABLISHED",
+                "direction": None,
+                "comparability_reason_codes": ["NO_PRIOR_PRIMARY_BASELINE"]}
+    if prior["period_granularity"] == "UNKNOWN":
+        return {**common, "expectation_comparison_state": "NOT_ESTABLISHED",
+                "direction": None,
+                "comparability_reason_codes": ["PRIOR_PERIOD_GRANULARITY_NOT_ESTABLISHED"]}
+    if current["period_granularity"] != prior["period_granularity"]:
+        return {**common, "expectation_comparison_state": "NOT_ESTABLISHED",
+                "direction": None,
+                "comparability_reason_codes": ["PERIOD_GRANULARITY_MISMATCH"]}
+    if current["target_fiscal_period"] != prior["target_fiscal_period"]:
+        return {**common, "expectation_comparison_state": "NOT_ESTABLISHED",
+                "direction": None,
+                "comparability_reason_codes": ["TARGET_FISCAL_PERIOD_MISMATCH"]}
+    if current["currency"] == "UNKNOWN" or prior["currency"] == "UNKNOWN":
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["CURRENCY_NOT_ESTABLISHED"]}
+    if current["currency"] != prior["currency"]:
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["CURRENCY_MISMATCH"]}
+    if current["unit"] != prior["unit"]:
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["INCOMPATIBLE_UNITS"]}
+    if current["basis"] == "UNSPECIFIED" or prior["basis"] == "UNSPECIFIED":
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["BASIS_NOT_ESTABLISHED"]}
+    if "SEGMENT_SPECIFIC" in {current["basis"], prior["basis"]}:
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["SEGMENT_SCOPE_NOT_ESTABLISHED"]}
+    if current["basis"] != prior["basis"]:
+        reason = (
+            "PERIMETER_BASIS_MISMATCH"
+            if {current["basis"], prior["basis"]} <= {
+                "INCLUDES_TRANSACTION_IMPACT", "EXCLUDES_TRANSACTION_IMPACT",
+            }
+            else "ECONOMIC_BASIS_MISMATCH"
+        )
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": [reason]}
+    direction = _expectation_direction(list(prior["value"]), list(current["value"]))
+    if direction is None:
+        return {**common, "expectation_comparison_state": "AMBIGUOUS",
+                "direction": None,
+                "comparability_reason_codes": ["VALUE_SHAPE_MISMATCH"]}
+    state = "VERIFIED_UNCHANGED" if direction == "UNCHANGED" else "VERIFIED_CHANGE"
+    return {
+        **common,
+        "expectation_comparison_state": state,
+        "direction": direction,
+        "comparability_reason_codes": [
+            "CURRENT_PRIMARY", "PRIOR_PRIMARY", "SAME_ISSUER", "SAME_METRIC",
+            "SAME_TARGET_FISCAL_PERIOD", "SAME_PERIOD_GRANULARITY",
+            "COMPATIBLE_CURRENCY", "COMPATIBLE_UNITS", "COMPARABLE_PERIMETER",
+            "EXPLICIT_VALUE_UNCHANGED" if direction == "UNCHANGED" else "EXPLICIT_VALUE_CHANGE",
+        ],
+    }
+
+
+def with_expectation_comparisons(
+    company_input: Mapping[str, object],
+) -> dict[str, object]:
+    """Return a JSON copy with deterministic Facts V3 expectation comparisons attached."""
+
+    normalized = json.loads(json.dumps(company_input, ensure_ascii=False, allow_nan=False))
+    events = normalized.get("events", [])
+    evidence = normalized.get("evidence", [])
+    issuer = str(normalized.get("ticker") or "")
+    provider_symbol = str(normalized.get("provider_symbol") or "")
+    observations = _expectation_observations(events, evidence, issuer, provider_symbol)
+    by_event = {str(event["facts"].get("evidence_identifier")): event for event in events}
+    for event in events:
+        event["facts"]["expectation_comparisons"] = []
+    ordered = sorted(
+        observations,
+        key=lambda item: (str(item["published_at"]), str(item["evidence_id"]), str(item["metric"])),
+    )
+    for current in ordered:
+        prior_candidates = [
+            item for item in ordered
+            if item["primary"] and item["metric"] == current["metric"]
+            and str(item["published_at"]) < str(current["published_at"])
+        ]
+        exact = [item for item in prior_candidates
+                 if item["target_fiscal_period"] == current["target_fiscal_period"]
+                 and item["unit"] == current["unit"]]
+        same_period = [item for item in prior_candidates
+                       if item["target_fiscal_period"] == current["target_fiscal_period"]]
+        pool = exact or same_period or prior_candidates
+        prior = max(pool, key=lambda item: (str(item["published_at"]), str(item["evidence_id"]))) if pool else None
+        by_event[str(current["evidence_id"])]["facts"]["expectation_comparisons"].append(
+            _comparison_record(current, prior)
+        )
+    return normalized
 
 
 def _numeric_audit(facts: Mapping[str, object], draft: Mapping[str, object]) -> list[str]:
@@ -1201,6 +1707,17 @@ def load_company(
     return EvidencePack(ticker, as_of, company_input, triage)
 
 
+_FACTS_V3_EXPECTATION_PRECEDENCE = (
+    "Facts V3 expectation_comparisons establish factual comparability, not materiality or final judgment. "
+    "Comparable issuer guidance is a valid expectation baseline; market consensus is not required. "
+    "When an event contains both a first disclosure and a material expectation change marked "
+    "VERIFIED_CHANGE against a comparable earlier primary source, EXPECTATION_CHANGE takes precedence "
+    "over NEW_INFORMATION. NEW_INFORMATION applies only when no verified expectation-change facet exists. "
+    "AMBIGUOUS, NOT_ESTABLISHED, or otherwise non-comparable expectation evidence must not automatically "
+    "produce EXPECTATION_CHANGE. "
+)
+
+
 class USAProvider(CodexCLIProvider):
     """Two existing structured LLM calls with a USA evidence contract."""
 
@@ -1213,6 +1730,10 @@ class USAProvider(CodexCLIProvider):
         self.legacy_numeric_failures: list[str] = []
 
     def analyze(self, facts: Mapping[str, object]) -> Mapping[str, object]:
+        expectation_precedence = (
+            _FACTS_V3_EXPECTATION_PRECEDENCE
+            if facts.get("facts_contract_version") == "3" else ""
+        )
         prompt = (
             "You are TRINITY USA V2 Analyst. Return only schema JSON, in Italian. "
             "Use only provided facts and cite [evidence identifier] for every material claim. "
@@ -1226,6 +1747,7 @@ class USAProvider(CodexCLIProvider):
             "narrative, whose fact_ids list contains only supplied fact_id values, and whose period matches "
             "the fact when stated. fact_ids are the authoritative numeric provenance; citations remain for "
             "rendering. Do not create a claim_ref for arithmetic absent from a supplied fact. "
+            + expectation_precedence +
             "Classify every facts.events entry exactly once in event_assessments, using its facts.evidence_identifier "
             "as event_id (or the evidence_id of its first structured fact when needed). NEW_INFORMATION is a new "
             "disclosure that can affect the thesis but lacks a verified comparable expectation baseline. "
@@ -1260,11 +1782,16 @@ class USAProvider(CodexCLIProvider):
         return result
 
     def critique(self, facts: Mapping[str, object], draft: Mapping[str, object]) -> Mapping[str, object]:
+        expectation_precedence = (
+            _FACTS_V3_EXPECTATION_PRECEDENCE
+            if facts.get("facts_contract_version") == "3" else ""
+        )
         prompt = (
             "You are TRINITY USA V2 Critic. Return only schema JSON, in Italian. Audit each material "
             "claim against evidence identifiers, including every number and unit. Identify repeated news, "
             "weak or irrelevant catalysts, unsupported causal claims, overstrong conclusions, and guidance "
             "changes claimed without a comparable earlier source. Audit every event_assessments entry and return "
+            + expectation_precedence +
             "one corrected assessment for every facts.events entry. EXPECTATION_CHANGE requires current and prior "
             "comparable primary evidence. Earnings release plus 10-Q for the same result is NEW_INFORMATION plus "
             "CONFIRMATION, never two catalysts. Reiterated guidance is REITERATION, not expectation change. "

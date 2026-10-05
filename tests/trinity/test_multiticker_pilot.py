@@ -101,6 +101,14 @@ def test_each_committed_ticker_has_independent_lineage(isolated_batch):
         assert len({row[1] for row in rows}) == 2
         assert len({row[2] for row in rows}) == 2
         assert len({row[4] for row in rows}) == 2
+        assert storage.connection.execute(
+            "SELECT method_version FROM research_method"
+        ).fetchone()[0] == "USA_V2"
+        assert {
+            row[0] for row in storage.connection.execute(
+                "SELECT DISTINCT method_version FROM research_record"
+            )
+        } == {"USA_V2"}
 
 
 def test_summary_contains_required_columns_and_failed_row(isolated_batch):

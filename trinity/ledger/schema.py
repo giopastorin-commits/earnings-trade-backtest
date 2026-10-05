@@ -73,6 +73,13 @@ def research_llm_setup_migration() -> Migration:
     return Migration("0006_research_llm_setup", 6, resource.read_bytes())
 
 
+def research_method_versions_migration() -> Migration:
+    resource = files("trinity.ledger.migrations").joinpath(
+        "0007_research_method_versions.sql"
+    )
+    return Migration("0007_research_method_versions", 7, resource.read_bytes())
+
+
 @dataclass(frozen=True)
 class MigrationRegistry:
     """A complete, deterministic migration sequence understood by a writer."""
@@ -117,5 +124,6 @@ def migration_registry() -> MigrationRegistry:
             temporal_derivation_dag_migration(),
             pit_classification_migration(),
             research_llm_setup_migration(),
+            research_method_versions_migration(),
         )
     )

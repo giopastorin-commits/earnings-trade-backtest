@@ -22,6 +22,7 @@ from .canonical import (
 )
 from .contracts_v14 import (
     RESEARCH_METHOD_DEFINITION,
+    RESEARCH_METHOD_DEFINITION_V3,
     SETUP_POLICY_DEFINITION,
     analyst_response_schema,
     critic_response_schema,
@@ -1389,12 +1390,13 @@ class LedgerStorage:
             raise ArtifactIntegrityError("code_commit must be 40 lowercase hexadecimal characters")
         artifact = self.get_artifact(definition_artifact_id)
         value = validate_json_artifact(artifact, resolver=self.get_artifact)
-        if value != RESEARCH_METHOD_DEFINITION:
+        if value not in (RESEARCH_METHOD_DEFINITION, RESEARCH_METHOD_DEFINITION_V3):
             raise ArtifactIntegrityError("Research method definition differs")
         with self.transaction() as connection, self._internal_write():
             connection.execute(
-                "INSERT INTO research_method VALUES (?, 'TRINITY_USA_RESEARCH', 'USA_V2', ?, ?, ?)",
-                (method_id, definition_artifact_id, code_commit, _utc_now()),
+                "INSERT INTO research_method VALUES (?, 'TRINITY_USA_RESEARCH', ?, ?, ?, ?)",
+                (method_id, value["method_version"], definition_artifact_id,
+                 code_commit, _utc_now()),
             )
         return self.get_research_method(method_id)
 
@@ -1406,8 +1408,13 @@ class LedgerStorage:
         if row is None:
             raise KeyError(research_method_id)
         result = _research_method_from_row(row)
-        if validate_json_artifact(self.get_artifact(result.definition_artifact_id)) != RESEARCH_METHOD_DEFINITION:
+        definition = validate_json_artifact(self.get_artifact(result.definition_artifact_id))
+        if definition not in (RESEARCH_METHOD_DEFINITION, RESEARCH_METHOD_DEFINITION_V3):
             raise ArtifactIntegrityError("stored Research method differs")
+        if result.method_version != definition["method_version"]:
+            raise ArtifactIntegrityError("Research method version differs from definition")
+        if result.research_kind != definition["research_kind"]:
+            raise ArtifactIntegrityError("Research method kind differs from definition")
         return result
 
     def register_setup_policy(
@@ -1616,9 +1623,10 @@ class LedgerStorage:
             )
             connection.execute(
                 """INSERT INTO research_record VALUES
-                (?, ?, NULL, 'TRINITY_USA_RESEARCH', ?, ?, ?, 'USA_V2', ?, ?, NULL, ?)""",
+                (?, ?, NULL, 'TRINITY_USA_RESEARCH', ?, ?, ?, ?, ?, ?, NULL, ?)""",
                 (research_identity, attempt_id, subject_key, content_artifact_id,
-                 method.research_method_id, as_of_at, node_id, _utc_now()),
+                 method.research_method_id, method.method_version, as_of_at,
+                 node_id, _utc_now()),
             )
             self._insert_derivation_edges(node_id, normalized_parents, attempt_id)
             connection.execute(
@@ -1647,7 +1655,11 @@ class LedgerStorage:
             "RESEARCH", "research_record", result.research_id, result.attempt_id, result.run_id
         ):
             raise DerivationIntegrityError("Research entity/node identity differs")
-        self.get_research_method(result.research_method_id)
+        method = self.get_research_method(result.research_method_id)
+        if result.method_version != method.method_version:
+            raise ArtifactIntegrityError("Research record method version differs from method")
+        if result.research_kind != method.research_kind:
+            raise ArtifactIntegrityError("Research record kind differs from method")
         content = validate_json_artifact(
             self.get_artifact(result.content_artifact_id), resolver=self.get_artifact
         )

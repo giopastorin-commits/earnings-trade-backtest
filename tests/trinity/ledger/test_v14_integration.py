@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 from copy import deepcopy
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 from trinity.ledger import (
     CONFIG_DEFINITION,
     RESEARCH_METHOD_DEFINITION,
+    RESEARCH_METHOD_DEFINITION_V3,
     SETUP_POLICY_DEFINITION,
     ArtifactIntegrityError,
     DerivationParent,
@@ -413,7 +415,7 @@ def test_populated_level_five_policy_upgrade_preserves_identity_and_fk(tmp_path)
         )
         successor_id = successor.derivation_node_classification_id
     with LedgerStorage.open(path) as storage:
-        assert storage.current_migration_level() == 6
+        assert storage.current_migration_level() == 7
         assert storage.get_pit_classification_policy(policy_id).classification_policy_id == policy_id
         assert storage.get_node_classification(classification_id).classification_policy_id == policy_id
         assert storage.get_node_classification(successor_id).supersedes_classification_id == classification_id
@@ -428,7 +430,7 @@ def test_populated_level_five_policy_upgrade_preserves_identity_and_fk(tmp_path)
         ).policy_version == "REQUIRED_ANCESTRY_PIT_V2"
 
 
-def test_jnj_v14_end_to_end_vertical_slice(tmp_path):
+def test_jnj_v14_end_to_end_vertical_slice(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[3]
     thesis_source = json.loads((root / "data/trinity_usa_v2/9d870f12247e425f9dc234baf78c4454.json").read_text(encoding="utf-8"))
     bars_path = Path(__file__).with_name("fixtures") / "jnj_ohlcv_20260912.json"
@@ -445,6 +447,7 @@ def test_jnj_v14_end_to_end_vertical_slice(tmp_path):
         attempt = _attempt(storage)
         method_artifact = _artifact(storage, "ledger.usa-v2-research-method-definition.v1", RESEARCH_METHOD_DEFINITION)
         method = storage.register_research_method(definition_artifact_id=method_artifact.artifact_id, code_commit=COMMIT)
+        assert method.method_version == "USA_V2"
         setup_policy_artifact = _artifact(storage, "ledger.usa-setup-v1-policy-definition.v1", SETUP_POLICY_DEFINITION)
         setup_policy = storage.register_setup_policy(definition_artifact_id=setup_policy_artifact.artifact_id, code_commit=COMMIT)
         pit_artifact = _artifact(storage, "ledger.pit-classification-policy-definition.v1", pit_classification_policy_definition_v2())
@@ -510,6 +513,20 @@ def test_jnj_v14_end_to_end_vertical_slice(tmp_path):
             llm_links=((analyst["interaction"].llm_interaction_id, "PRIMARY", 1),
                        (critic["interaction"].llm_interaction_id, "CRITIQUE", 1)),
         )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                storage, "get_research_method",
+                lambda _method_id: replace(method, method_version="USA_V2_FACTS_V3"),
+            )
+            with pytest.raises(ArtifactIntegrityError, match="method version differs"):
+                storage.get_research_record(research.research_id)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                storage, "get_research_method",
+                lambda _method_id: replace(method, research_kind="OTHER_RESEARCH"),
+            )
+            with pytest.raises(ArtifactIntegrityError, match="kind differs"):
+                storage.get_research_record(research.research_id)
         research_node = storage.get_derivation_node(research.derivation_node_id)
         research_class = _classify_derived(storage, attempt, pit_policy, research_node,
                                            (facts_class, analyst_stage_class, critic_stage_class))
@@ -553,6 +570,7 @@ def test_jnj_v14_end_to_end_vertical_slice(tmp_path):
             derivation_node_ids=(setup_node.derivation_node_id,),
             derivation_node_classification_ids=tuple(x.derivation_node_classification_id for x in classifications),
         )
+        assert research.method_version == "USA_V2"
         run = storage.commit_run(**commit_arguments)
         manifest_artifact = storage.get_artifact(run.result_manifest_artifact_id)
         manifest = json.loads(manifest_artifact.payload)
@@ -640,3 +658,53 @@ def test_v14_entities_are_immutable(tmp_path):
         method = storage.register_research_method(definition_artifact_id=definition.artifact_id, code_commit=COMMIT)
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             storage.connection.execute("UPDATE research_method SET code_commit=code_commit WHERE research_method_id=?", (method.research_method_id,))
+
+
+def test_historical_and_facts_v3_research_methods_coexist(tmp_path, monkeypatch):
+    with LedgerStorage.open(tmp_path / "method-versions.sqlite3") as storage:
+        historical_artifact = _artifact(
+            storage, "ledger.usa-v2-research-method-definition.v1",
+            RESEARCH_METHOD_DEFINITION,
+        )
+        facts_v3_artifact = _artifact(
+            storage, "ledger.usa-v2-research-method-definition.v2",
+            RESEARCH_METHOD_DEFINITION_V3,
+        )
+        historical = storage.register_research_method(
+            definition_artifact_id=historical_artifact.artifact_id,
+            code_commit=COMMIT,
+        )
+        facts_v3 = storage.register_research_method(
+            definition_artifact_id=facts_v3_artifact.artifact_id,
+            code_commit=COMMIT,
+        )
+
+        assert historical.method_version == "USA_V2"
+        assert facts_v3.method_version == "USA_V2_FACTS_V3"
+        assert storage.get_research_method(historical.research_method_id) == historical
+        assert storage.get_research_method(facts_v3.research_method_id) == facts_v3
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "trinity.ledger.storage.validate_json_artifact",
+                lambda _artifact: RESEARCH_METHOD_DEFINITION,
+            )
+            with pytest.raises(ArtifactIntegrityError, match="version differs from definition"):
+                storage.get_research_method(facts_v3.research_method_id)
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            storage.register_research_method(
+                definition_artifact_id=facts_v3_artifact.artifact_id,
+                code_commit=COMMIT,
+            )
+
+
+def test_research_method_definition_version_mismatch_is_rejected(tmp_path):
+    mismatched = {**RESEARCH_METHOD_DEFINITION_V3, "method_version": "USA_V2"}
+    with LedgerStorage.open(tmp_path / "method-mismatch.sqlite3") as storage:
+        artifact = _artifact(
+            storage, "ledger.usa-v2-research-method-definition.v2", mismatched,
+        )
+        with pytest.raises(ArtifactIntegrityError, match="definition revision 2 differs"):
+            storage.register_research_method(
+                definition_artifact_id=artifact.artifact_id,
+                code_commit=COMMIT,
+            )

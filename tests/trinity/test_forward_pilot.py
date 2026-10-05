@@ -222,6 +222,14 @@ def test_mocked_forward_success_has_independent_native_lineage_and_real_timestam
         )
         artifacts = {item.artifact_id for item in source_observations}
         assert len(artifacts) == 4
+        methods = storage.connection.execute(
+            "SELECT method_version FROM research_method"
+        ).fetchall()
+        records = storage.connection.execute(
+            "SELECT DISTINCT method_version FROM research_record"
+        ).fetchall()
+        assert [row[0] for row in methods] == ["USA_V2_FACTS_V3"]
+        assert [row[0] for row in records] == ["USA_V2_FACTS_V3"]
 
 
 def test_forward_summary_and_historical_defaults_remain_available(forward_batch):
