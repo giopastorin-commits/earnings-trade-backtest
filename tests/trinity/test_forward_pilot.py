@@ -29,6 +29,17 @@ def _llm(ticker: str) -> RecordingUSAProvider:
     return RecordingUSAProvider(lambda _prompt, _schema: next(responses))
 
 
+def _responses_llm(ticker: str) -> RecordingUSAProvider:
+    provider = _llm(ticker)
+    provider.provenance = {
+        "provider": "OPENAI_RESPONSES_API", "transport": "RESPONSES_API_HTTPS",
+        "model": "gpt-5.6-sol", "model_version": "responses-api:gpt-5.6-sol",
+        "timeout_seconds": 300, "sandbox": "not-applicable",
+        "skip_git_repo_check": False, "ignore_user_config": False,
+    }
+    return provider
+
+
 class _FixtureSource:
     def acquire(self, ticker: str) -> ForwardTickerSources:
         if ticker == "JPM":
@@ -243,3 +254,24 @@ def test_forward_summary_and_historical_defaults_remain_available(forward_batch)
     historical = load_company("JNJ", AS_OF)
     assert historical.as_of == AS_OF
     assert "frozen" in historical.company_input["evidence"][0]["source"].lower()
+
+
+def test_responses_api_provider_provenance_is_persisted_without_method_change(tmp_path):
+    database = tmp_path / "responses.sqlite3"
+    batch = run_forward_pilot(
+        database, ["AAPL"], dry_run=True,
+        source_provider_factory=lambda _root: _FixtureSource(),
+        llm_provider_factory=_responses_llm,
+    )
+    assert batch.results[0].run_status != "FAILED"
+    with LedgerStorage.open(database) as storage:
+        identities = storage.connection.execute(
+            "SELECT DISTINCT provider, model, model_version FROM llm_interaction"
+        ).fetchall()
+        assert [tuple(row) for row in identities] == [(
+            "OPENAI_RESPONSES_API", "gpt-5.6-sol", "responses-api:gpt-5.6-sol",
+        )]
+        methods = storage.connection.execute(
+            "SELECT DISTINCT method_version FROM research_record"
+        ).fetchall()
+        assert [row[0] for row in methods] == ["USA_V2_FACTS_V3"]

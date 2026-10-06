@@ -1,0 +1,4149 @@
+{
+  "decision_session": "2026-10-05",
+  "expected_absent_inputs": [
+    "prices/BF.B.json",
+    "prices/BRK.B.json"
+  ],
+  "file_count": 517,
+  "files": [
+    {
+      "byte_length": 18928,
+      "relative_path": "canonical_ticker_mapping.csv",
+      "semantic_role": "canonical 518 ticker-to-provider mapping",
+      "sha256": "2e9d0e0ec05d16d1ba523a8d74483a912767c2a4a4911fe3fe3126a56d02faa5",
+      "source_provenance": "Week 0 canonical universe source; byte-identical compact copy"
+    },
+    {
+      "byte_length": 24028,
+      "relative_path": "prices/A.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "36f3542cf14acebbab7a67f682095b5a28596fcf329ee8c03621e17e8de51500",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24266,
+      "relative_path": "prices/AAPL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ef8cb83381e14899f879f34eb1c078cc2394640206a7da1c5167a177ad3a9549",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24066,
+      "relative_path": "prices/ABBV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a468d16b2c84c9b64692e4567adb3f20ff6fac51b37df5e0b0023f8834356261",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23820,
+      "relative_path": "prices/ABNB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7a95b5182ac484627d71c0a7f33c7ab0ac7740bb93134e499fe615ce6c1b1958",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23785,
+      "relative_path": "prices/ABT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "582cad5ebc0991624d97e51945c344da5f714426853521189f3cc7a6d331daf0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22917,
+      "relative_path": "prices/ACGL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "917cc15c4e62d5a60841c6d35a0722c638d3f5ff7d7227e7ca45b7a67e6c3fe5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23940,
+      "relative_path": "prices/ACN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "08b4b1bdddc6f60fe40660e57c9566d0d017a480a24829d7fc1daa38cb7bcf9f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23763,
+      "relative_path": "prices/ADBE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "58374fd63816d70e189049937faa0098c59accb9c56f5228d6e4fd33666146d7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24037,
+      "relative_path": "prices/ADI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "dcb86be233b9ba03ee2c7d6998a4bf625e25d156f96ced83e422ddc366ff5e39",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23088,
+      "relative_path": "prices/ADM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7b45c2f73ca28e7dcd50615f41ba88f35c59d3a60dc34aba355075a6e17c895d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24122,
+      "relative_path": "prices/ADP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6189189f770b5fb10603033992b96002299dd25926af365079f4fb0d06ab9c93",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23677,
+      "relative_path": "prices/ADSK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0858a540ac0b099606500d7f1b43989252dfbd954fd8d1c04395ac206ce5cee5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24017,
+      "relative_path": "prices/AEE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4158da78ca0f8844ffa18bda4f11b989334e5600c126b9aeee5cc3f30f5c5910",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24063,
+      "relative_path": "prices/AEP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "78ecbdf6dc9b3a499226dee7b9dc72c391e89afe4af3642ff7e7a0b674d0ff36",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23155,
+      "relative_path": "prices/AES.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "be6c0e189cd8fffad998dd52ac751641a4e96ff57e44b2660eee8d84bcb88eeb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24066,
+      "relative_path": "prices/AFL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "41e6e2ba3e2d16d91b8d9c239d556bf1f586f76fdc4feb49c1f5251bef0848b2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23022,
+      "relative_path": "prices/AIG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "fbb10e1d4c26f8631bf1a16079ce9b37bebd79d5e5d0d87f4299ddbd507a5b81",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23915,
+      "relative_path": "prices/AIZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f81a859d6a4e0e2e82350c273dfdfb0796f63d1b125ada72e3a3a300d125c564",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24061,
+      "relative_path": "prices/AJG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f1560c3a68238c48ad35bb3fd8a37be43d1d663620390b4d95475edf1b14aeec",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23421,
+      "relative_path": "prices/AKAM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "66a0d815a97c0dd383b7dc5634d9440074fc50023357bbe110631712d90acfd2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23725,
+      "relative_path": "prices/ALAB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4bee763cafb5fc49c6938f15ebcc040df08a432564cb891b6c6295642e59248c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24000,
+      "relative_path": "prices/ALB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0b48d0b16b1cfc364ecec7fa811db3ed0bbc1122c87c9d11d28bf4094b3fd4cc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23587,
+      "relative_path": "prices/ALGN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d1f5f4aaabef811c5595ee1d86314b4d03e74243930377cdcde83cdab95d7b6b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24081,
+      "relative_path": "prices/ALL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5ad6f5c75aa95d4a836b2bcdd1da9dad3d8a0dc03badbd767425a815bd6296fb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23903,
+      "relative_path": "prices/ALLE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0e9db354aa808a7860f3b4c75c028c641e3c86e72f5286e285784b4ff35df025",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23598,
+      "relative_path": "prices/ALNY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f3cc9ee0035d2a21e5d45ad8f85f0de5c48b9fec1cc89b6ad5cb89eb8b2f5349",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24009,
+      "relative_path": "prices/AMAT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0a0b4c7d8b7cee40d759d88e5facd00c5a0e25fbf1b7b3660c0caa6ef340caae",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23012,
+      "relative_path": "prices/AMCR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cd07c3b7a6e5e3a2279f68edbe339b6c74c4500e0eed7e73deb3d111c359b82c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23864,
+      "relative_path": "prices/AMD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f1a1e7d4d4d2e67b4accc6d95e55a0512c2cbd323115c42a30f7874b62f082c3",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23922,
+      "relative_path": "prices/AME.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "279275acfd716d852d0ed00af54f6f3f08a6390d9b836ce5ca5e40699aef2971",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24028,
+      "relative_path": "prices/AMGN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7aeb3312e0ac18f441535415dbbddd27611f52ea5b2335ad3b31899b4fb6b6a3",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23843,
+      "relative_path": "prices/AMP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "57a0e433d7f39e698b82621844308275bf8c06e9d2b7f0d4bb97981c1a6cd1ee",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23993,
+      "relative_path": "prices/AMT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2d3120aa47b7cef11090d0497a41a01af6abc4fb510d2a3e8251c09b8b10c19c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23983,
+      "relative_path": "prices/AMZN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "208aa76cd69265bd181e12e12e988576c0fe5ff02b22a8fa6acaa71ea553969f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23807,
+      "relative_path": "prices/ANET.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ff314623893d9620debf08448ab05b5ae3bdb56a0b200411cb264b3839006e47",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23935,
+      "relative_path": "prices/AON.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8f4a6425fa02f088957987d04272d26a1d8aab848d2eb9387afb30221b9f4941",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23077,
+      "relative_path": "prices/AOS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1a4242490d02f9f86722121464b4909444606925534e6983827e7337907a7708",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23069,
+      "relative_path": "prices/APA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9e29340c99e8bcd55b57d2c9c1918d16be28eae4660de862735fd88655c3eb33",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23951,
+      "relative_path": "prices/APD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1bab4f3623785a30031dccfb4b33c2e13bbb2d33dac55faa23451aecdfc9887b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23981,
+      "relative_path": "prices/APH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "01b475090995d7df1a75d068b571f931605aeb75b0349b81ada47a9904846163",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24023,
+      "relative_path": "prices/APO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ab93e0fdd79e796f16f72e98c0870c5168e5c9d27cd243d69ec6f7115917d229",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23634,
+      "relative_path": "prices/APP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "92ae8d8483eb033448549add348b564b34e98c477a24c29be168bcdaa08dd9bf",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22767,
+      "relative_path": "prices/APTV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "76bebcfadd484a1253f697402e6a3d3f063bda597a80f9da6da1dc1195b526a7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23043,
+      "relative_path": "prices/ARE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6d0613e379aaf0961c277ce5d01ee6cecc21a63180c96bad17c2f5e4ad29584e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24024,
+      "relative_path": "prices/ARES.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f082f9f9001a93805df7815e3b0ddd1291f04d1fa2dfa5e9c484418ab7f32b1b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23785,
+      "relative_path": "prices/ARM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e5883304100717d6d4df55e7e29ba2ed5ab8423a771efb00a330e7ee4900612d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 25038,
+      "relative_path": "prices/ASML.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d3be2431111c669184edabe84aa623ff8949871f6cdb90e26a128d8aa23b2381",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24009,
+      "relative_path": "prices/ATO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "de71624c42ce271d667258c3f81771059ed8b951a85d61fcf441c0fbd021ecf2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24184,
+      "relative_path": "prices/AVGO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "71e1a4ad0cd508c1ccae7ba0b4f35c4207a128be9cd8d8e30f61060287f42e59",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23942,
+      "relative_path": "prices/AVY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "06c8f190be2af9dc858dd372619490769b01b48241e7810e23ea3647de3b1aa1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24069,
+      "relative_path": "prices/AWK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2cfdfa0a4dcb664397bb50658c066c402bd58b59f8382047a76176d32097045d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23469,
+      "relative_path": "prices/AXON.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3ea134eb079e1872ba0a495ed0594accda4b06d849873730f34caf87f10ef22d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23894,
+      "relative_path": "prices/AXP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "94736e54f37e6dd7efb1ec0b483e93803597f95de878442bf96158d3679d26a0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 25187,
+      "relative_path": "prices/AZO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7b1ef06ca432140239a63895c300a102fbc3648ad2af7f0a32bca1d29bcc05ef",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23643,
+      "relative_path": "prices/BA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9c382ba75217662d3270a3f15958c0f26ccf098ce1e4e70eaca284db544670cc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23299,
+      "relative_path": "prices/BAC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "597a5bb0d927bdc4dfdb3a91c6f5359e1fc5633a6a84e2a3e7fe7caefb811acc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23123,
+      "relative_path": "prices/BALL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0854dcb14e1bca7dd906f9c91b2b0c225b311ca99737d35fc636db183c4aa1a1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23152,
+      "relative_path": "prices/BAX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "443ff88cc51b860c67912d60a2b582cb8a3dffba917820ca9139c435bf08e0e7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22972,
+      "relative_path": "prices/BBY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4f6043c89d2b60a7a6e34312fe14ddfe028371d2fece4a1745475f66a3f4ee2c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24194,
+      "relative_path": "prices/BDX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5effb61f7d1792b1657f71d3fbe552b662e8ddca5abada1072adfa78cc8068c4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23065,
+      "relative_path": "prices/BEN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c5a5dbb123e9f4e699316c26a9dc29f2d2e531062680a9faaf7d62f7cb44ede8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23957,
+      "relative_path": "prices/BG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d0043c55231c7bf511a7ff123ec273e55fa34c646bc5a89fb57e78951fa08dce",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23608,
+      "relative_path": "prices/BIIB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "763b3356bd968a0144d1735158dc2e5b5eea3d76b0f6935d74e2fda187973411",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24423,
+      "relative_path": "prices/BKNG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e10e8c82dd8886bb84ed480dc7c6d67936e0821df888aaa7c21326397f174151",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23122,
+      "relative_path": "prices/BKR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a2e22d97bbbc2446933bfa4a80809331d5eb51ec20863a9bf6628f8b30005821",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22978,
+      "relative_path": "prices/BLDR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3f355a5b17ac5ae6e26d62542fd4be16df6b2d9da0f5cdf024d6a04a6d7edbb9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24775,
+      "relative_path": "prices/BLK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "36b191fa5a7b8fb4e6680c0423f3a5c64854d3c1c1d933548db0daaf966b58df",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23136,
+      "relative_path": "prices/BMY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ed371804525ec58fd5eb62719d8c9c3b8db5e27b5ed556157fa29c0190da9c8a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24048,
+      "relative_path": "prices/BNY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0cae2c6ba1623cfd896801cfd1a53b5d4c114a7fbf0c8cdc3228711be4ffa337",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24071,
+      "relative_path": "prices/BR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7ebe332887a269bd646fae8acddecc88b70f31c6e9169b7572af0cbcf6c398f5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23105,
+      "relative_path": "prices/BRO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "49bc914bd1ec359361d138cce4c30d16732f1987991060097e3c4b941234d55d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22970,
+      "relative_path": "prices/BSX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4f3f622b839af7902aea39292c9977d5109b8986744838117ea6e0ef45f7d4d7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24040,
+      "relative_path": "prices/BX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7f8436823dfdc84a8821eb94674fa717d7c8f0cb565f12f721a9c67f1d76a8a4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23055,
+      "relative_path": "prices/BXP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "218383bbc5dab566a1269f0ad62b12e71273cc21d9bf297e61b5f484015535a6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24206,
+      "relative_path": "prices/C.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1caee624304f2237876f24005d657e68c7966d54160ae74821f37f5d18dd4d83",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24013,
+      "relative_path": "prices/CAH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0ced565ab460f479235116fb9203cb0d27d518f8862e0c51288e79f17948b3ee",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23176,
+      "relative_path": "prices/CARR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d9b3cbc84cf2af6dce1014e7670d4a549e4eadec21755948fa1542356dbaee9f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23737,
+      "relative_path": "prices/CASY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f2ac299f7121376e993490e0950618ef7ef376b194f7f500dd6985edc1f9d763",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23956,
+      "relative_path": "prices/CAT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8187cab4cc38c94c37bfd8f34dd876ed699d3558a302692e243b36645153438a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24162,
+      "relative_path": "prices/CB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "350cc5742ef9e5e4fe05c08a90dddfeed17d1da780d5ea5c031a2cf3c445937b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23935,
+      "relative_path": "prices/CBOE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c8cc55c0bf5795b45f662b165b659cc4130c1ac7a75e25b7a8c5a724d38a8879",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23764,
+      "relative_path": "prices/CBRE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "65139bd24ae1fb155ffec883c88a61ab98f90a92e7dafde45bf4e3a620a99d30",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23409,
+      "relative_path": "prices/CCEP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7945b75a9f7e553f25cfa4d0f2a08ccf7a2c686e3f22c91b9a88b504b7be604b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22998,
+      "relative_path": "prices/CCI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "060575b157541565aefa429890cafffcf1ffb1bb6c94209ae2bc87bea46baf63",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23299,
+      "relative_path": "prices/CCL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9b76ef993718627793eb43c668b1ce4f06fe808d629711d49ae69dbbb742715e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23583,
+      "relative_path": "prices/CDNS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f84549bdfe18630c62766c379691f59f7c3e6dbafef57caf6a8727f148dc9f32",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24065,
+      "relative_path": "prices/CDW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2d93ebbadbb6f8c4fbe05d7747f5d621c6de924c39e7cda24e8cda57c564423a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24092,
+      "relative_path": "prices/CEG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b55ed03e29bcef46bbbeb1feb44760efe08967b064021430549d9aac00e96636",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23757,
+      "relative_path": "prices/CF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a288f01e9860c50f12b285019b4bdea9c93864ff376c65ab3be172df149ec1af",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23152,
+      "relative_path": "prices/CFG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f9509cb74e66d700970e0983b7cdfdc3ea4e5869c44e0bb75f5132dfb39b8cb8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23272,
+      "relative_path": "prices/CHD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "34aa817c19bee5f7c042f7fb130350f9c6b6a9123db43b0494af6819e7195d6c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24109,
+      "relative_path": "prices/CHRW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e057f52bf6f77b8b60ec649ec16da70021a6290b7794985196ad0bc66517ec7b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23645,
+      "relative_path": "prices/CHTR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "503c783e26f87f004ee060fb7a1faf22e75b6d750c2b0390f7ee7dfe710ed25d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24013,
+      "relative_path": "prices/CI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7586c5f1fb5c0de4bc5d86bbad65c0e267b860380105e5bbdf63085aabc5876f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23592,
+      "relative_path": "prices/CIEN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3f473153bc415e665be36f2817b3a93a0baea790a37ed991d722c91c17795fa1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23874,
+      "relative_path": "prices/CINF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6bbbb874e92811eec9545250be5ade98d1c105d6aa1d597197cc4cd0a0f6ec50",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23054,
+      "relative_path": "prices/CL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "05a9446b48d4c3c96f3de4ec1c4d6d13aa6039076c64b38f73bf6f4c77ecf05f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23477,
+      "relative_path": "prices/CLX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "612a1dea9954befb84fd11bb86e134cd84c11ebdf2b1eedb3ae11f0ebab5da89",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23254,
+      "relative_path": "prices/CMCSA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8baf183334f025ecf33aaa94f405ada9e238789776c71ca539a8bea8256e6c5e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24075,
+      "relative_path": "prices/CME.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1f593f7fe725205b1699424e5df1cbdc50ff5bc4b08b3d02e8ca795e40bdc521",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22931,
+      "relative_path": "prices/CMG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "932ce439c350a6efa307497fb51a70726e439a2bbacffd609354d1e63e5012ae",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23863,
+      "relative_path": "prices/CMI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "deee66c0cf397dc0f24205a58594a66d020093d7e0c48c7a6d9de62b54023a50",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23088,
+      "relative_path": "prices/CMS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3787dd4ea77cb5768b44fcf4f4b08e715238d63528076d5472a059ed2937ab80",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22754,
+      "relative_path": "prices/CNC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3361b4ad5cfe2494685144488c3f0983b8771120c17a1d7866658efc711d4bd7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23130,
+      "relative_path": "prices/CNP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "05a68ea817639d8127eaa4c8f8dacff7f7726b13f991854d092ec5f6eb1bb2af",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24013,
+      "relative_path": "prices/COF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "db8e508c4b969da964f77d26496c78f4543525829863a648ed1679f790689399",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23588,
+      "relative_path": "prices/COHR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "603857e1f0c05d19f6854b9630a880c2742e3bd5e610c5559777cc564945e321",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23800,
+      "relative_path": "prices/COIN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6dd8de7f638a4383a5a36215f2cc0010f8096921218fb40b23ca71f1cfdea5a4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22751,
+      "relative_path": "prices/COO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d3d4b38c7a4d504e13e9c6bee0ce3ece92ae1affc8dfc09bcd38fba9363504d0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23961,
+      "relative_path": "prices/COP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "36cd612f158cf15ac3d012595b7b4498d3cb4f23c60378882889501634da36d8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24085,
+      "relative_path": "prices/COR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5ef03db713ce8631f4fc7bf5b4d90d8d8b8fde301e8a888cbd55942f0ee66217",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24239,
+      "relative_path": "prices/COST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "98548af6389d7c604089c176a4111a8a08e07acb6fb6ec0c5cf9ebd13d5708ad",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23560,
+      "relative_path": "prices/CPAY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b65bca4ca4e8ae606ff59a82613e9bd2c29bd197bea144c4e57f4c02836973c4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22867,
+      "relative_path": "prices/CPRT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c145246e969ed484820e65f8df3e9b931414a55f9d167e259b0121936dec100b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23852,
+      "relative_path": "prices/CPT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3fc6b25bf56531bcb684f85a9a182c73a1605dcbc245341181ec83e310efa446",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23822,
+      "relative_path": "prices/CRH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c1ac9326e7833c0be97da5120bedea440461ac9ad2b8d6a21e6e112740033df8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23580,
+      "relative_path": "prices/CRL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "16d9aac12447ad8ce98a738545861fc9c038535e8bad40b83f411f298f4e66f2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24076,
+      "relative_path": "prices/CRM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ac6936f63bfc629a419ccab5d4822e53ecd8c48e9979d04bf2f95e6dae0c39d9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24036,
+      "relative_path": "prices/CRWD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "30f314ec06729d1e28d3312bc250f05243137528b343045877a044cefb278e92",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23284,
+      "relative_path": "prices/CRWV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "061151dc74ca0fc0d0743431f74b18c91f6ddde5aed1f7e60b13104594712a10",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23745,
+      "relative_path": "prices/CSCO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "83464c3a2bd9568758d057e1370f4cda23b6d913b0e48c0718e6335d25abb9ee",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22832,
+      "relative_path": "prices/CSGP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9998db1976095dfa390478cb13af5d97852e56c4d15077a4d95dd5180fa690f6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23267,
+      "relative_path": "prices/CSX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a1bb8770478a21c3f58c62cf4c9f5edb7114d57e6cc3a18666edb4e0f8cc40ae",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24083,
+      "relative_path": "prices/CTAS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "92f195999f8baf211bb1ecf4ffbd45b898810883d5792ab19e9e9f4a4b5c6153",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23134,
+      "relative_path": "prices/CTSH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f5a24086a8441d51fd9c2ea9bbce13139469c505223da7211950a51d658b1a2b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23244,
+      "relative_path": "prices/CTVA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8b3c4ba3040b5c0158b8fc05836c658974058cfef8674f22aafff78be8bf3c7d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23383,
+      "relative_path": "prices/CVNA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "39da805c3fd256f97b207326255b7317c5c9f0ca1a7e89d8d991c9f701419f2e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23231,
+      "relative_path": "prices/CVS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8ad3e1c4659cea90a567a907d4f62db567a3729b27813252b2c25c15fcc99f43",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24132,
+      "relative_path": "prices/CVX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2352d21dcf6e18ab24e7bdf08cb9d86cb5fe005351932f79834e74451e2faa2e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23127,
+      "relative_path": "prices/D.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e47cce421eaca6f30acf3f95a4598b71ba50ad58c7d768609f24fe187af7703b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23103,
+      "relative_path": "prices/DAL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e513c68356d63a56ae57616d931b5f4bdde1679e22128ff1613aae4860da64e8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23797,
+      "relative_path": "prices/DASH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b949f59bf54f2d6f86c824456119f4c494422da5fd480962ed41a83bb8905737",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23650,
+      "relative_path": "prices/DD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0debba1a6721f5dd6e80e1787b8bd1729126faad1c5d7f272fd76eb8fa97b341",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23795,
+      "relative_path": "prices/DDOG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "61d81120109fd22e4909523beb49a29be4bef2d9427e61428f4124bd405866e6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23905,
+      "relative_path": "prices/DE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "dc81aed9231c8d29bc32dff222b1ff1ab5e19a4dd640dd920d55bf1d5e073e60",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23350,
+      "relative_path": "prices/DECK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8e286e8a09532523e6a840c14682caca2750ab500b97092707c91d9178eb61e6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24153,
+      "relative_path": "prices/DELL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a7bd13e9af8d63cf1da8a06b216239c9bbe76b6b778b40f221e4bad300c7c28f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24135,
+      "relative_path": "prices/DG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "232a196f7a438736af016d725d8ce9c27800fba9831908d13037da1c364ec009",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23986,
+      "relative_path": "prices/DGX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6534be10495d15d15e8509f1116fb60c458d259b3419fd71ae86ba9e3d4b0f54",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24029,
+      "relative_path": "prices/DHI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9d60e27e5536dd229b356ded46bfd9c382319c132ca1b3a5833322241a05c124",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24089,
+      "relative_path": "prices/DHR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "14310286f09a553ac5058dc59782ac54d8f4f7407bde8ebb8990af024da9f986",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23841,
+      "relative_path": "prices/DIS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "379bda1c3c2c6b87cd9b4749e14b39d1750371d696ed41b29668f3d100f48ca7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23990,
+      "relative_path": "prices/DLR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "dc9d80eb27cc440992aa213065ef8d7adacb188c301c585d0a1ea3543c39b1b7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23616,
+      "relative_path": "prices/DLTR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2c69ba83eb1cde744ca53ceff6518495f51110ec493db2df28513e460764f46d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23122,
+      "relative_path": "prices/DOC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1dd5f577ecdb7dd465a283ccf2189d5eda1af87c09941148b9d2152c116d81f7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24023,
+      "relative_path": "prices/DOV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2fe961ddd5fa936c562a1cc5c56b111d0be931ba0f6739b9ee0be451be242a70",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23326,
+      "relative_path": "prices/DOW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5bcdafe117aa328f352df3d818fd903d6ccbed7100c4b312fddf6e9df5853b2e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23697,
+      "relative_path": "prices/DPZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f25237a7dc10697a9cede177e2a0981c6f859545bb7198b991893a727768db40",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23983,
+      "relative_path": "prices/DRI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7c91316745116ad810ee050cb6ccc850840065793fa245198034014bf29c82c5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23976,
+      "relative_path": "prices/DTE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "585a48542cf6f3669e8ffcfcb9f51b3a43e92efd2ee5354cf63ae8457f5a4f0b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24028,
+      "relative_path": "prices/DUK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "66335ca88922c18281e0c154cf153bcc59277b5b1cd7a324facf7047960549ba",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23539,
+      "relative_path": "prices/DVA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cdca36c2f98a903e9f59054dc20c9c0630c43d767136c78b260fa2caa46b02d0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23142,
+      "relative_path": "prices/DVN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "005e2f518cfd4f23e1acee937c58bcea21d5767a93a3f2a18eb8b06171cfeb3d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22775,
+      "relative_path": "prices/DXCM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1f75d1027fe42556a5dbe726fcd1b547c69c101fc4980e93e11f72f90d48c1d7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23662,
+      "relative_path": "prices/EBAY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b0d3e7a10c3790105d911d5a7cb346c206ac61c06f4028fbdec14f003d7cc6fc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23351,
+      "relative_path": "prices/ECHO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ef61bef2982d581b6e3abb8f7b671e4149ac99aec184765d330a3609747479a0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23964,
+      "relative_path": "prices/ECL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d17be71865b89389fcbff0402cbb9cb67812f60efb41051180d7742cd3926553",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24010,
+      "relative_path": "prices/ED.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2f0bc99ee385866a0d53c610ca8da46076cbed6b99d13459871911d9425cc03c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24062,
+      "relative_path": "prices/EFX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cd5fd836c9c31a4219370033a11a64032e0f4857b59bc1783d3e2fab57ad9a02",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24031,
+      "relative_path": "prices/EG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0c860f42706520e8a215551a0a04294d1f448a60f122a39e146c35adb208d7e3",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23011,
+      "relative_path": "prices/EIX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "944e1a432cdbefab784c5e1d6e3b18ce3d88bbe2b00c9eda8fa2f5e5c4c9a05b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23353,
+      "relative_path": "prices/EL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "81adfcc445ed597ffad6b462b561f05e40a9efd98b29a547ed374c890a8a365c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24058,
+      "relative_path": "prices/ELV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "218ffba2725f415cc80d983e51c7a525d2b059fb7317be00ce2a42260787c186",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23735,
+      "relative_path": "prices/EME.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9acf77e80e63c45a24c1c743959685c375f7d6e535914c18915d476855788eef",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24022,
+      "relative_path": "prices/EMR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cd0cd2e38a6ae334412ae8dd5d7880d68930db66ac93a0b90b8d47a143822c64",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24015,
+      "relative_path": "prices/EOG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c0e0e9fe0cdb52cf24fa070ec9df8594bf94b9a3a03fc1bc0d561009b1941a7b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24584,
+      "relative_path": "prices/EQIX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a663efd705bea0da6d73fb9b43f4c4674c3d5075f389addee1b897e17f8e4635",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23098,
+      "relative_path": "prices/EQT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5f75f2121a56cf332ac33176163563adbb47ccb418b19987570dcd88e528bc19",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23829,
+      "relative_path": "prices/ERIE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bee3ee75b8ffe952e8f354be039e9c827d9f164f8d0a95afaf1af244d1e19c1b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22979,
+      "relative_path": "prices/ES.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1db478a082fcfe357ae75ddcd5cc27989753a27f46b3b07f9197bd2953a62649",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23822,
+      "relative_path": "prices/ESS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b96f2d4ac770d8f9cf0333bf7dd04a65833e065027bc01b4c7e886c08eeb8b21",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23939,
+      "relative_path": "prices/ETN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4dd6911a0ea8aafb2ba975dc323ed02547c2bc12cf5be5b54b6e597b3fc4bfe1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24006,
+      "relative_path": "prices/ETR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d346c65a9d24cfddab2443be77770ffc50aa0018700ce57a1e0dc317b37d4cde",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23108,
+      "relative_path": "prices/EVRG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "fc0879130ef0120f3737d70707ac0f5e722e54b9b70dc3ba11c4deff63ae06e9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22741,
+      "relative_path": "prices/EW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4b6be7a3b71aec89d15e3a803fd72109c01541bd489e54bd47983f0170b541dc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23191,
+      "relative_path": "prices/EXC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "13e96b162f5fe0975fc2cb16ae01da6a2dd8702e65365dc2e22dff0b3f1e6151",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23585,
+      "relative_path": "prices/EXE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "13a5b33d2477c16f949d0375ba1c75d097c968c5ff75bee510871bc832b58117",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23862,
+      "relative_path": "prices/EXPD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "37504a224279483b480e61f5002d21a7d0039d84fd4e0c8c78728b2c850d99b9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24192,
+      "relative_path": "prices/EXPE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "62765fea137117cd69accb08e6a809b1576202c18dcf3fa1e60e175cee3f349f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24049,
+      "relative_path": "prices/EXR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "40d780ce4060331a8725abfa5fc84c82ad2e4abebc7fd76bdad9518c839d8c30",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23302,
+      "relative_path": "prices/F.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ac136a6a33217b246e27eed1592e7104c8a71061dbc2745228b1cca6440af137",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24055,
+      "relative_path": "prices/FANG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "157778c639efead19dc1b368a58c1217a905d72699c77a7b19985efa1dd1b3b4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23111,
+      "relative_path": "prices/FAST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f181090df9c5b42abcebcf6303708d5518d7be0c8da5bf0d3ff9ee715e0d8427",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23224,
+      "relative_path": "prices/FCX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "322972fb4328a9447c008057a10e2e6137d889a0bd18fba90c3fd27dc008cfbc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24019,
+      "relative_path": "prices/FDS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4b5bb294c7ce82f5fcfac88aad704b03bd5b4ed5fd5c57c3817688e5c81cb9b4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24112,
+      "relative_path": "prices/FDX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ec2d302115d11cc04b244b2838cb7dcecaff5bb8603031c4f686d22c6761d7de",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 10722,
+      "relative_path": "prices/FDXF.json",
+      "row_count": 92,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "583cb44acbe7d5073ec0dd555579efabc5b4d1af11efeb4e03b9ebbe3cdfa29a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23238,
+      "relative_path": "prices/FE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "42811a40a3c9235c85495acb74557939332b05d410ccae25b55a8a8d75b9f180",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23076,
+      "relative_path": "prices/FER.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e4010ddcd440d92c9102f7cf0678542c198bb96b539f296ac0346723873d3602",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24150,
+      "relative_path": "prices/FERG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f6441a9f668b71207b2ff32662eb351fcff10fb9368bee13c04ec33790a63bfa",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23540,
+      "relative_path": "prices/FFIV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "db50b277429e883341c513f8a343dac17a283e249e5b7d71a7726b916cb06645",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24219,
+      "relative_path": "prices/FICO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b2a2b184c70fb213ac7a980c1cf6c18119cf5caba566037cea88efc3a0c75635",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23132,
+      "relative_path": "prices/FIS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c97ec522461d51f903a44ea0b854c14d3766232722cc52199ef2815a02efc87f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22823,
+      "relative_path": "prices/FISV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9561201e05dd51229d0669e7494361a149b90c2ff3478edf08dab6e68fd5224d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23086,
+      "relative_path": "prices/FITB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2aa63610a73e4ecdca006d2b9c2ce30db5128a9d541c32e72df35dddbd9bf58e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24727,
+      "relative_path": "prices/FIX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "896b29334e292a196779fc1325bac881f3f300048360528fb1fb5747171775a9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23263,
+      "relative_path": "prices/FLEX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5a62871fc3ebf601b5d36c66d62969d6c03f93f366a097a8292721125aca2cc6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23153,
+      "relative_path": "prices/FOX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4f16c2be4660ad9531af4980d32e047f0248bb68dcde51fafa2bb6958c97cb19",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23241,
+      "relative_path": "prices/FOXA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "979eba91108c0f49ff9233942758567ea6b153d8645dd4a5be90a8e0a8e57169",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23892,
+      "relative_path": "prices/FRT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "76fcf0c9cb42db901bc7813d12548f26b19701abf15d091f9549122e0af304e8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23753,
+      "relative_path": "prices/FSLR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f2314b1e0b0cb9af7499d7c849297466306c9dda32002691b4db4330e17482dd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23299,
+      "relative_path": "prices/FTNT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e8f90326977e5621c9f721cb095a6a253ed3b7ed4dc22f522b50f28a87f67838",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23218,
+      "relative_path": "prices/FTV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a3042b7cf20cbf50951eeeda31c6a4fa5727023b9d0a61d4b291ce320622ecba",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23903,
+      "relative_path": "prices/GD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f1d6a71cb3eeae42b28f31fb83cd9700ab87f9afe75024242ed2f7b3a53404d9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23056,
+      "relative_path": "prices/GDDY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2976969f2d412ac86e5aa2c91d6056caf42cbef269d957ab7b3ce3285b0d722c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23998,
+      "relative_path": "prices/GE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "375ab5c4d52b3d943e339fe18a21b9404fca8c6d695f6809fc84f90ec3911213",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23152,
+      "relative_path": "prices/GEHC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6e735c617de7f0951b3a82dcd5be4c84276811c2655112b60269dac7e513eec5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23129,
+      "relative_path": "prices/GEN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d4dffff49a42a705909279e5c7c961315c340111c6636f84d4df3dc18d33a37d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24082,
+      "relative_path": "prices/GEV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "848ad1cfddd36f56f3fa6f26c4b5f9a6993b6e4c5085f6b06ce98f367a6fa60c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23965,
+      "relative_path": "prices/GILD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b8cff22b0f15d961e66772c75f8bdfbc2d5deb416487aa5091b8a3f8e61f20ec",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23105,
+      "relative_path": "prices/GIS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9208272de09243f7b83a27ba7d0c6e2473974f388c08eae418547091c138cce4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23884,
+      "relative_path": "prices/GL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b5345cfb389378a6f774f23d94f0bfb3ec3ed3b245f1f456faf5d35b7f3fff34",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23964,
+      "relative_path": "prices/GLW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4ce8df9a213243518863e33e974a0d531502b9b3c4d54d271579169b56d656b2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23117,
+      "relative_path": "prices/GM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a9aca0b8273d7762a4e4661b1197a85801c7315d1cadadba5d78d22dd19dadce",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23666,
+      "relative_path": "prices/GNRC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bf8efbef41e42bd7021cb48dc0d9f0be18fd75cb97d814421e7a282927681a59",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24407,
+      "relative_path": "prices/GOOG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5d740863756e3364010d9b123186704acc1a5ed031109123f6416896707c3c00",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24431,
+      "relative_path": "prices/GOOGL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f2b0e5144590817bcb9e0371e07373444476a7829cabb8d36f565064bd7fbc00",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23966,
+      "relative_path": "prices/GPC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bf526b7c91427e5890d4edb51a043b3f4318b49e30e578d55b34524ae9ec5df7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23195,
+      "relative_path": "prices/GPN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6a68c8a4484ddf030a318d033eb39e290e2453bbd5cd856912971d6743e0a15c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23931,
+      "relative_path": "prices/GRMN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9f0506649731150afb92625208e5ed738097b7f36134f693ea71b25eb910b805",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24282,
+      "relative_path": "prices/GS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6e1bdd50949d4c50030f20ad315231cc4c01ca25c7397afb6f7119c1b94c831b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 25074,
+      "relative_path": "prices/GWW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3b718e6b6b7b4a53d62cdef675e1a2ef87d08e05012262e89ac35aceb00e37bc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23242,
+      "relative_path": "prices/HAL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8badd58f6edb00043cd26849dc9fa02402c3f58013abe766fb7f741cd6a45561",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23107,
+      "relative_path": "prices/HAS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0c1e0635db2c7c2beff694b78c598f91604fc3071daf94ea01fcb8e326f6390a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23250,
+      "relative_path": "prices/HBAN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4436b53c2a829d72e88235d4a1d1a0e0b0a8e5486e1c00d9902d38c47d404535",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23794,
+      "relative_path": "prices/HCA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "692dbe692a4f45d66d6752322b9356f436ef2c963ddc2b9f18fb7cc581446ca1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24192,
+      "relative_path": "prices/HD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8ea373ba459e8e32be6bd786ab162b0c061a478bca5a6134455c648fb88b446d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24119,
+      "relative_path": "prices/HIG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6e89215ecd94fbc02e1e342e8c027fa65d642d323f4c25550c67ed69fc644703",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23845,
+      "relative_path": "prices/HII.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8b4bb0a5aa2b1ec066074a0b6557787e61c3bb8cad49c99f3ba7e9067d38e81d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24179,
+      "relative_path": "prices/HLT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6fd24763270e62b955a72fc2ba2351afda3d4f1545c25b0ca9575d6bc7b03687",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24066,
+      "relative_path": "prices/HON.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e6bd056af98f37fa2802f8c664edb4a48a222361b6beb7c4e1f508b18455310e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 9125,
+      "relative_path": "prices/HONA.json",
+      "row_count": 78,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d396579e0514ada84eb6645e05d9daec697372a1f805dc42f57671182217f2b9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23478,
+      "relative_path": "prices/HOOD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c08d7f8515c4d9b2cf8e369ebb701f778857940f2cf286ab78035328e456b8b5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23300,
+      "relative_path": "prices/HPE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "83863c17d0ab0dc3a71443e72c0522cca5378f309a06a32c4e72f85d9bbbf557",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23320,
+      "relative_path": "prices/HPQ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a0b2b528c148d2bb18a702e1572d5d2481b2a7844487ca300dfaa8ec7cc57502",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23069,
+      "relative_path": "prices/HRL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "421f77fd44e2fb681b070d0a6a18a1a3061ba6cfd18f3fb4fdefc90cac4f1b54",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22708,
+      "relative_path": "prices/HSIC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "abd4153c3ad5cfb2d3f63f387e7ccac6711869e70cdf6abf7109ddbd51c7d64c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23145,
+      "relative_path": "prices/HST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8ad2685702f9f106fe12ebdbb639f92e83a9e827fc7d16a56ccc0ad59aef95ba",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24039,
+      "relative_path": "prices/HSY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bf2f218bf0d1d1c5e96921b8a3484082830e5ed35814d21f7890a32761d448ad",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24044,
+      "relative_path": "prices/HUBB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8ad3a15febf3734b201533acd09bd3e42aea0747a23d8d033b9d989cc83dc6f0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23949,
+      "relative_path": "prices/HUM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0eb3a3abe75bc31329ba708034771733306c18f065fc8e99bfb50869c6bc4340",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24022,
+      "relative_path": "prices/HWM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a55e7ad2742c33f61f70f64e59d945b06a5521dc1edcb3a8c300fea256413a0c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23071,
+      "relative_path": "prices/IBKR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "045c48e22d7c4e5e2f6aefacae510001c18cffe7cda40289793386953067053a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24014,
+      "relative_path": "prices/IBM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "06aaacb5b85fa29edc3d9ed67437571b4e924d47117008dab415d4f5edd90cc5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23946,
+      "relative_path": "prices/ICE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d8fe6412d8c740dc3dbd20061ca3d75a62c10fb170fd8bc8cb072d7fcf93bf1b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23575,
+      "relative_path": "prices/IDXX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "846e0521902827065cd2f682e3a061f10bea6196e673a5e71d11c56767041f6b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23930,
+      "relative_path": "prices/IEX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "14dd8a7db25d3f6c42b852ffbd621d856d7e850aacbbbcdece043d6231d9fee0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22997,
+      "relative_path": "prices/IFF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "51988760aa82641df1172c447779748a64ce39dab77fcc42bdcef4bc87cdd0f5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23342,
+      "relative_path": "prices/INCY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "665aa77f262b0ee443876f3e3caee81b3b765dd15c8d9b606b5a2716a5a39e9c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23451,
+      "relative_path": "prices/INTC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6ca20f19d8ecd6382e522da5fe66bf78c5010195cbb76c4047b9dba3ca22147d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23891,
+      "relative_path": "prices/INTU.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a6843f8b0213f77cc4f277a0c8910cff08cd1f458e1c65676d798ac88a350a94",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23234,
+      "relative_path": "prices/INVH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "39a83f14ce301c917f9a3829fb8e2654245642f62e76a520ced08e6d1fd8cbf5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23123,
+      "relative_path": "prices/IP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "649b6e0438cb5a7670451315085c65d013c4842292151fd89d5a704602b267e4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23736,
+      "relative_path": "prices/IQV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a3991eb809f0503181d30eae6a24f3f9034f26631cf59b05d509e5d40fca1603",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23178,
+      "relative_path": "prices/IR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e769fb12f9667342e6aedbdeea04e5a399053b575232b5cdb3a9aef289a6c57e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23769,
+      "relative_path": "prices/IRM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "33b2968be0226d73b97a178dda30dc50a6a5e7bdc49bfb91e6cf12968cf4f6f0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23658,
+      "relative_path": "prices/ISRG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "249ad792d70aa8bbf279ac61691e08b1f754ac2b5fb1a9a526c9ff2d364ddac7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23708,
+      "relative_path": "prices/IT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6bd3e95176a471866cfe56ae1c743865895c3c77e0186d4215263ad2350b7ef1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24028,
+      "relative_path": "prices/ITW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c45864950a18722319ac7eba25f67503323a099470395ffd061b8a0320bda302",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23093,
+      "relative_path": "prices/IVZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "99c2a77f27921b892b9ec7c87faaffb29a40c1a3130c500d313c3d7dbc149405",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24063,
+      "relative_path": "prices/J.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b39f992c7079b6e39aa663de03ec0c59b38c92271b4156e69c15ccf4f6854bc0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23928,
+      "relative_path": "prices/JBHT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d8591282e61a8d8734ecf2b80da33bcbd11f9a34a48a1b7ae5ee75a4a6b9bf57",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23910,
+      "relative_path": "prices/JBL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e440b4b30dac546c8a3c1e5cad8715754b1a31fb4276e56e96465be418cd42d9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23996,
+      "relative_path": "prices/JCI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7400037b63e56a621e1b6934eb5b76e341a889f8045f47f751d0b9d00354aa70",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24038,
+      "relative_path": "prices/JKHY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "67f7ff4acbcf199c4a9ac5983b94b861da3292db49de77ca83239f22161ef3c5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24066,
+      "relative_path": "prices/JNJ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ff639b0bb4e3a3ed0f7a3ab2476e635ba54ab57b2abd8de9d10dbea49d4efe77",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24021,
+      "relative_path": "prices/JPM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8d373da9049b7712bf19ead11a6f80f50a8165c2a6cff657631f56f317380968",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23147,
+      "relative_path": "prices/KDP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ab6c0c0ea74c23c33ebdb98efd20422343bc141f3869c69c669e00794755ac7b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23280,
+      "relative_path": "prices/KEY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bd2b384c47f9aa0a4876d66cf0ff2f65a5960507ad75001675b485b77f46ac33",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23636,
+      "relative_path": "prices/KEYS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a64dac3269ddab12dec2daa8c327cb78a9e9a430c4ff42e3ca124c4df9d98b52",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23505,
+      "relative_path": "prices/KHC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b925f2aaea84c7c8c24d8be3c847dae5f2eefb93a8191f0de564f90c6955a812",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23159,
+      "relative_path": "prices/KIM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "70a339f9df5e46eb1b7b31fbe77919dc77416d959c9eebb63a8d6d098ae51f18",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23500,
+      "relative_path": "prices/KKR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5d5eb5bf623fae0af3dc6adf635677b584c05147198816402b38d0a9d3793b3e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24586,
+      "relative_path": "prices/KLAC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b0806ba8635d3118926eb7bf9d894ac65b28aba1352bc953c46eb6078eefcbbb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23626,
+      "relative_path": "prices/KMB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e593c2ea6ef9a920f836b5f646e2413270094a9bde4848049e34ebb44c563e6a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23215,
+      "relative_path": "prices/KMI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "79087965ba12d6a38f0cf5e6af5ffe639742a1931bbba67bdf553c2e1c943539",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23195,
+      "relative_path": "prices/KO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "eb9ccab1b907b17dfd7eca331a246dce19edc63a5377b45511aaeaca588788fd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23165,
+      "relative_path": "prices/KR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e1e02346f6e62eac7921188c41cc52d4813e5216c0039ed3dc10f7838bfc7f67",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23447,
+      "relative_path": "prices/KVUE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e1c29f6b1de97d4db487f47e813488ca8053188844212106ea7376d35c90713d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23955,
+      "relative_path": "prices/L.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b1b0d8cab6bd77869cb9ca2c8ebb41716b9dda113a39d3cbc23820e8080414fb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23895,
+      "relative_path": "prices/LDOS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "847f0b8c00589887c0a9eef17be1729ed9712b17d467515926309a4ccd00c901",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23367,
+      "relative_path": "prices/LEN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a8fbc594e1e203759d3e74ccb6d88a37f66c8ad42712cfa26e7348cddadd55f6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24002,
+      "relative_path": "prices/LH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "441884a8cc7d600c9bc116086b5f2cd9e6b7fcb5328ed0a4f6918020ed700471",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23981,
+      "relative_path": "prices/LHX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "309dee1795f4a9e9559e9902a748993222db3c44107f82fda61d037ad0aa7ec5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23834,
+      "relative_path": "prices/LII.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4ce8b38c953a43e7ac08280d573f6b8db94b434490d00bd467d8d4ad8c219468",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24045,
+      "relative_path": "prices/LIN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "837ae8c1bb01690db05f81d422a70e2cd15aea37a8148f5bff1cf690375b9360",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23533,
+      "relative_path": "prices/LITE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4014ad35cbb20c02cb36e63244755671865ff940d6b5d4b55b3d705bc822ad64",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24703,
+      "relative_path": "prices/LLY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6f3b4210277db3a83914a954a48fe2898c47623fe27aa1b93a3d7bae24a6ea50",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23811,
+      "relative_path": "prices/LMT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "30650ecc02379890086de605a864d2ee8fca81709161fc90c867502d567fe38f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23058,
+      "relative_path": "prices/LNT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8b5c5c79668fb101d585143c5e6ce7e1fcbd92f6e74a2882da4955c84a74e361",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23983,
+      "relative_path": "prices/LOW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8f21146207a4300c6b96b46a4d95bc01e095095a134091b406ee374b003eb012",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24044,
+      "relative_path": "prices/LRCX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "47e55348fc7b01bc536361c58fe13bb2b2532bae2706678d4e5b0ed31b89c28e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23620,
+      "relative_path": "prices/LULU.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "73ed888f73058b4f2c48e095bf4f4cb58b41edb16420e6f3fefd6e2d3a504a88",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23154,
+      "relative_path": "prices/LUV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "51b2e842003212f6500888e20aa2c90634a989894433365322d77194bdf35f23",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23072,
+      "relative_path": "prices/LVS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ea523ca31fce74128d12fc911d334fd817358bb93124560be3d0e82da8ab2e52",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23079,
+      "relative_path": "prices/LYB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4a3c67cb187b257a45813d9b533e1b4e5769a7d26854df5aaabbf1bed7aa48a0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23765,
+      "relative_path": "prices/LYV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d384960441ac809924f0484ec5908154382292ea40b026cbb000a14be7378430",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24010,
+      "relative_path": "prices/MA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "efa234951b42353707c44f80aaae4a76894880359337a4f6e05f00711c76850d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23940,
+      "relative_path": "prices/MAA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "69b1ec47577cef90b1d0946406b0a8d79b52be5a6c3a156b2116b08cc55accfd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24061,
+      "relative_path": "prices/MAR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5708a486fa57c1c9fccbc88703d54cd578b9a90dd18cdb7b2d429df06a0a7abf",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23131,
+      "relative_path": "prices/MAS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7666ea8d653f94950c707184b65d0a440faea9bd4e8d11a9a4b0484a0a94783c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24032,
+      "relative_path": "prices/MCD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "de246a3866d05cc563d3aeaafae0f6fa9197a6de75907446044503f91a5220e2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23186,
+      "relative_path": "prices/MCHP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9d8609306d268dd39ec336245da06610f6bacfe7bceae7545269264566107cec",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23827,
+      "relative_path": "prices/MCK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c8a7362ad08eac244be3d7e20368a78addec510baadf30a439bf9904f702c126",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23930,
+      "relative_path": "prices/MCO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8573057af17aac813acbfc895a6ea7ecc6e564f8eeb68543c57f23e5f9d432b2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23294,
+      "relative_path": "prices/MDLZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "817064308e5bd7d5a57a25227a11227ef625810c26dc1af18b1a7f71eb766801",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23134,
+      "relative_path": "prices/MDT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d0cd7e885a6ec6d7ab3b840a9001143cd7dc0f68a4ab2be71e1ddeb84298e8ac",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24393,
+      "relative_path": "prices/MELI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "89dcef3393165ae840df29ac5a503073ac4d9224b4fc071f2747872057f63fe8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23084,
+      "relative_path": "prices/MET.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7ec2357c344f7038c5712e153f4e85a55b25c063e187e9710f6839b427d2a473",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24022,
+      "relative_path": "prices/META.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b458a9fff5011511782a67c28632771ba269cfa50ffc21fa4c07d781d2b39b14",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22873,
+      "relative_path": "prices/MGM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4c63975803579d3d1d627cae5d14ff4179ec95debcf823168493cb0a9c6ff06f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23005,
+      "relative_path": "prices/MKC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a01917e9bbd2baf8675d458a0609321b144f55db31cf08a50023ec0c44ff813a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23913,
+      "relative_path": "prices/MLM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2a932d2dce723ad204afee06f477a3a3950c58c6da95a871e873b2728c7e5431",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24054,
+      "relative_path": "prices/MMM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ce08538521b535bce282a0bb0d77edc93c8d486629e9a319ae807cf1f0c7a8d7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23110,
+      "relative_path": "prices/MNST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e9909882f88bc6bb349a51c697a9c14d42591fcfc29cfc8e8c264a41fe258603",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23069,
+      "relative_path": "prices/MO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9a4e71e276fcfdd990b15ef4af11e92f193922e752f4130c009af50e716df7f5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23164,
+      "relative_path": "prices/MOS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "24600145d3ab1eb958adbf88b53dc9df6a6aef967e3ee78827839c92ef32ac9d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24156,
+      "relative_path": "prices/MPC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "45cf9a5c5d5fc215a4d98178a035626af967e7e5f7ff6c894a198f97da41d12a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24889,
+      "relative_path": "prices/MPWR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "34cf830089a4bce1d6b6417de1e0f763235b441c7384e0727bd71403a7d08e0f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24072,
+      "relative_path": "prices/MRK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cde07f557deae817d71f8cbc03ae5b7a37963ccd94b6d0d013d4e9d2e056bd8f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23073,
+      "relative_path": "prices/MRNA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "916b04b73c5500559150610f8353c8ef3174261e03d25c64f0f5e2a2ee71e508",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24058,
+      "relative_path": "prices/MRSH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "988c352e135959378f62008ef92b0e98ba657379463b3bab77a04f2905e8eb2f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23803,
+      "relative_path": "prices/MRVL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "31eb28ff73347a2ea575919cfb627439de76d2b9475f012efe099f8fa24e23d9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24069,
+      "relative_path": "prices/MS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8418d3c4abe545e3dc90e62c5e616f72964697405e45488edfe15e487353062c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23947,
+      "relative_path": "prices/MSCI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0613c77775d1169518e7e0d70746c87858d35022caac29d07e6e1e3a3fce7deb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24243,
+      "relative_path": "prices/MSFT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6e338aa78295092b4d198131b8604153b2d661af06f674c8613e0bb1820202e9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23938,
+      "relative_path": "prices/MSI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3263b1e19850cfa8c921d20825545b01f1d90a9e7e94f1f0b119e9e91f41669d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23765,
+      "relative_path": "prices/MSTR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "579968d6f56556496067b19e4f354fd9ed594e0c0b785acd82a9d0a035f8cc24",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24130,
+      "relative_path": "prices/MTB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0339af84f242defb5c7758b95cbd379699cea0ccfbe8f5e2c45884e3c179613c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24761,
+      "relative_path": "prices/MTD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "eee26738bffabd1f677f6f20a9fa7894c7c5f818059eed437cfb02037158805b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24222,
+      "relative_path": "prices/MU.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "808a9c4a1fcd5cffda6983409708c5bb7c04c97d3cf2c5262919a95f2b5928f5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23831,
+      "relative_path": "prices/NBIS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "41c9871829da03996e07b0100407e712bd3553b15eda1464fdd405ecc3af21c7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22976,
+      "relative_path": "prices/NCLH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a737687280661f128068bba2ed68a7d89b7600a9eb9b768f0c25806458c2d87f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23168,
+      "relative_path": "prices/NDAQ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "58fd154ea8e33050765a6176899c9b434e9d57d1d44f05f82b59c1fe0bce7f8b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23913,
+      "relative_path": "prices/NDSN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b2c2770a1bd582fee75ded603a4939336c08fc36d3463dc319f47a894c0af265",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23204,
+      "relative_path": "prices/NEE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0bebd210ca6622d19fe680e8f97c2bae52b95aa1299531eafebc973db20b2303",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23896,
+      "relative_path": "prices/NEM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c434d05b05784cf9c19602f82712114a1d91ad4cd458b0eda4707b601f4a1fd7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23021,
+      "relative_path": "prices/NFLX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c0038c3577e26e76f4da7d5ea365b866a7b4615b59c1df4e4b69d818f010ff39",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23089,
+      "relative_path": "prices/NI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a8289252973cb0d69f992ffe44ed226f90f362f4de7c1d72b7f653a7ad4c287d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23304,
+      "relative_path": "prices/NKE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d9c10190d39263e3719a51dd8c8ef2335ae3bd0f1d23502b918f536653363da8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23810,
+      "relative_path": "prices/NOC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "56c0d42840ea7e6f760d7a0bc925cbe91aee235dcba6d50c4632f9d19bcada6b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23780,
+      "relative_path": "prices/NOW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "81209136570603f3027720cc8cd7d5463dd6a3f3102a7ebbb44e3247c1b233bf",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23981,
+      "relative_path": "prices/NRG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "58f349abe177e9e70b893206166978ed78ac70cb49bba8c2eae5bf708adf3af9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23904,
+      "relative_path": "prices/NSC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c0aeaec4221e4054407755fab06d0f2ec3f3927418cec756b5f657d08c088119",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23898,
+      "relative_path": "prices/NTAP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d761e25d7909123e051bc684bbd328031a15e1d39db9682f2378e81466c6d84e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23986,
+      "relative_path": "prices/NTRS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ed853b5ce06167cc3de3b4a48fd53c2908e2e1b77627b3b47b311e833a49960a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23918,
+      "relative_path": "prices/NUE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "31b93d0f40672d4f17a4119c991c031f9f4f65d68d74101a586024f714b6c1b7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24587,
+      "relative_path": "prices/NVDA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "545d7d66d28d72b8d02c7f063aca8352e6bb5e3995444fb568b0d1a7261bd831",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 25510,
+      "relative_path": "prices/NVR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "03258cd56baaeaf32e31e56d8dcccf66be3c290f4b70209e620d4a9bb76eb437",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23180,
+      "relative_path": "prices/NWS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "01eb19291358d414ab4f6fa234fbe913af1c20d83dea1fe270866f03536711f7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23145,
+      "relative_path": "prices/NWSA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3d7567f06c4d6a0cb840fe2be7e73a3ef4c81cdcaddd62155bd3e7eeea8f9c50",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24096,
+      "relative_path": "prices/NXPI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "de75fc2443ce01ac33e8c4df787e5dfff209c5730b4641bc16b4078d5785e1f7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23156,
+      "relative_path": "prices/O.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c6be1570d0be8089a5bc116114cc1178b06bb13db2d8c31583e0aab5bda08d58",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24096,
+      "relative_path": "prices/ODFL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f7237fb70497c7a0fb95058511ace1d353dca9038038ba04d16a18c0ff3f2d54",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23053,
+      "relative_path": "prices/OKE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "25aac65b9ba5ff5cbefb23ed375c04e17e377b33531aa21fe6aa192d3f1343da",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23032,
+      "relative_path": "prices/OMC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6d4db3f7eb321ea96821fbddcdd279edd5d240f2bd3789b305b3d40bac6cdcec",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23040,
+      "relative_path": "prices/ON.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b21b0d0f57df5270842cf2e2741878636e8409a245bcc3abf722a04b54eae479",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24155,
+      "relative_path": "prices/ORCL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "611933bd36fccc8581e33de0b3cf7f9df954bfcca8821367de1910508995e1ad",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22788,
+      "relative_path": "prices/ORLY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cd827693fc125e40efea417c4e6e40c8a7966db8847bda99cc18dd4cd4a1a9eb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23205,
+      "relative_path": "prices/OTIS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3f240bc33041bb2d55c5daa9f5a49c57305f6b8542c2cfeb6f9896217cfdd9ac",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23198,
+      "relative_path": "prices/OXY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "12c663627c6de68418dda5dd8f9971bf4dfc5f08c92290e9a149f68281f2f4b8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23750,
+      "relative_path": "prices/PANW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1403a2b87c138b4934efe4324a37214e335d26ceefc4342594a5d894e1cd3d5a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23557,
+      "relative_path": "prices/PAYX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a795a171d86c3114960bc3ab348a832040f55b3dec7556abe0d0d0936fa055cd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24073,
+      "relative_path": "prices/PCAR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "34651243740ca1d1790a794a62ad93f985b37cfdb8f126bc5c6cda5a550e084e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23265,
+      "relative_path": "prices/PCG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1112839fc21c2b0fe9478f1069f55b4a666eb15e0e79c5db38f7f8a0fa056156",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23166,
+      "relative_path": "prices/PDD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "78618f4a771f04a6e0d47479a58d6d984f2fc67be480cbb9f6c02bd2f7d91907",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23127,
+      "relative_path": "prices/PEG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "98ed3d58c89d6e5140a7afbf38bfa2b4813b67ef25bc05fdeb239fac27cd2493",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24184,
+      "relative_path": "prices/PEP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f6f64bf7f5a053cdece94acaa29e8dc10d432bcddb5811d692a5852fbaf6a4b4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23295,
+      "relative_path": "prices/PFE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "40c28d7d3799db11cf013418252d0551724e51688d7c3a2fb787c1ec2b908435",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23593,
+      "relative_path": "prices/PFG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cab82d7410881707e879854c1ca11a46b333f1080c0a8d6b00666d8a4f7c4ae3",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24124,
+      "relative_path": "prices/PG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "620b0919d33e921c1a50b78e290c87b6e1c5801f09cf5831b1dfea6244f884f7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24132,
+      "relative_path": "prices/PGR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3c34f559005f381b816214eb8975d50b6d1a7db3d0acd4d27f7275096325de66",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24008,
+      "relative_path": "prices/PH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "68974c32f81189ec663c70cf842117ca24617a920870bfc5d0307f0c1cc7d2af",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24004,
+      "relative_path": "prices/PHM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e437d79be5e500f02035281855c0e7b5902fcf76eeab88330b68b7091797cd0d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23871,
+      "relative_path": "prices/PKG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0efefe6db3b6fe9f766326fc6d28913f921eae2db239ee4a7bbf74953d2fb646",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24206,
+      "relative_path": "prices/PLD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7cffef6bbb068966f82d7d5a1f8d6e58e8bef61f2b0347dd8d630486ba88a769",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24058,
+      "relative_path": "prices/PLTR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a1b86bb5a94b6d14f25a143ec4ccb5c0ad8b859c519fee0c161ecdbfc067272d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23965,
+      "relative_path": "prices/PM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "dfdbcb2cc6b8d07fcac83a9669768ff73411b44167f130f04986c35d4f40dfab",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24008,
+      "relative_path": "prices/PNC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2c793581e98cb5d5c59ef80ca4ef82e13df511e6ce14b0deea2b3e84578f926b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23268,
+      "relative_path": "prices/PNR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "34ed90ea92bffa53eb13276dbe7d63483e2893a6916a5dfe9ca2114256a5f143",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23507,
+      "relative_path": "prices/PNW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8b78fc4458c18ccbcb6e8feed8625c6985f9ed94eb18114fd1308afb7ddbd3dd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23685,
+      "relative_path": "prices/PODD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d2ccd835ca3b3dae58e42d72e8296b9eda465875a03ff5a11eaf6222a01bbcf1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24049,
+      "relative_path": "prices/PPG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f021d9e950e282f2186a4d7fcf4c9ca5f39d62cd0568420253c8b6122f32690c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23183,
+      "relative_path": "prices/PPL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e45c5cd781c7e8ea413ee8bfff224729d388457335841428356a5c2265d87f77",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23828,
+      "relative_path": "prices/PRU.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d54813beee257f581b3d9cdbc0906d0d8601d23f35a4ad1db1db9831a5970604",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23836,
+      "relative_path": "prices/PSA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "608702f2ff724b39fb140f3b1be8e926fed4e931271937e396e6a032f0d8a408",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22890,
+      "relative_path": "prices/PSKY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "28b0198d3c6857b2d35f68c024f7035e7912a102af66b9a4e7bc504bd63ebd5a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24001,
+      "relative_path": "prices/PSX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "15e9028f58a8e0aa3961883eeacd0a6ada83011306258c802ad087a9bd56642f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23716,
+      "relative_path": "prices/PTC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9a3385194f79bb0a268c8f23885fc725654bf03851dee788be0cfd01ce89b03e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23767,
+      "relative_path": "prices/PWR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ec932f46d4f210ce707edab618b3d19abd031d53489d1ed32a2076f10f2216ae",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23470,
+      "relative_path": "prices/PYPL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4db04bf45efbfa2c8cd0832a8f528bc3dfe97b38be5fa7c7424de1ad34fb81bd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23927,
+      "relative_path": "prices/Q.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a30ed1fe763d4976cb371f3dafd7669ea34e22266f44f272dde4c2581232f363",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24185,
+      "relative_path": "prices/QCOM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3cad11af1114fef82412b76fa14fd7c273cafda2f89ad70fc33007424f30ae84",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23701,
+      "relative_path": "prices/RCL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "61cf407ea2964c682a20dbf15e631dddc54872d99984589d9a60adc50e25b2ba",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23713,
+      "relative_path": "prices/RDDT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "634827fda334f5488b7d5f64e57e9218519dffff3764f08f632469a8abc774fd",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23138,
+      "relative_path": "prices/REG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d51a1865d64b2eeb78181a0aa1ef3a15e033e88c0b5b4f1cd01b0e4d3122fc97",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23818,
+      "relative_path": "prices/REGN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "54027c7d3874026a462ecf6a2cd895b6303e030cd30c9140cf9d92974a1c21d9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23263,
+      "relative_path": "prices/RF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ee9e1803018ff66aae4920e6be84d71336d7938c448dcdae1fef0d8c4dc9bde3",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23998,
+      "relative_path": "prices/RJF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "830ef001816fc6f675dd600ff11d1a53c211e8f69ecf22412e2bd07e6dee7ad7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23141,
+      "relative_path": "prices/RKLB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "54a7c5fb8612c83b539c4d1bbdc60ecb0a0529af0a84c448463c52d12ee03559",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23815,
+      "relative_path": "prices/RL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "96b88d1be43a06871c69df2c04644fa4e0f6e19f73beefccf9c97b381d0c1a5d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23954,
+      "relative_path": "prices/RMD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "97be4fa6737343ea12b623ec58c17848b6c3ef1cd6689dcb3d7543904475b589",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24023,
+      "relative_path": "prices/ROK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5a29d5e5f29cdd06637080ed3d72b90713bc081b1629f36b760fac7fb66293f4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23100,
+      "relative_path": "prices/ROL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a1d0704cfccc3f0d25041231077db815e8d61003e512c893f7d42548b408a309",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23915,
+      "relative_path": "prices/ROP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1fb04b1c9d74c6c8a1bd5f090424d78a6f63afd2659218d1e3ee9344752667d8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24238,
+      "relative_path": "prices/ROST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4c490aa0f396dc6c50bca462aa727d960477079489ce06c5b318973330d6f4db",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24021,
+      "relative_path": "prices/RSG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "26ec64f4c1bd4a6595175d34cdee00690e415c7a47d4c5d6fccc66463931485a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24117,
+      "relative_path": "prices/RTX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "30a9b663e914d4c6cc006624ff864b164d48ca6cb203515dc2c0bbdfb9aa740a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23573,
+      "relative_path": "prices/RVTY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "74f18e1bb88d9b260637d7665292c776a3d29ee529d6b02e061a7788282b1636",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23973,
+      "relative_path": "prices/SBAC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "562228700ebdd7855485c33af1446c39d90feb674f007fd4167f3c19cd4bec17",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23550,
+      "relative_path": "prices/SBUX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7eb287f18058bf28a9562ff06b1e13e2c1b0508495e9c52fa4ce3d421c017d65",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23556,
+      "relative_path": "prices/SCHW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a48c8d718dc03a5823d99bedeec81aca761de25eb48be8aadd44af97af03b644",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23860,
+      "relative_path": "prices/SHOP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0072d96ddeb547db6333739ce3c6d28feb43ea9eb69c8e6b6e185468ea902208",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24005,
+      "relative_path": "prices/SHW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1f225c036dc9d3ac631d3a829c44285fe1e91772c854e6bddd1c7e456080a29c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23864,
+      "relative_path": "prices/SJM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d6d17ea0a0aecf0a6ab9822416b43824ed91678a8978aa08648d57080572a866",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23242,
+      "relative_path": "prices/SLB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c762abc872e1944561d117d66f7b9264ec57206475341d18606dda45a05b3f29",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22999,
+      "relative_path": "prices/SMCI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4fffde78f3c27e1a87ce8ad0ea92136115c5129ec67d7401bcc8df3bde10bdec",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23863,
+      "relative_path": "prices/SNA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a73b5560c62c83486d7515f7ea5c26c750bb6547f21a21f08889ef2079676c86",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24337,
+      "relative_path": "prices/SNDK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "609d0de267987164d9669aadfde2a648b936393a209d72968aa09a377a256f79",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23670,
+      "relative_path": "prices/SNPS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "90dfa5578b636883ad9e4bfd112ebac9668f08ef991acb4fa209042145c6bc00",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23092,
+      "relative_path": "prices/SO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c224d8c35aa9998b0a827c99336133948428525c23a48ea86cfcbf87507891d8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22810,
+      "relative_path": "prices/SOLV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "dc145e24686d354905ded4b7ac156e1d5ddb00fc9bb10e2819a1c0a5f67eeb34",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 9480,
+      "relative_path": "prices/SPCX.json",
+      "row_count": 80,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "87e07d1e873bda672f1c9f1639180b4c46238e4866318b74537dee97b02d9d29",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24055,
+      "relative_path": "prices/SPG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7234c78178ed41c618f47578c02752d5dfa3b2e2a5d8228e9d19113c4f03a2e7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24105,
+      "relative_path": "prices/SPGI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d4c1277a63af6970d023a4dbc8813b53f5a3c9d05001a8fb70c7c05b5df81435",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23061,
+      "relative_path": "prices/SRE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0f9707f824dc24bf70089b1cf418e4979512bbe957ce8bb9fc2829eb2bbdd0cc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23960,
+      "relative_path": "prices/STE.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "da7430354be00318cba88aeb5c77835ee74243c1f641fdcdbaf47c888eb0bdc8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23956,
+      "relative_path": "prices/STLD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2510d237c2379e91b0e3def263e116e87a94831f24420ac84da8d7afc5680f76",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24031,
+      "relative_path": "prices/STT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5302fd824e92dd377e3d02f5e8023b675968485aa5c3a2c926010496d4694788",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23873,
+      "relative_path": "prices/STX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1f98b12671cd3c410456364f1641793901be573b2462881becea68324904ed5d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24011,
+      "relative_path": "prices/STZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "08edc8f01e55116ed20df5a88a86f0dc4189740e6fadc365413455c421828766",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23187,
+      "relative_path": "prices/SW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "224745b36506187fb029ef76603e5c7673a572bae28316e379b328258eae16ef",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23172,
+      "relative_path": "prices/SWK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4da7082816df2a943c47e338605aaf41150a868a2c7530ecd5418c31d2864078",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22956,
+      "relative_path": "prices/SWKS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5cb791d75ac520ee48806c1dd2606df6d796f072793b1c55f466cf83eaa60344",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23183,
+      "relative_path": "prices/SYF.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "61ef70f72b8907fe2b328760d6d15bb3f88cb6281423c7e91b15a161b2dcaef8",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23951,
+      "relative_path": "prices/SYK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d18f7ed9f09bffc3d1981c88b62c1132ec26954f7da3e210b7c146ee983edca1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23052,
+      "relative_path": "prices/SYY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6ce18cc1acd40779677e02d375fe4e8882d539fd222e316e73549d588b076cbc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23274,
+      "relative_path": "prices/T.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "85d81b0c8389c039e5b9c40d5b7e7a7a7f18b6444798b2c26dde413d490085a0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23102,
+      "relative_path": "prices/TAP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8d6b144161fef7716f677dad5dac01f3cab042a6172f42c19f7fecc4904392a5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24752,
+      "relative_path": "prices/TDG.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "18331b11f0e6acad25c401fabb4b2166af20d087eb079f0f40a9dce089ff6abe",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23523,
+      "relative_path": "prices/TDY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "55db4410a48e2986abbf1af2e85e7e6e350fca2af77755e1e64518c74485e544",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23087,
+      "relative_path": "prices/TECH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d35fc93207f44d02a1a8fca115ec3addaf4766baec80823e355ebaf6c178e193",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24088,
+      "relative_path": "prices/TEL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "66a2e432cb8524fa34d7566bcb654677f5ed9d5c6f88ac73de1db1cc5d20d400",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23949,
+      "relative_path": "prices/TER.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7357320b958f330b7e47f632f64b296a705011f83e8cb8e4f25d9c7f39e4cb01",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23185,
+      "relative_path": "prices/TFC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1fd520c0bf51c84a26648c6128e00b71e59819bea3c2fd14297b56ff6ff4fc6a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23976,
+      "relative_path": "prices/TGT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "f4268b8b71744b56b1b8c0cc0f7d2c2c44c6eb98fb488bf4d2d6e4be42329e6e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24191,
+      "relative_path": "prices/TJX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5a4544af802e0605a99ca39e282de6f802b1f3e0955da037282d271684bee063",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23934,
+      "relative_path": "prices/TKO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "58fc8ba299cb7ce10f0687587f2d12f233396e6c1db9356082543171c328868b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23844,
+      "relative_path": "prices/TMO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b14c8378e9f553239b500ade4be35c703ffa498ddf54a2211b550606f3152e77",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24104,
+      "relative_path": "prices/TMUS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "254b1a1f301cec273bf1713a76b8c3e460a588384457ee1de13328775f6cc828",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23731,
+      "relative_path": "prices/TPL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e63a4fd7bc577909d17757ac5e466cf36fe528143272d93aaeee3bd3b468347c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24179,
+      "relative_path": "prices/TPR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "07ab8237e862dee61edac0c83cff085686eeb4b8c4eac8a2dc73de72ca4f04e7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23999,
+      "relative_path": "prices/TRGP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "47c41da0e02198f405b893aae385072505ae67065fa7ec903b085437fe309522",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23506,
+      "relative_path": "prices/TRI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b0fe5bef28e8072e5001779f84072010f167776ca76fd87c28996b183c06099a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22790,
+      "relative_path": "prices/TRMB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6115cac80c0ed2da0f2fd112bec0509fe57adef8f7c03ae438f33e599b074b3e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23718,
+      "relative_path": "prices/TROW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9c3526582663be753e2cd04e09b3b6916e9117239a7452496e942a9242e5503f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24099,
+      "relative_path": "prices/TRV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a988064cc41b5535e106345a063a76fa9d8dcff55436fadb872ac880b104a9e0",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23192,
+      "relative_path": "prices/TSCO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bbbe374898f99330f0f3ab0fe0197c1e2da6101a616f2d6e0950ba77497f033c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23881,
+      "relative_path": "prices/TSLA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7d5a4415669632da7cd526c8ada645c341fae5e29151aa7ab27ad2cae6b7fa4a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23125,
+      "relative_path": "prices/TSN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6a32ba8b27a7deaf6e956e6654c40f7c230d037ba0ed74df17e831da87463f6d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23998,
+      "relative_path": "prices/TT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c2688aebd3c3593c7a436d5f3c36c1f11c7dbb5151566c12acc644764a2a491a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23137,
+      "relative_path": "prices/TTD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6f6f0ad1d323757d71b0d54be09038a78a8f5c30bdaae04cca8c0a6f7f4a022b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23675,
+      "relative_path": "prices/TTWO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "163808df08605dee77e1422354faebafa46f00f404bda78e53b3cfbcc10d2267",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24068,
+      "relative_path": "prices/TXN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "470d85a16bd16a2f1f70ba2a2bae7bc8ad3748a914414a057ea15dd363033bab",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23100,
+      "relative_path": "prices/TXT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0fa95e32f9e8ef5196cc28bb02cd0049d81b51a8b551fc604350d9a77cbf507b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23634,
+      "relative_path": "prices/TYL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7648a65670586bdbaf31a3a342535b7bd616af576eb2d03a7abda363c89c280c",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23409,
+      "relative_path": "prices/UAL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "de7551fca1e21739dce6f224d978271297f4acbd9d1b31895dbe5fd997f97e3f",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23066,
+      "relative_path": "prices/UBER.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cdde5a819bb0d6b213e42a5aadc682c36389671c8f291d95cfd7036055ff0d71",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23107,
+      "relative_path": "prices/UDR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c3a4a3f8f6cfef81da86d6f645f33147bf2b5b26a082af69889fbbdf36e709fa",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23923,
+      "relative_path": "prices/UHS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "27d6e323b893566ac6d40fc596af235d917410501e59dcb1ea8cdd318e440bfb",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23477,
+      "relative_path": "prices/ULTA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b748c31be7997be3dfe711fbbcd1ed46691a5468d5e869f79f2e0ab74b6844c6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23950,
+      "relative_path": "prices/UNH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "557f0ef19780b4cd991fd621820d54370200291ad9b6640f9d2e68975ab41bb4",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24081,
+      "relative_path": "prices/UNP.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "7dd92728b5e1154fb1249fd3aa617fb237bd5c1d00c42c872f2299b22503821b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23821,
+      "relative_path": "prices/UPS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "fc39a187ca8768d79124d738b7405763703381c4248f69bd131999ef1a765096",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24299,
+      "relative_path": "prices/URI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "35fc9ed1c995c6e76ffced755b033fc981746958b68d66f8fa13b07b5a1a2012",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23110,
+      "relative_path": "prices/USB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "10397cfe696ab55f6bafbb694a621c678dcfc50489fb2bace553091f699751b7",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24008,
+      "relative_path": "prices/V.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d7a85bca33e61c5522effb7082bf6fc14a871e2e623a1db9b37ab665fb425932",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23699,
+      "relative_path": "prices/VEEV.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8b5acd7a84bda8b3ea8d1044f4ec2dfc6455a829206f947bc9b23470cf8601ea",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23209,
+      "relative_path": "prices/VICI.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "342e20539b02debcdff037a6187889e8389e25f968450b9500b3fc838c8bb42b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23987,
+      "relative_path": "prices/VLO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "23f346f04d5430dcdc63d0098052ecb8faaf2212e7bbdd0bb8ef219e3aded96d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23267,
+      "relative_path": "prices/VLTO.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "802060afce4521f16a6823d8c7b16c5319a96ab76da5d647386c1affc07809b9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24048,
+      "relative_path": "prices/VMC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "95c9dfb8e896864ceed7369fe6c618f135b9288e7f1dedb78e810d9f0e4a0080",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23050,
+      "relative_path": "prices/VMRK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bd71b2cbd7294b749f86c5a3fae625f6fa6d478925000e1abd6acfce872875a2",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23993,
+      "relative_path": "prices/VRSK.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "b01878c3ea7b0db74b10db850fd3c5cfd4cf77c8d4541b48e8c5f757805d4572",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24040,
+      "relative_path": "prices/VRSN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9eca2c75b736c59e25f6cccfadd2641785261b4ff0bd99aaa30aa0818edc4566",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23931,
+      "relative_path": "prices/VRT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d498a203894d9a02e895891057cdf46d6b1dc163ce7996f0fb29af2a06ee4b6e",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23650,
+      "relative_path": "prices/VRTX.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ad18cb90695e2f0371784d039a2045e9ab76295bef6b27a9134c5bf69f6ee1e5",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23961,
+      "relative_path": "prices/VST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "86ca4ea55fd9574296e40e671927a8c80f6e2ae79231bd3ee47add52f06d7842",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23172,
+      "relative_path": "prices/VTR.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "5818cbfade93cee1bbd854447834bcce1ebf749201f3546dc9a76497c6043d12",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23180,
+      "relative_path": "prices/VTRS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0c782fe8baa91daf958c4f6ee95996396687dff63c79ca9c4179208fd7ca92d9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23263,
+      "relative_path": "prices/VZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "d5e1ce19113ffdc7319b9d87e48fab189333abee6454426e6a3036bc66f4fa1b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23998,
+      "relative_path": "prices/WAB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2e53b33bea5cb4f20d6c2fcf9d30c9d3cfc9f6b1bdac3916629c9a31b288f217",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23591,
+      "relative_path": "prices/WAT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "4a299e06c74409972c13e2cf7119f2c2e71ede53d798dbbd808dbd9f08c86b0b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23061,
+      "relative_path": "prices/WBD.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "8e4ca1c0f35d1f856d6a7453c4b3ec3c04054d9eda9787ce68d87b212e7af6db",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23714,
+      "relative_path": "prices/WDAY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1f380520e67a5371cd9bf947189fe26f5a8c2d72011915de1da0632e2e9dcdcc",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23959,
+      "relative_path": "prices/WDC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "99b4a928a6dc5bcbbcac4fbd0ab7e009d4d78cae63640392e3f34ab8e0f83f35",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24080,
+      "relative_path": "prices/WEC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "ed4ebcd31b376a971524388279d8cd81417cdd2283281fb033d41828112877b1",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24147,
+      "relative_path": "prices/WELL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0fe78336d696263de9b27c57c60a4c7fee0be231f1a8a1ffe13a3df92a6eafc6",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23257,
+      "relative_path": "prices/WFC.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "03b30210f34a2bf9eded771e84de72a001b6640a0211fa2be309b1473daf706b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24164,
+      "relative_path": "prices/WM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "85bf487e31ec700b9172a9cf449e6f1e53610c14d804135dc301e52fd8bef01d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23166,
+      "relative_path": "prices/WMB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3b0d28b6ad2f02edaefe47836244c74f3942ee672c449ca818ecd3cd59cc5b61",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24302,
+      "relative_path": "prices/WMT.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e473860d547fe0dfa379b76d78a835f7dc257a94b4a15f9b4af91157097c2338",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23025,
+      "relative_path": "prices/WRB.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "40751171a3676cc16117e34ed459a285c26019fd7ec62abecfe6ddcd0742cd20",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23925,
+      "relative_path": "prices/WSM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "6a29394c90cb22fba78bbe0e4cfdeeac0db0d66e46aa8c611d4c0c1f80e77509",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23869,
+      "relative_path": "prices/WST.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "cfa60bb9c5997982d4feda16664294a5e40473397688bed030ca6b4b1c563959",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23881,
+      "relative_path": "prices/WTW.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "e999afd654b183b62a40dc113a083bfbc4674ecfbcba955ec3aeb1142d413a7a",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23326,
+      "relative_path": "prices/WY.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "c17c01a95a4440ee9c11a8d494ee3c005305c1eba8748126c9717463de26f763",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23651,
+      "relative_path": "prices/WYNN.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "33870f59134bce1d6cd5932646a5027e959b2aac76d85596476a0e426e748f01",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23017,
+      "relative_path": "prices/XEL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "3295d22612873c6d34e5a78105397a65cb6e50f20eb84a76b60d2419135d52c9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24309,
+      "relative_path": "prices/XOM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "bbe2e4ae1189bdb40fa2cbd51615ac9934d168b3d8d398a649fc510c972ebf56",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24194,
+      "relative_path": "prices/XYL.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0b8614cc189c12c044a595d387a0717b0d3b5f6d0c9ea56442d0bcdc895344a9",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 22872,
+      "relative_path": "prices/XYZ.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "2d2e05bbf3846578073ec62999cfa628b0e150578c76312fc3a32409438aad65",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 24101,
+      "relative_path": "prices/YUM.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "1db6cdcc046b04b5853b0127eba18efa0a49482f56302d065cda6faba19c7d7b",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23120,
+      "relative_path": "prices/ZBH.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "0586cffe0389dab7c9e3cbd21b6a4b1bad32b14576c6fcc93fce2100313d4e5d",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23556,
+      "relative_path": "prices/ZBRA.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "a09519552da650487fa3f91a260f452e9b76e074c2a041f2a895f15bd9d3b2bf",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    },
+    {
+      "byte_length": 23525,
+      "relative_path": "prices/ZTS.json",
+      "row_count": 201,
+      "semantic_role": "cutoff-clipped OHLCV; final 201 rows (or all rows when fewer)",
+      "sha256": "9e852f59fce67bb3214893faa7bfed1ee446c00a004d208afe491d080b33be09",
+      "source_provenance": "frozen Week 0 merged OHLCV capture"
+    }
+  ],
+  "schema_name": "trinity.shadow-week0-minimal-inputs",
+  "schema_version": "1",
+  "selection_rule": "rows dated on/before cutoff; retain final 201 rows",
+  "total_bytes": 12192258
+}

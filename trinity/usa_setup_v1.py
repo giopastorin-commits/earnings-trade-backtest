@@ -9,11 +9,10 @@ import json
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from trinity.paths import price_cache
 
-PRICE_CACHE = Path(
-    "C:/Users/giopa/trinity-scanner-v1/historical/raw/"
-    "eodhd_prices_518_daily_20220101_20260913_v1/provider_raw"
-)
+
+PRICE_CACHE = price_cache()
 THESIS_CACHE = Path("data/trinity_usa_v2")
 TICKERS = ("AAPL", "JPM", "JNJ", "XOM", "WMT", "CAT", "NEE", "AMZN", "PLD", "LIN")
 RESEARCH_STATUSES = frozenset({"PASS", "WATCH", "INVESTIGATE"})

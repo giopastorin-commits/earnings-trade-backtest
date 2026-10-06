@@ -415,7 +415,7 @@ def test_populated_level_five_policy_upgrade_preserves_identity_and_fk(tmp_path)
         )
         successor_id = successor.derivation_node_classification_id
     with LedgerStorage.open(path) as storage:
-        assert storage.current_migration_level() == 7
+        assert storage.current_migration_level() == 8
         assert storage.get_pit_classification_policy(policy_id).classification_policy_id == policy_id
         assert storage.get_node_classification(classification_id).classification_policy_id == policy_id
         assert storage.get_node_classification(successor_id).supersedes_classification_id == classification_id

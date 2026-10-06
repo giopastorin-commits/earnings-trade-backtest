@@ -101,14 +101,33 @@ def _fetch(session: requests.Session, url: str, *, attempts: int = 3) -> bytes:
     raise SECAcquisitionError(f"SEC request failed: {url}: {type(last).__name__}") from last
 
 
-def _recent_filings(submissions: Mapping[str, Any], as_of: str) -> list[dict[str, str]]:
+def _recent_filings(
+    submissions: Mapping[str, Any], as_of: str, decision_cutoff_utc: datetime | None = None,
+) -> list[dict[str, str]]:
     recent = submissions["filings"]["recent"]
     records = []
     for index, filing_date in enumerate(recent["filingDate"]):
         if filing_date > as_of:
             continue
-        records.append({key: str(values[index]) for key, values in recent.items()
-                        if isinstance(values, list) and index < len(values)})
+        record = {key: str(values[index]) for key, values in recent.items()
+                  if isinstance(values, list) and index < len(values)}
+        if decision_cutoff_utc is not None and filing_date == as_of:
+            accepted = record.get("acceptanceDateTime", "")
+            if not accepted:
+                continue
+            try:
+                if accepted.isdigit() and len(accepted) == 14:
+                    from zoneinfo import ZoneInfo
+                    accepted_at = datetime.strptime(accepted, "%Y%m%d%H%M%S").replace(
+                        tzinfo=ZoneInfo("America/New_York")
+                    )
+                else:
+                    accepted_at = datetime.fromisoformat(accepted.replace("Z", "+00:00"))
+                if accepted_at.astimezone(timezone.utc) > decision_cutoff_utc.astimezone(timezone.utc):
+                    continue
+            except ValueError:
+                continue
+        records.append(record)
     return records
 
 
@@ -300,7 +319,7 @@ def acquire_sec_documents(
     user_agent: str = "TRINITY research giopa@example.com",
     session: requests.Session | None = None,
     tickers: Sequence[str] | None = None,
-    now: datetime | None = None,
+    now: datetime | None = None, decision_cutoff_utc: datetime | None = None,
 ) -> Path:
     """Acquire the fixed universe's primary filings and write an audited manifest."""
     date.fromisoformat(as_of)
@@ -332,7 +351,9 @@ def acquire_sec_documents(
         (root / ticker / "companyfacts.json").write_bytes(companyfacts_raw)
         submissions = json.loads(submissions_raw)
         companyfacts = json.loads(companyfacts_raw)
-        selected = _selected_filings(_recent_filings(submissions, as_of))
+        all_recent = _recent_filings(submissions, as_of)
+        eligible_recent = _recent_filings(submissions, as_of, decision_cutoff_utc)
+        selected = _selected_filings(eligible_recent)
         documents: list[DocumentRecord] = []
         periodic_accession = None
         periodic_evidence = None
@@ -380,6 +401,7 @@ def acquire_sec_documents(
             "cik": cik, "company": submissions["name"], "sector": sector,
             "submissions_url": submissions_url, "companyfacts_url": companyfacts_url,
             "documents": [asdict(item) for item in documents], "structured_facts": facts,
+            "post_cutoff_excluded": len(all_recent) - len(eligible_recent),
         }
     manifest_path = root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

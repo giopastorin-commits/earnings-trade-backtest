@@ -25,12 +25,13 @@ from trinity.italia_v1 import (
 )
 from trinity.usa_issuer_registry import REGISTRY, get_issuer
 from trinity.usa_documents import DEFAULT_CACHE as DOCUMENT_CACHE, load_document_coverage
+from trinity.paths import baseline_root, news_cache, price_cache
 
 
 AS_OF = "2026-09-12"
-DATASET = Path("C:/Users/giopa/trinity-scanner-v1/historical/raw")
-PRICES = DATASET / "eodhd_prices_518_daily_20220101_20260913_v1/provider_raw"
-NEWS = DATASET / "eodhd_news/eodhd_news_historical_20250101_20260912_v2/records"
+DATASET = baseline_root()
+PRICES = price_cache()
+NEWS = news_cache()
 _ORIGINAL_COMPANIES = {
     "AAPL": ("Apple", "TECHNOLOGY", ("Apple",)),
     "JPM": ("JPMorgan Chase", "BANK", ("JPMorganChase", "JPMorgan Chase")),

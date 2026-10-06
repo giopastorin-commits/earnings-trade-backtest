@@ -595,12 +595,18 @@ class LedgerStorage:
             )
         statements.append("COMMIT;")
 
+        foreign_keys_disabled = migration.migration_id == "0008_responses_api_provenance"
+        if foreign_keys_disabled:
+            self.connection.execute("PRAGMA foreign_keys = OFF")
         try:
             self.connection.executescript("\n".join(statements))
         except sqlite3.DatabaseError:
             if self.connection.in_transaction:
                 self.connection.rollback()
             raise
+        finally:
+            if foreign_keys_disabled:
+                self.connection.execute("PRAGMA foreign_keys = ON")
 
     def insert_artifact(
         self,
@@ -1453,6 +1459,8 @@ class LedgerStorage:
         response_artifact_id: str | None = None, error_artifact_id: str | None = None,
         input_tokens: int | None = None, output_tokens: int | None = None,
         llm_interaction_id: str | None = None,
+        provider: str = "OPENAI_CODEX_CLI", model: str = "gpt-5.6-sol",
+        model_version: str = "codex-cli:gpt-5.6-sol",
     ) -> LLMInteraction:
         interaction_id = llm_interaction_id or _new_id()
         _require_uuid4("llm_interaction_id", interaction_id)
@@ -1480,6 +1488,11 @@ class LedgerStorage:
         )
         if parameters["response_schema_artifact_id"] != request_value["response_schema_artifact_id"]:
             raise ArtifactIntegrityError("request and invocation parameters name different schemas")
+        identity = (provider, model, model_version)
+        if identity != (request_value["provider"], request_value["model"], request_value["model_version"]):
+            raise ArtifactIntegrityError("interaction and request provider identity differ")
+        if identity != (parameters["provider"], parameters["model"], parameters["model_version"]):
+            raise ArtifactIntegrityError("interaction and invocation parameters provider identity differ")
         for item in context_value["items"]:
             context_node = self.get_derivation_node(item["derivation_node_id"])
             if context_node.node_kind != "NORMALIZED_FACT" or context_node.entity_id != item["artifact_id"]:
@@ -1535,9 +1548,8 @@ class LedgerStorage:
             self._require_attempt_authority(attempt_id, fence_token)
             connection.execute(
                 """INSERT INTO llm_interaction VALUES
-                (?, ?, ?, 'OPENAI_CODEX_CLI', 'gpt-5.6-sol', 'codex-cli:gpt-5.6-sol',
-                 ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (interaction_id, attempt_id, ordinal, request_artifact_id,
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (interaction_id, attempt_id, ordinal, provider, model, model_version, request_artifact_id,
                  response_artifact_id, error_artifact_id, status, started_at, finished_at,
                  input_tokens, output_tokens, _utc_now()),
             )

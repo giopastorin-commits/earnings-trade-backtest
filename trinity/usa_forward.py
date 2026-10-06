@@ -90,6 +90,7 @@ class EODHDSECForwardProvider:
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sec_acquirer: Callable[..., Path] = acquire_sec_documents,
         continuity_path: str | Path | None = DEFAULT_CONTINUITY_PATH,
+        decision_cutoff_utc: datetime | None = None,
     ) -> None:
         self.source_root = Path(source_root).resolve()
         self.api_key = api_key or os.getenv("EODHD_API_KEY")
@@ -102,6 +103,7 @@ class EODHDSECForwardProvider:
         self.clock = clock
         self.sec_acquirer = sec_acquirer
         self.continuity_path = Path(continuity_path) if continuity_path is not None else None
+        self.decision_cutoff_utc = decision_cutoff_utc
 
     def acquire(self, ticker: str) -> ForwardTickerSources:
         issuer = get_issuer(ticker)
@@ -113,11 +115,15 @@ class EODHDSECForwardProvider:
             path.mkdir(parents=True, exist_ok=True)
 
         price_time = self._now()
-        start = (price_time.date() - timedelta(days=450)).isoformat()
+        through = (
+            self.decision_cutoff_utc.astimezone(timezone.utc).date()
+            if self.decision_cutoff_utc is not None else price_time.date()
+        )
+        start = (through - timedelta(days=450)).isoformat()
         price_raw = self._get(
             EODHD_EOD.format(provider_symbol=issuer.provider_symbol),
             {"api_token": self.api_key, "from": start,
-             "to": price_time.date().isoformat(), "fmt": "json"},
+             "to": through.isoformat(), "fmt": "json"},
             ticker, "price",
         )
         try:
@@ -136,7 +142,9 @@ class EODHDSECForwardProvider:
              "to": as_of, "limit": 1000, "fmt": "json"},
             ticker, "news",
         )
-        news = self._normalize_news(ticker, news_raw, utc_timestamp(news_time))
+        news = self._normalize_news(
+            ticker, news_raw, utc_timestamp(news_time), self.decision_cutoff_utc,
+        )
         news_file = news_dir / ticker / f"{as_of[:7]}.jsonl"
         news_file.write_text(
             "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in news),
@@ -144,10 +152,13 @@ class EODHDSECForwardProvider:
         )
 
         sec_time = self._now()
-        self.sec_acquirer(
-            as_of, cache_dir=sec_dir, session=self.session,
-            tickers=(ticker,), now=sec_time,
-        )
+        sec_arguments = {
+            "cache_dir": sec_dir, "session": self.session,
+            "tickers": (ticker,), "now": sec_time,
+        }
+        if self.decision_cutoff_utc is not None:
+            sec_arguments["decision_cutoff_utc"] = self.decision_cutoff_utc
+        self.sec_acquirer(as_of, **sec_arguments)
         captured = self._now()
         pack = load_company(
             ticker, as_of, prices_dir=prices_dir, news_dir=news_dir,
@@ -217,6 +228,7 @@ class EODHDSECForwardProvider:
     @staticmethod
     def _normalize_news(
         ticker: str, raw: bytes, retrieved_at: str,
+        decision_cutoff_utc: datetime | None = None,
     ) -> list[dict[str, Any]]:
         try:
             value = json.loads(raw)
@@ -228,6 +240,15 @@ class EODHDSECForwardProvider:
         for item in value:
             if not isinstance(item, dict) or not item.get("date"):
                 continue
+            if decision_cutoff_utc is not None:
+                try:
+                    published = datetime.fromisoformat(str(item["date"]).replace("Z", "+00:00"))
+                    if published.tzinfo is None:
+                        published = published.replace(tzinfo=timezone.utc)
+                    if published.astimezone(timezone.utc) > decision_cutoff_utc.astimezone(timezone.utc):
+                        continue
+                except ValueError:
+                    continue
             canonical = json.dumps(
                 item, ensure_ascii=False, allow_nan=False, sort_keys=True,
                 separators=(",", ":"),

@@ -1,0 +1,23 @@
+{
+  "canonical": [
+    "ticker mapping and membership",
+    "minimal input hashes",
+    "cutoff and session",
+    "method versions and policy",
+    "all funnel counts/dispositions/metrics",
+    "READY and NO_SETUP membership",
+    "all Setup V1 analytical fields"
+  ],
+  "excluded_volatile": [
+    "run_id",
+    "generation/completion timestamps",
+    "wall-clock duration",
+    "absolute paths",
+    "temporary directories",
+    "GitHub run metadata",
+    "process id",
+    "acquisition request/cache counters and source path labels"
+  ],
+  "schema_version": "1",
+  "serialization": "UTF-8 JSON, sorted keys, compact separators, allow_nan=false"
+}

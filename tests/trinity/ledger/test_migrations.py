@@ -26,6 +26,7 @@ from trinity.ledger.schema import (
     pit_classification_migration,
     research_llm_setup_migration,
     research_method_versions_migration,
+    responses_api_provenance_migration,
 )
 from trinity.ledger.contracts_v14 import RESEARCH_METHOD_DEFINITION
 
@@ -256,7 +257,7 @@ def test_populated_v6_upgrade_preserves_research_and_artifacts(tmp_path):
         after_records = [tuple(row) for row in storage.connection.execute(
             "SELECT * FROM research_record ORDER BY research_id"
         )]
-        assert storage.current_migration_level() == 7
+        assert storage.current_migration_level() == 8
         assert storage.connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert storage.connection.execute(
             "SELECT name FROM sqlite_schema WHERE sql LIKE '%_v6%'"
@@ -325,15 +326,20 @@ def test_fresh_database_applies_registered_production_migrations(tmp_path):
                 7,
                 research_method_versions_migration().sha256,
             ),
+            (
+                responses_api_provenance_migration().migration_id,
+                8,
+                responses_api_provenance_migration().sha256,
+            ),
         ]
-        assert storage.current_migration_level() == 7
+        assert storage.current_migration_level() == 8
 
 
 def test_existing_milestone_one_database_is_recognized(tmp_path):
     path = tmp_path / "existing.sqlite3"
     _create_milestone_one_database(path)
     with LedgerStorage.open(path) as storage:
-        assert storage.current_migration_level() == 7
+        assert storage.current_migration_level() == 8
         assert storage.apply_migrations(migration_registry()) == 0
 
 
@@ -343,7 +349,7 @@ def test_existing_level_two_database_upgrades_to_input_observation(tmp_path):
     with LedgerStorage.open(path, registry=level_two) as storage:
         assert storage.current_migration_level() == 2
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 7
+        assert upgraded.current_migration_level() == 8
         assert upgraded.apply_migrations(migration_registry()) == 0
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert upgraded.connection.execute(
@@ -363,7 +369,7 @@ def test_existing_level_three_database_upgrades_to_temporal_dag(tmp_path):
     with LedgerStorage.open(path, registry=level_three) as storage:
         assert storage.current_migration_level() == 3
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 7
+        assert upgraded.current_migration_level() == 8
         assert upgraded.apply_migrations(migration_registry()) == 0
         assert upgraded.connection.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -383,7 +389,7 @@ def test_populated_level_four_database_upgrades_to_pit_classification(tmp_path):
         artifact_id = artifact.artifact_id
         assert storage.current_migration_level() == 4
     with LedgerStorage.open(path) as upgraded:
-        assert upgraded.current_migration_level() == 7
+        assert upgraded.current_migration_level() == 8
         assert upgraded.get_artifact(artifact_id).artifact_id == artifact_id
         assert upgraded.connection.execute(
             "SELECT count(*) FROM derivation_node_classification"
@@ -460,7 +466,7 @@ def test_unknown_applied_migration_is_rejected(tmp_path):
     _create_milestone_one_database(path)
     with LedgerStorage.open(path):
         pass
-    _insert_history(path, Migration("0008_unknown", 8, b"SELECT 1;"))
+    _insert_history(path, Migration("0009_unknown", 9, b"SELECT 1;"))
     with pytest.raises(UnknownAppliedMigration):
         LedgerStorage.open(path)
 
@@ -539,4 +545,4 @@ def test_later_migrations_do_not_recreate_or_mutate_schema_metadata(tmp_path):
 def test_production_registry_contains_temporal_derivation_migration():
     from trinity.ledger.schema import migration_registry
 
-    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3, 4, 5, 6, 7]
+    assert [migration.sequence for migration in migration_registry()] == [1, 2, 3, 4, 5, 6, 7, 8]

@@ -62,6 +62,7 @@ class InvocationTrace:
     parsed_value: dict[str, object]
     started_at: str
     finished_at: str
+    provenance: Mapping[str, object] | None = None
 
 
 class RecordingUSAProvider(USAProvider):
@@ -76,6 +77,12 @@ class RecordingUSAProvider(USAProvider):
         self.invocations: list[InvocationTrace] = []
         self.analyst_stage: dict[str, object] | None = None
         self.critic_stage: dict[str, object] | None = None
+        self.provenance: dict[str, object] = {
+            "provider": "OPENAI_CODEX_CLI", "transport": "CODEX_CLI_STDIN",
+            "model": "gpt-5.6-sol", "model_version": "codex-cli:gpt-5.6-sol",
+            "timeout_seconds": 240, "sandbox": "read-only",
+            "skip_git_repo_check": True, "ignore_user_config": True,
+        }
 
     def _request(
         self, prompt: str, schema: Mapping[str, object]
@@ -90,6 +97,7 @@ class RecordingUSAProvider(USAProvider):
         role = "ANALYST" if len(self.invocations) == 0 else "CRITIC"
         self.invocations.append(InvocationTrace(
             role, prompt, deepcopy(schema), deepcopy(result), started, finished,
+            deepcopy(self.provenance),
         ))
         return result
 
@@ -567,12 +575,15 @@ def _interaction(
         "schema_name": "ledger.llm-context", "schema_version": "1",
         "interaction_role": trace.role, "items": items,
     })
-    parameters = _artifact(storage, "ledger.llm-invocation-parameters.v1", {
-        "schema_name": "ledger.llm-invocation-parameters", "schema_version": "1",
+    provenance = dict(trace.provenance or {
         "provider": "OPENAI_CODEX_CLI", "transport": "CODEX_CLI_STDIN",
         "model": "gpt-5.6-sol", "model_version": "codex-cli:gpt-5.6-sol",
-        "timeout_seconds": 240, "sandbox": "read-only", "ephemeral": True,
+        "timeout_seconds": 240, "sandbox": "read-only",
         "skip_git_repo_check": True, "ignore_user_config": True,
+    })
+    parameters = _artifact(storage, "ledger.llm-invocation-parameters.v1", {
+        "schema_name": "ledger.llm-invocation-parameters", "schema_version": "1",
+        **provenance, "ephemeral": True,
         "response_schema_artifact_id": schema.artifact_id,
         "temperature": None, "top_p": None, "seed": None,
         "max_output_tokens": None, "reasoning_effort": None, "tool_mode": "NONE",
@@ -590,8 +601,8 @@ def _interaction(
     )
     request = _artifact(storage, "ledger.llm-invocation-request.v1", {
         "schema_name": "ledger.llm-invocation-request", "schema_version": "1",
-        "interaction_role": trace.role, "provider": "OPENAI_CODEX_CLI",
-        "model": "gpt-5.6-sol", "model_version": "codex-cli:gpt-5.6-sol",
+        "interaction_role": trace.role, "provider": provenance["provider"],
+        "model": provenance["model"], "model_version": provenance["model_version"],
         "client_effective_input_artifact_id": prompt.artifact_id,
         "context_artifact_id": context.artifact_id,
         "response_schema_artifact_id": schema.artifact_id,
@@ -655,6 +666,8 @@ def _interaction(
         started_at=trace.started_at,
         finished_at=trace.finished_at,
         llm_interaction_id=interaction_id,
+        provider=str(provenance["provider"]), model=str(provenance["model"]),
+        model_version=str(provenance["model_version"]),
     )
     return {
         "interaction": interaction, "raw": raw, "observation": observation,

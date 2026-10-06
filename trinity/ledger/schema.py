@@ -80,6 +80,13 @@ def research_method_versions_migration() -> Migration:
     return Migration("0007_research_method_versions", 7, resource.read_bytes())
 
 
+def responses_api_provenance_migration() -> Migration:
+    resource = files("trinity.ledger.migrations").joinpath(
+        "0008_responses_api_provenance.sql"
+    )
+    return Migration("0008_responses_api_provenance", 8, resource.read_bytes())
+
+
 @dataclass(frozen=True)
 class MigrationRegistry:
     """A complete, deterministic migration sequence understood by a writer."""
@@ -125,5 +132,6 @@ def migration_registry() -> MigrationRegistry:
             pit_classification_migration(),
             research_llm_setup_migration(),
             research_method_versions_migration(),
+            responses_api_provenance_migration(),
         )
     )

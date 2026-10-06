@@ -411,7 +411,7 @@ def _validate_parameters(value: Any) -> None:
     }
     _closed(value, keys, "invocation parameters")
     _identity(value, "ledger.llm-invocation-parameters")
-    expected = {
+    codex = {
         "provider": "OPENAI_CODEX_CLI", "transport": "CODEX_CLI_STDIN",
         "model": "gpt-5.6-sol", "model_version": "codex-cli:gpt-5.6-sol",
         "timeout_seconds": 240, "sandbox": "read-only", "ephemeral": True,
@@ -419,8 +419,16 @@ def _validate_parameters(value: Any) -> None:
         "temperature": None, "top_p": None, "seed": None,
         "max_output_tokens": None, "reasoning_effort": None, "tool_mode": "NONE",
     }
-    if any(value[key] != item for key, item in expected.items()):
-        _fail("invocation parameters differ from frozen Codex profile")
+    responses = {
+        **codex,
+        "provider": "OPENAI_RESPONSES_API", "transport": "RESPONSES_API_HTTPS",
+        "model_version": "responses-api:gpt-5.6-sol", "timeout_seconds": 300,
+        "sandbox": "not-applicable", "skip_git_repo_check": False,
+        "ignore_user_config": False,
+    }
+    if not any(all(value[key] == item for key, item in profile.items())
+               for profile in (codex, responses)):
+        _fail("invocation parameters differ from an approved transport profile")
     _artifact_id(value["response_schema_artifact_id"])
 
 
@@ -458,9 +466,10 @@ def _validate_request(value: Any) -> None:
     _closed(value, keys, "invocation request")
     _identity(value, "ledger.llm-invocation-request")
     _enum(value["interaction_role"], ("ANALYST", "CRITIC"), "interaction_role")
-    if (value["provider"], value["model"], value["model_version"]) != (
-        "OPENAI_CODEX_CLI", "gpt-5.6-sol", "codex-cli:gpt-5.6-sol"
-    ):
+    if (value["provider"], value["model"], value["model_version"]) not in {
+        ("OPENAI_CODEX_CLI", "gpt-5.6-sol", "codex-cli:gpt-5.6-sol"),
+        ("OPENAI_RESPONSES_API", "gpt-5.6-sol", "responses-api:gpt-5.6-sol"),
+    }:
         _fail("invocation provider/model identity differs")
     for key in keys - {"schema_name", "schema_version", "interaction_role", "provider", "model", "model_version"}:
         _artifact_id(value[key])

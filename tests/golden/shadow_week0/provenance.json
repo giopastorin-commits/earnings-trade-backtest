@@ -1,0 +1,11 @@
+{
+  "analytical_commit": "808f5afeeab44ba34ae8ef1cb76abd704f4a260b",
+  "decision_cutoff_america_new_york": "2026-10-05T16:00:00-04:00",
+  "decision_cutoff_utc": "2026-10-05T20:00:00Z",
+  "description": "Compact golden records derived from the locally verified frozen Week 0 artifacts. OHLCV payloads are external and identified by input_manifest.json.",
+  "frozen_artifacts": [
+    "pre_research_funnel.json",
+    "setups.json"
+  ],
+  "run_id": "SHADOW_USA_2026-10-06_W00"
+}

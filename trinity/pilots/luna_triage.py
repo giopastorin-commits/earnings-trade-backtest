@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import requests
 
 from trinity.pilots.pre_research import CANONICAL_UNIVERSE, load_canonical_universe
+from trinity.shadow.atomic import atomic_bytes
 
 
 MODEL = "gpt-5.6-luna"
@@ -236,6 +237,7 @@ class FreshTriageSources:
         self, *, api_key: str | None = None, cache_dir: str | Path = DEFAULT_SOURCE_ROOT,
         sec_root: str | Path = FORWARD_SEC_ROOT, session: requests.Session | None = None,
         clock: Callable[[], datetime] = utc_now,
+        decision_cutoff_utc: datetime | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("EODHD_API_KEY")
         if not self.api_key:
@@ -247,14 +249,20 @@ class FreshTriageSources:
             import truststore
             truststore.inject_into_ssl()
         self.clock = clock
+        self.decision_cutoff_utc = decision_cutoff_utc
         self.news_requests = 0
         self.earnings_requests = 0
         self.news_cache_hits = 0
         self.sec_cache_hits = 0
         self.downloaded_bytes = 0
+        self.post_cutoff_excluded = 0
 
     def news(self, ticker: str, provider_ticker: str) -> tuple[list[dict[str, Any]], str]:
-        today = self.clock().astimezone(timezone.utc).date()
+        today = (
+            self.decision_cutoff_utc.astimezone(timezone.utc).date()
+            if self.decision_cutoff_utc is not None else
+            self.clock().astimezone(timezone.utc).date()
+        )
         start = today - timedelta(days=45)
         path = self.cache_dir / "news" / f"{ticker}_{start}_{today}.json"
         if path.is_file():
@@ -272,10 +280,19 @@ class FreshTriageSources:
             value = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise TriageError(f"{ticker}: EODHD news response is not JSON") from exc
+        if self.decision_cutoff_utc is not None and isinstance(value, list):
+            eligible = [item for item in value if isinstance(item, dict) and
+                        _not_after_cutoff(item.get("date"), self.decision_cutoff_utc)]
+            self.post_cutoff_excluded += len(value) - len(eligible)
+            value = eligible
         return select_news(ticker, value), utc_text(self.clock())
 
     def earnings(self, provider_tickers: Sequence[str]) -> dict[str, dict[str, Any]]:
-        today = self.clock().astimezone(timezone.utc).date()
+        today = (
+            self.decision_cutoff_utc.astimezone(timezone.utc).date()
+            if self.decision_cutoff_utc is not None else
+            self.clock().astimezone(timezone.utc).date()
+        )
         through = today + timedelta(days=180)
         path = self.cache_dir / "earnings" / f"{today}_{through}.json"
         try:
@@ -311,6 +328,12 @@ class FreshTriageSources:
 
     def sec(self, ticker: str) -> tuple[str | None, list[dict[str, Any]]]:
         company, evidence = compact_sec(ticker, self.sec_root)
+        if self.decision_cutoff_utc is not None:
+            eligible = [item for item in evidence if _not_after_cutoff(
+                item.get("accepted_at") or item.get("published_at"), self.decision_cutoff_utc,
+            )]
+            self.post_cutoff_excluded += len(evidence) - len(eligible)
+            evidence = eligible
         if evidence:
             self.sec_cache_hits += 1
         return company, evidence
@@ -328,6 +351,27 @@ class FreshTriageSources:
         raw = bytes(response.content)
         self.downloaded_bytes += len(raw)
         return raw
+
+
+def _not_after_cutoff(value: object, cutoff: datetime) -> bool:
+    if not value:
+        return True
+    text = str(value)
+    try:
+        if len(text) == 10:
+            return date.fromisoformat(text) <= cutoff.astimezone(timezone.utc).date()
+        if text.isdigit() and len(text) == 14:
+            from zoneinfo import ZoneInfo
+            parsed = datetime.strptime(text, "%Y%m%d%H%M%S").replace(
+                tzinfo=ZoneInfo("America/New_York")
+            )
+        else:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc) <= cutoff.astimezone(timezone.utc)
+    except ValueError:
+        return False
 
 
 def build_packet(
@@ -528,7 +572,7 @@ def run_triage(
             parsed = validate_reply(reply.value, ticker, packet["available_evidence_ids"])
             response_dir = Path(source_root) / "responses"
             response_dir.mkdir(parents=True, exist_ok=True)
-            (response_dir / f"{ticker}.json").write_bytes(reply.raw)
+            atomic_bytes(response_dir / f"{ticker}.json", reply.raw)
             base.update({
                 **parsed, "status": "SUCCESS",
                 "raw_response_sha256": hashlib.sha256(reply.raw).hexdigest(),
@@ -592,6 +636,7 @@ def run_triage(
             "news_cache_hits": int(getattr(source, "news_cache_hits", 0)),
             "sec_cache_hits": int(getattr(source, "sec_cache_hits", 0)),
             "downloaded_bytes": int(getattr(source, "downloaded_bytes", 0)),
+            "post_cutoff_excluded": int(getattr(source, "post_cutoff_excluded", 0)),
         },
         "results": results,
     }
