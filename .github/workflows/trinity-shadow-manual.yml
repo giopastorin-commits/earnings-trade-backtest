@@ -1,0 +1,23 @@
+name: TRINITY Shadow Production (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Execution mode
+        required: true
+        default: golden-replay
+        type: choice
+        options:
+          - golden-replay
+          - full-shadow
+
+jobs:
+  placeholder:
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Do not execute from main
+        run: |
+          echo "TRINITY shadow runs must be dispatched from trinity-shadow-production-v1."
+          exit 1
