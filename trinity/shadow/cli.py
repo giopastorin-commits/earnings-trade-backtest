@@ -88,6 +88,8 @@ def run_command() -> int:
         staging.rename(final_root)
         staging = final_root
         artifacts = staging / "artifacts"
+        funnel_path = artifacts / "pre_research_funnel.json"
+        cache = staging / "data" / "prices"
         state.path = staging / "run_state.json"
         state.run_id = run_id
         atomic_json(run_root() / "current_run.json", {"run_id": run_id, "path": str(staging)})
@@ -131,7 +133,6 @@ def run_command() -> int:
             sol_ordinal += 2 * len(tickers)
             return result
 
-        stage = "LUNA"
         result = run_production_funnel(
             funnel_path=funnel_path, price_dir=cache,
             luna_output_path=artifacts / "luna_results.json",

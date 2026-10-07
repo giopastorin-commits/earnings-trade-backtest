@@ -5,10 +5,12 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from trinity.paths import LEGACY_BASELINE_ROOT, baseline_root, price_cache, run_root
+from trinity.shadow import cli as shadow_cli
 from trinity.shadow.cutoff import cutoff_for_verified_session, filter_timestamped_records
 from trinity.shadow.manifest import generate_manifest, verify_manifest
 from trinity.shadow.model_adapters import ResponsesSolProvider
@@ -186,3 +188,86 @@ def test_responses_provider_provenance_is_additive(tmp_path):
     source = Path("trinity/ledger/migrations/0008_responses_api_provenance.sql").read_text()
     assert "OPENAI_CODEX_CLI" in source
     assert "OPENAI_RESPONSES_API" in source
+
+
+def _configure_renamed_run(monkeypatch, tmp_path, production_runner):
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("TRINITY_RUN_ROOT", str(runs))
+    monkeypatch.setenv("TRINITY_BASELINE_ROOT", str(tmp_path / "baseline"))
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "unit-openai-key")
+    monkeypatch.setenv("EODHD_API_KEY", "unit-eodhd-key")
+    monkeypatch.setattr(
+        shadow_cli, "IncrementalEODHDPrices",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    def fake_funnel(*, output_path, provider):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text('{"inputs": {}, "survivors": []}', encoding="utf-8")
+        provider.cache_dir.mkdir(parents=True, exist_ok=True)
+        (provider.cache_dir / "XYZ.json").write_text(
+            '[{"date": "2026-10-06"}]', encoding="utf-8",
+        )
+        return SimpleNamespace(
+            latest_completed_session="2026-10-06", counts={},
+        )
+
+    monkeypatch.setattr(shadow_cli, "run_funnel", fake_funnel)
+    monkeypatch.setattr(shadow_cli, "run_production_funnel", production_runner)
+    return runs
+
+
+def test_run_command_rebases_downstream_paths_after_real_directory_rename(
+    monkeypatch, tmp_path,
+):
+    captured = {}
+
+    def fail_before_triage(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("setup-stage fixture")
+
+    runs = _configure_renamed_run(monkeypatch, tmp_path, fail_before_triage)
+
+    assert shadow_cli.run_command() == 1
+    pending = runs / "SHADOW_USA_PENDING_123_A1"
+    final = runs / "SHADOW_USA_2026-10-06_123_A1"
+    expected_funnel = final / "artifacts" / "pre_research_funnel.json"
+    expected_prices = final / "data" / "prices"
+    assert not pending.exists()
+    assert final.is_dir()
+    assert captured["funnel_path"] == expected_funnel
+    assert captured["price_dir"] == expected_prices
+    assert expected_funnel.is_file()
+    assert expected_prices.is_dir()
+    assert pending not in captured["funnel_path"].parents
+    assert pending not in captured["price_dir"].parents
+    state = json.loads((final / "run_state.json").read_text(encoding="utf-8"))
+    assert state["state"] == "FAILED_SETUP"
+
+
+def test_run_command_labels_failure_after_triage_entry_as_failed_luna(
+    monkeypatch, tmp_path,
+):
+    def enter_triage(**kwargs):
+        return kwargs["triage_runner"](
+            ready_entries=[{"ticker": "XYZ"}],
+            funnel_path=kwargs["funnel_path"],
+            output_path=kwargs["luna_output_path"],
+            source_root=kwargs["luna_source_root"],
+            expected_count=1,
+        )
+
+    runs = _configure_renamed_run(monkeypatch, tmp_path, enter_triage)
+    monkeypatch.setattr(shadow_cli, "FreshTriageSources", lambda **kwargs: object())
+
+    def fail_in_triage(**kwargs):
+        raise RuntimeError("luna-stage fixture")
+
+    monkeypatch.setattr(shadow_cli, "run_triage", fail_in_triage)
+
+    assert shadow_cli.run_command() == 1
+    final = runs / "SHADOW_USA_2026-10-06_123_A1"
+    state = json.loads((final / "run_state.json").read_text(encoding="utf-8"))
+    assert state["state"] == "FAILED_LUNA"
