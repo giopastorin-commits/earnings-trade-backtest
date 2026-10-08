@@ -20,7 +20,7 @@ from trinity.usa_forward import (
     validate_forward_bars,
 )
 from trinity.usa_setup_v1 import PRICE_CACHE, THESIS_CACHE, _load_latest_thesis
-from trinity.usa_v2 import AS_OF, load_company
+from trinity.usa_v2 import AS_OF, _read_prices, load_company
 
 
 def _llm(ticker: str) -> RecordingUSAProvider:
@@ -65,6 +65,9 @@ class _FixtureSource:
                 str(item.get("accepted_at") or item.get("published_at") or "")
                 for item in pack.company_input["evidence"]
             ),
+            price_snapshot_id="TWELVEDATA_2026-09-12_RUN_fixture",
+            price_snapshot_session=AS_OF,
+            price_snapshot_sha256="a" * 64,
         )
 
 
@@ -88,6 +91,17 @@ def _bars(latest: date, count: int = 201):
          "adjusted_close": 101 + index, "volume": 1_000_000 + index}
         for index in range(count)
     ]
+
+
+class _Snapshot:
+    snapshot_id = "TWELVEDATA_2026-10-01_RUN_test"
+    target_session = "2026-10-01"
+    snapshot_sha256 = "a" * 64
+    acquisition_completed_at = "2026-10-02T12:00:00.000000Z"
+    def bars(self, _ticker):
+        return _bars(date.fromisoformat(self.target_session))
+    def normalized_bytes(self, ticker):
+        return json.dumps(self.bars(ticker)).encode()
 
 
 class _RetryResponse:
@@ -116,7 +130,8 @@ class _RetrySession:
 def _retry_provider(tmp_path, outcomes):
     session = _RetrySession(outcomes)
     return EODHDSECForwardProvider(
-        tmp_path, api_key="test-only", session=session, continuity_path=None,
+        tmp_path, price_snapshot=_Snapshot(), api_key="test-only",
+        session=session, continuity_path=None,
     ), session
 
 
@@ -200,6 +215,18 @@ def test_stale_and_missing_price_data_are_rejected():
         validate_forward_bars("AAPL", _bars(date(2026, 9, 20)), retrieved_at=now)
 
 
+def test_raw_twelve_data_bars_keep_setup_fields_and_null_optional_provenance_slot(tmp_path):
+    prices = tmp_path / "prices"
+    prices.mkdir()
+    bars = _bars(date(2026, 10, 7), count=61)
+    for bar in bars:
+        bar.pop("adjusted_close")
+    (prices / "AAPL.json").write_text(json.dumps(bars), encoding="utf-8")
+    price, _evidence = _read_prices("AAPL", "2026-10-07", prices_dir=prices)
+    assert set(bars[-1]) == {"date", "open", "high", "low", "close", "volume"}
+    assert price["acquisition"]["last_bar"]["adjusted_close"] is None
+
+
 def test_forward_mode_is_dry_run_only_and_makes_no_provider_call(tmp_path):
     calls = []
     with pytest.raises(ValueError, match="dry-run only"):
@@ -220,7 +247,8 @@ def test_forward_continuity_preserves_every_luna_selected_evidence_id(tmp_path):
         ],
     }]}), encoding="utf-8")
     provider = EODHDSECForwardProvider(
-        tmp_path / "sources", api_key="test-only", continuity_path=continuity,
+        tmp_path / "sources", price_snapshot=_Snapshot(),
+        api_key="test-only", continuity_path=continuity,
     )
     assert provider._continuity_evidence_ids("AAPL") == (
         "news:AAPL:0123456789abcdef",
@@ -242,10 +270,13 @@ def test_mocked_fresh_provider_uses_only_execution_paths(monkeypatch, tmp_path):
         def raise_for_status(self):
             return None
 
+    calls = []
+
     class Session:
         headers = {}
         def get(self, url, **_kwargs):
-            return Response(price if "/api/eod/" in url else news)
+            calls.append(url)
+            return Response(news)
 
     def sec_acquirer(as_of, *, cache_dir, tickers, now, **_kwargs):
         assert tickers == ("AAPL",) and as_of == "2026-10-01" and now == fixed
@@ -273,13 +304,14 @@ def test_mocked_fresh_provider_uses_only_execution_paths(monkeypatch, tmp_path):
 
     monkeypatch.setattr("trinity.usa_forward.load_company", loader)
     provider = EODHDSECForwardProvider(
-        tmp_path, api_key="test-only", session=Session(),
+        tmp_path, price_snapshot=_Snapshot(), api_key="test-only", session=Session(),
         clock=lambda: fixed, sec_acquirer=sec_acquirer,
     )
     acquired = provider.acquire("AAPL")
     assert acquired.price_retrieved_at == "2026-10-02T12:00:00.000000Z"
     assert acquired.research_retrieved_at == "2026-10-02T12:00:00.000000Z"
-    assert acquired.price_raw == price
+    assert json.loads(acquired.price_raw) == _Snapshot().bars("AAPL")
+    assert calls == ["https://eodhistoricaldata.com/api/news"]
     assert seen and PRICE_CACHE not in Path(seen["prices_dir"]).parents
 
 
@@ -299,7 +331,8 @@ def test_missing_required_source_data_is_safe(monkeypatch, tmp_path):
             return Response(price if "/api/eod/" in url else b"{}")
 
     provider = EODHDSECForwardProvider(
-        tmp_path, api_key="test-only", session=Session(), clock=lambda: fixed,
+        tmp_path, price_snapshot=_Snapshot(), api_key="test-only",
+        session=Session(), clock=lambda: fixed,
         sec_acquirer=lambda *args, **kwargs: Path(kwargs["cache_dir"]) / "manifest.json",
     )
     with pytest.raises(ForwardAcquisitionError, match="news response has invalid shape"):
@@ -344,6 +377,25 @@ def test_mocked_forward_success_has_independent_native_lineage_and_real_timestam
         ).fetchall()
         assert [row[0] for row in methods] == ["USA_V2_FACTS_V3"]
         assert [row[0] for row in records] == ["USA_V2_FACTS_V3"]
+
+
+def test_ledger_ohlcv_observation_records_twelve_data_snapshot_provenance(forward_batch):
+    batch, _started = forward_batch
+    with LedgerStorage.open(batch.ledger_db) as storage:
+        rows = storage.connection.execute(
+            "SELECT source_id, source_metadata_json FROM input_observation "
+            "WHERE source_id LIKE 'twelve_data:%' ORDER BY source_id"
+        ).fetchall()
+    assert len(rows) == 2
+    for source_id, metadata_raw in rows:
+        assert source_id.startswith("twelve_data:")
+        metadata = json.loads(metadata_raw)
+        assert metadata["acquisition_method"] == "validated-immutable-snapshot"
+        assert metadata["provider_metadata"] == {
+            "snapshot_id": "TWELVEDATA_2026-09-12_RUN_fixture",
+            "snapshot_session": AS_OF,
+            "snapshot_sha256": "a" * 64,
+        }
 
 
 def test_forward_summary_and_historical_defaults_remain_available(forward_batch):

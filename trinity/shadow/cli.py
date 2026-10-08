@@ -12,19 +12,23 @@ from pathlib import Path
 import subprocess
 import time
 
-from trinity.paths import baseline_root, price_cache, run_root
+from trinity.ledger import LedgerStorage
+from trinity.paths import baseline_root, price_snapshot_root, run_root
 from trinity.pilots.forward import render_forward_summary, run_forward_pilot
 from trinity.pilots.luna_triage import FreshTriageSources, run_triage
-from trinity.pilots.pre_research import IncrementalEODHDPrices, run_funnel
+from trinity.pilots.pre_research import SnapshotPrices, run_funnel
 from trinity.pilots.production_funnel import run_production_funnel
-from trinity.usa_forward import EODHDSECForwardProvider
+from trinity.twelvedata_prices import ValidatedPriceSnapshot
+from trinity.usa_forward import EODHDNewsSECForwardProvider
 
 from .atomic import atomic_json
 from .cutoff import cutoff_for_verified_session
 from .golden_replay import GoldenReplayError, run_golden_replay
 from .manifest import generate_manifest, verify_manifest
 from .model_adapters import ResponsesLuna, ResponsesSolProvider
-from .r2 import archive_run, client_from_environment, restore_baseline
+from .r2 import (
+    archive_run, client_from_environment, restore_baseline, restore_price_snapshot,
+)
 from .responses import CostGuardStop, PersistentCostLedger, ResponsesAPI
 from .sqlite_lifecycle import close_and_verify, initialize_fresh_ledger
 from .state import RunState
@@ -52,7 +56,27 @@ def restore_command() -> int:
         raise
 
 
+def restore_prices_command() -> int:
+    client, bucket = client_from_environment()
+    prefix = os.environ.get("TRINITY_PRICE_SNAPSHOT_PREFIX", "")
+    expected = os.environ.get("TRINITY_PRICE_SNAPSHOT_SHA256", "")
+    manifest = restore_price_snapshot(
+        client, bucket, prefix, price_snapshot_root(),
+        expected_snapshot_sha256=expected,
+    )
+    atomic_json(run_root() / "price_snapshot_restore.json", {
+        "prefix": prefix,
+        "snapshot_id": manifest["snapshot_id"],
+        "target_market_session": manifest["target_market_session"],
+        "snapshot_sha256": manifest["snapshot_sha256"],
+    })
+    return 0
+
+
 def run_command() -> int:
+    # This verification is the hard coverage gate. No analytical artifact or
+    # model call is created until the explicit snapshot is READY and hash-valid.
+    snapshot = ValidatedPriceSnapshot(price_snapshot_root(), require_ready=True)
     started = time.perf_counter()
     github_run_id = os.environ.get("GITHUB_RUN_ID", "local")
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
@@ -67,21 +91,25 @@ def run_command() -> int:
             artifacts / "baseline_restore.json",
             json.loads(restore_record.read_text(encoding="utf-8")),
         )
+    price_restore_record = run_root() / "price_snapshot_restore.json"
+    if price_restore_record.is_file():
+        atomic_json(
+            artifacts / "price_snapshot_restore.json",
+            json.loads(price_restore_record.read_text(encoding="utf-8")),
+        )
     state = RunState(staging / "run_state.json", preliminary_id)
     atomic_json(run_root() / "current_run.json", {"run_id": preliminary_id, "path": str(staging)})
     stage = "DATA"
     try:
         funnel_path = artifacts / "pre_research_funnel.json"
-        cache = staging / "data" / "prices"
         funnel = run_funnel(
             output_path=funnel_path,
-            provider=IncrementalEODHDPrices(cache_dir=cache, historical_dir=price_cache()),
+            provider=SnapshotPrices(snapshot),
         )
-        latest_dates = []
-        for path in cache.glob("*.json"):
-            rows = json.loads(path.read_text(encoding="utf-8"))
-            if rows:
-                latest_dates.append(str(rows[-1]["date"]))
+        latest_dates = [
+            str(item["last_valid_date"]) for item in snapshot.manifest["tickers"]
+            if item["classification"] == "ACTIVE_COMPLETE"
+        ]
         cutoff = cutoff_for_verified_session(funnel.latest_completed_session, latest_dates)
         run_id = f"SHADOW_USA_{cutoff.session_date}_{github_run_id}_A{attempt}"
         final_root = run_root() / run_id
@@ -89,7 +117,7 @@ def run_command() -> int:
         staging = final_root
         artifacts = staging / "artifacts"
         funnel_path = artifacts / "pre_research_funnel.json"
-        cache = staging / "data" / "prices"
+        cache = snapshot.normalized_root
         state.path = staging / "run_state.json"
         state.run_id = run_id
         state.write("RUNNING")
@@ -112,7 +140,6 @@ def run_command() -> int:
             )
             return run_triage(
                 **kwargs, luna=ResponsesLuna(transport, tickers), sources=source,
-                universe_path=price_cache().parent / "ticker_mapping.csv",
             )
 
         cutoff_dt = datetime.fromisoformat(cutoff.utc.replace("Z", "+00:00"))
@@ -125,8 +152,9 @@ def run_command() -> int:
             result = run_forward_pilot(
                 database, tickers, dry_run=dry_run,
                 source_root=staging / "fresh_sources",
-                source_provider_factory=lambda root: EODHDSECForwardProvider(
-                    root, continuity_path=artifacts / "luna_results.json",
+                source_provider_factory=lambda root: EODHDNewsSECForwardProvider(
+                    root, price_snapshot=snapshot,
+                    continuity_path=artifacts / "luna_results.json",
                     decision_cutoff_utc=cutoff_dt,
                 ),
                 llm_provider_factory=lambda ticker: ResponsesSolProvider(transport, ticker, sol_ordinal),
@@ -140,6 +168,7 @@ def run_command() -> int:
             watchlist_path=artifacts / "active_watch.json",
             luna_source_root=staging / "luna_sources",
             ledger_db=ledger_path, triage_runner=triage_runner, sol_runner=sol_runner,
+            price_snapshot=snapshot,
         )
         atomic_json(artifacts / "setups.json", [item.to_dict() for item in result.setups])
         if result.failed_tickers:
@@ -149,6 +178,12 @@ def run_command() -> int:
             raise RuntimeError("one or more Sol ticker pipelines failed")
         if not ledger_path.exists():
             initialize_fresh_ledger(ledger_path)
+        with LedgerStorage.open(ledger_path) as storage:
+            storage.insert_json_artifact(
+                artifact_type="ledger.price-snapshot-provenance.v1",
+                value=snapshot.provenance(),
+                media_type="application/json",
+            )
         stage = "LEDGER"
         close_and_verify(ledger_path)
         sol_rows = [] if result.sol_result is None else [asdict(item) for item in result.sol_result.results]
@@ -168,6 +203,7 @@ def run_command() -> int:
             "drop": list(result.drop_tickers), "sol_results": sol_rows,
             "method_versions": {"setup": "USA_SETUP_V1", "facts": "USA_V2_FACTS_V3",
                                 "luna": "luna-triage-v1"},
+            "price_snapshot": snapshot.provenance(),
             "runtime_seconds": time.perf_counter() - started,
             "telegram_sent": False, "broker_execution": False,
         })
@@ -213,7 +249,9 @@ def _git_head() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("restore", "run", "archive", "golden-replay"))
+    parser.add_argument(
+        "command", choices=("restore", "restore-prices", "run", "archive", "golden-replay"),
+    )
     parser.add_argument("--decision-cutoff")
     parser.add_argument("--baseline-root", type=Path)
     parser.add_argument("--universe-path", type=Path)
@@ -238,7 +276,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
         print(json.dumps(comparison, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
-    return {"restore": restore_command, "run": run_command, "archive": archive_command}[args.command]()
+    return {
+        "restore": restore_command, "restore-prices": restore_prices_command,
+        "run": run_command, "archive": archive_command,
+    }[args.command]()
 
 
 if __name__ == "__main__":

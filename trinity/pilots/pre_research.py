@@ -10,28 +10,23 @@ import csv
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import time as runtime_clock
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
-import requests
-
+from trinity.twelvedata_prices import PRICE_PROVIDER, ValidatedPriceSnapshot
+from trinity.usa_issuer_registry import DEFAULT_REGISTRY, load_registry
 from trinity.usa_setup_v1 import (
-    PRICE_CACHE,
     _prepare_bars,
     _regime,
     _technical_metrics,
 )
 
 
-CANONICAL_DATASET = PRICE_CACHE.parent
-CANONICAL_UNIVERSE = CANONICAL_DATASET / "ticker_mapping.csv"
-FORWARD_PRICE_ROOT = Path("data/local/trinity_forward_sources/trinity_forward_pilot")
-DEFAULT_CACHE = Path("data/local/pre_research_funnel_prices")
+CANONICAL_UNIVERSE = DEFAULT_REGISTRY
+DEFAULT_CACHE = Path("data/local/price_snapshot/normalized")
 DEFAULT_OUTPUT = Path("data/local/pre_research_funnel_latest.json")
-EODHD_EOD = "https://eodhd.com/api/eod/{provider_ticker}"
 MIN_BARS = 201
 NEAR_BOUNDARY_GAP_PCT = 1.0
 CONTROL_TICKERS = ("AAPL", "JPM", "JNJ", "WMT", "LIN", "PLD", "XOM", "CAT")
@@ -55,6 +50,7 @@ class PriceCapture:
     source: str
     requested: bool
     downloaded_bytes: int
+    classification: str = "ACTIVE_COMPLETE"
 
 
 @dataclass(frozen=True)
@@ -96,7 +92,11 @@ class FunnelResult:
     survivors: tuple[ScreenedTicker, ...]
     rejections: tuple[Rejection, ...]
     control_group: dict[str, str]
-    eodhd_requests: int
+    price_provider: str
+    price_snapshot_id: str
+    price_snapshot_session: str
+    price_snapshot_sha256: str
+    price_requests: int
     downloaded_bytes: int
     cache_hits: int
     runtime_seconds: float
@@ -104,13 +104,20 @@ class FunnelResult:
 
 def load_canonical_universe(path: str | Path = CANONICAL_UNIVERSE) -> tuple[UniverseMember, ...]:
     source = Path(path)
-    with source.open(newline="", encoding="utf-8-sig") as stream:
-        rows = list(csv.DictReader(stream))
-    members = tuple(sorted(
-        (UniverseMember(str(row["canonical_ticker"]).strip().upper(),
-                        str(row["provider_ticker"]).strip().upper()) for row in rows),
-        key=lambda item: item.ticker,
-    ))
+    if source.suffix == ".fixture" or source.suffix == ".json":
+        records = load_registry(source).supported
+        members = tuple(sorted(
+            (UniverseMember(item.ticker, item.provider_symbol) for item in records),
+            key=lambda item: item.ticker,
+        ))
+    else:
+        with source.open(newline="", encoding="utf-8-sig") as stream:
+            rows = list(csv.DictReader(stream))
+        members = tuple(sorted(
+            (UniverseMember(str(row["canonical_ticker"]).strip().upper(),
+                            str(row["provider_ticker"]).strip().upper()) for row in rows),
+            key=lambda item: item.ticker,
+        ))
     if not members or any(not item.ticker or not item.provider_ticker for item in members):
         raise ValueError("canonical universe contains an empty ticker mapping")
     if len({item.ticker for item in members}) != len(members):
@@ -133,121 +140,32 @@ def completed_session_ceiling(now: datetime) -> date:
     return candidate
 
 
-class IncrementalEODHDPrices:
-    """Reuse local captures and request only dates after the newest cached bar."""
+class SnapshotPrices:
+    """Read production prices only from one validated immutable snapshot."""
 
-    def __init__(
-        self, *, cache_dir: str | Path = DEFAULT_CACHE,
-        historical_dir: str | Path = PRICE_CACHE,
-        forward_root: str | Path = FORWARD_PRICE_ROOT,
-        api_key: str | None = None,
-        session: requests.Session | None = None,
-        now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-    ) -> None:
-        self.cache_dir = Path(cache_dir).resolve()
-        self.historical_dir = Path(historical_dir).resolve()
-        self.forward_root = Path(forward_root).resolve()
-        self.api_key = api_key or os.getenv("EODHD_API_KEY")
-        if not self.api_key:
-            raise FunnelDataError("EODHD_API_KEY is not configured")
-        self.session = session or requests.Session()
-        if session is None:
-            import truststore
-            truststore.inject_into_ssl()
-        self.now = now
+    def __init__(self, snapshot: ValidatedPriceSnapshot) -> None:
+        self.snapshot = snapshot
         self.request_count = 0
         self.downloaded_bytes = 0
         self.cache_hits = 0
+        self.price_provider = PRICE_PROVIDER
+        self.price_snapshot_id = snapshot.snapshot_id
+        self.price_snapshot_session = snapshot.target_session
+        self.price_snapshot_sha256 = snapshot.snapshot_sha256
 
     def acquire(self, member: UniverseMember, through: date) -> PriceCapture:
-        ticker = member.ticker
-        candidates = (
-            ("FUNNEL_CACHE", self.cache_dir / f"{ticker}.json"),
-            ("FORWARD_PILOT_CACHE", self.forward_root / ticker / "prices" / f"{ticker}.json"),
-            ("CANONICAL_HISTORICAL_CACHE", self.historical_dir / f"{ticker}.json"),
-        )
-        available: list[tuple[str, Path, list[dict[str, Any]]]] = []
-        for label, path in candidates:
-            if path.is_file():
-                available.append((label, path, self._read_bars(path, ticker)))
-        if not available:
-            raise FunnelDataError(f"{ticker}: no local OHLCV baseline")
-        source, _path, base = max(
-            available, key=lambda item: max(str(row.get("date") or "") for row in item[2])
-        )
-        latest = max(date.fromisoformat(str(row["date"])) for row in base)
-        if latest >= through:
-            self.cache_hits += 1
-            merged = self._clip_and_sort(base, through)
-            self._write_cache(ticker, merged)
-            return PriceCapture(ticker, merged, source, False, 0)
-
-        start = latest + timedelta(days=1)
-        raw = self._get(member, start, through)
-        try:
-            delta = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise FunnelDataError(f"{ticker}: EODHD price response is not JSON") from exc
-        if not isinstance(delta, list):
-            raise FunnelDataError(f"{ticker}: EODHD price response has invalid shape")
-        merged_by_date = {str(row.get("date") or ""): row for row in base}
-        for row in delta:
-            if not isinstance(row, dict) or not row.get("date"):
-                raise FunnelDataError(f"{ticker}: EODHD price response contains a malformed row")
-            merged_by_date[str(row["date"])] = row
-        merged = self._clip_and_sort(list(merged_by_date.values()), through)
-        self._write_raw_capture(ticker, start, through, raw)
-        self._write_cache(ticker, merged)
-        return PriceCapture(ticker, merged, f"{source}+EODHD_INCREMENTAL", True, len(raw))
-
-    def _get(self, member: UniverseMember, start: date, through: date) -> bytes:
-        self.request_count += 1
-        try:
-            response = self.session.get(
-                EODHD_EOD.format(provider_ticker=member.provider_ticker),
-                params={"api_token": self.api_key, "from": start.isoformat(),
-                        "to": through.isoformat(), "fmt": "json"},
-                timeout=45,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            suffix = f" HTTP {status}" if status is not None else ""
+        if through.isoformat() != self.snapshot.target_session:
             raise FunnelDataError(
-                f"{member.ticker}: EODHD price request failed{suffix} ({type(exc).__name__})"
-            ) from exc
-        payload = bytes(response.content)
-        self.downloaded_bytes += len(payload)
-        return payload
-
-    @staticmethod
-    def _read_bars(path: Path, ticker: str) -> list[dict[str, Any]]:
-        try:
-            value = json.loads(path.read_bytes())
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise FunnelDataError(f"{ticker}: invalid local OHLCV cache {path}") from exc
-        if not isinstance(value, list) or not value:
-            raise FunnelDataError(f"{ticker}: empty local OHLCV cache {path}")
-        return value
-
-    @staticmethod
-    def _clip_and_sort(bars: list[dict[str, Any]], through: date) -> list[dict[str, Any]]:
-        return sorted(
-            (row for row in bars if date.fromisoformat(str(row.get("date") or "")) <= through),
-            key=lambda row: str(row["date"]),
+                f"{member.ticker}: analytical ceiling {through} differs from snapshot session "
+                f"{self.snapshot.target_session}"
+            )
+        entry = self.snapshot.entry(member.ticker)
+        bars = self.snapshot.bars(member.ticker)
+        self.cache_hits += 1
+        return PriceCapture(
+            member.ticker, bars, self.snapshot.snapshot_id, False, 0,
+            str(entry["classification"]),
         )
-
-    def _write_cache(self, ticker: str, bars: list[dict[str, Any]]) -> None:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        (self.cache_dir / f"{ticker}.json").write_text(
-            json.dumps(bars, ensure_ascii=False, allow_nan=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-
-    def _write_raw_capture(self, ticker: str, start: date, through: date, raw: bytes) -> None:
-        directory = self.cache_dir / "raw"
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / f"{ticker}_{start.isoformat()}_{through.isoformat()}.json").write_bytes(raw)
 
 
 def _boundary_gap(close: float, support: float) -> float:
@@ -336,14 +254,20 @@ def order_survivors(items: Sequence[ScreenedTicker]) -> list[ScreenedTicker]:
 def run_funnel(
     *, universe_path: str | Path = CANONICAL_UNIVERSE,
     output_path: str | Path | None = DEFAULT_OUTPUT,
-    provider: IncrementalEODHDPrices | None = None,
+    provider: object | None = None,
     now: datetime | None = None,
 ) -> FunnelResult:
     started = runtime_clock.perf_counter()
     execution_time = now or datetime.now(timezone.utc)
     members = load_canonical_universe(universe_path)
-    prices = provider or IncrementalEODHDPrices(now=lambda: execution_time)
-    ceiling = completed_session_ceiling(execution_time)
+    if provider is None:
+        raise FunnelDataError("a validated price snapshot provider is required")
+    prices = provider
+    snapshot_session = getattr(prices, "price_snapshot_session", None)
+    ceiling = (
+        date.fromisoformat(str(snapshot_session)) if snapshot_session
+        else completed_session_ceiling(execution_time)
+    )
     captures: dict[str, PriceCapture] = {}
     acquisition_rejections: list[Rejection] = []
     for member in members:
@@ -354,7 +278,8 @@ def run_funnel(
                 Rejection(member.ticker, "OHLCV_UNAVAILABLE", str(exc)[:500])
             )
     latest_dates = [
-        str(capture.bars[-1]["date"]) for capture in captures.values() if capture.bars
+        str(capture.bars[-1]["date"]) for capture in captures.values()
+        if capture.bars and capture.classification == "ACTIVE_COMPLETE"
     ]
     if not latest_dates:
         raise FunnelDataError("no OHLCV capture produced a completed session")
@@ -369,6 +294,12 @@ def run_funnel(
         capture = captures.get(member.ticker)
         if capture is None:
             continue
+        if capture.classification == "CORPORATE_ACTION_NO_LONGER_TRADING":
+            rejections.append(Rejection(
+                member.ticker, "CORPORATE_ACTION_NO_LONGER_TRADING",
+                f"last normal session={capture.bars[-1]['date'] if capture.bars else '-'}",
+            ))
+            continue
         result = screen_ticker(member.ticker, capture.bars, as_of)
         if isinstance(result, Rejection):
             rejections.append(result)
@@ -377,7 +308,10 @@ def run_funnel(
             survivors.append(result)
     # Downtrends passed data quality before their stage-1 regime rejection.
     downtrends = sum(item.reason == "DOWNTREND" for item in rejections)
-    data_rejected = len(rejections) - downtrends
+    explicit_exceptions = sum(
+        item.reason == "CORPORATE_ACTION_NO_LONGER_TRADING" for item in rejections
+    )
+    data_rejected = len(rejections) - downtrends - explicit_exceptions
     valid_ohlcv += downtrends
     ordered = order_survivors(survivors)
     shortlist = tuple(item for item in ordered if item.screening_state != "DISTANT")
@@ -403,12 +337,20 @@ def run_funnel(
         "distant": sum(item.screening_state == "DISTANT" for item in survivors),
         "final_shortlist_size": len(shortlist),
     }
+    if explicit_exceptions:
+        counts["explicit_price_exceptions"] = explicit_exceptions
     result = FunnelResult(
         universe_source=str(Path(universe_path).resolve()),
         latest_completed_session=as_of, counts=counts, shortlist=shortlist,
         survivors=tuple(ordered), rejections=tuple(sorted(rejections, key=lambda item: item.ticker)),
-        control_group=control, eodhd_requests=prices.request_count,
-        downloaded_bytes=prices.downloaded_bytes, cache_hits=prices.cache_hits,
+        control_group=control,
+        price_provider=str(getattr(prices, "price_provider", "TEST_PROVIDER")),
+        price_snapshot_id=str(getattr(prices, "price_snapshot_id", "TEST_SNAPSHOT")),
+        price_snapshot_session=str(getattr(prices, "price_snapshot_session", as_of)),
+        price_snapshot_sha256=str(getattr(prices, "price_snapshot_sha256", "TEST_HASH")),
+        price_requests=int(getattr(prices, "request_count", 0)),
+        downloaded_bytes=int(getattr(prices, "downloaded_bytes", 0)),
+        cache_hits=int(getattr(prices, "cache_hits", 0)),
         runtime_seconds=runtime_clock.perf_counter() - started,
     )
     if output_path is not None:
@@ -422,6 +364,12 @@ def _write_output(path: Path, result: FunnelResult, captures: Mapping[str, Price
         "schema_name": "trinity.pre-research-funnel", "schema_version": "1",
         "universe_source": result.universe_source,
         "latest_completed_session": result.latest_completed_session,
+        "price_snapshot": {
+            "provider": result.price_provider,
+            "snapshot_id": result.price_snapshot_id,
+            "session": result.price_snapshot_session,
+            "sha256": result.price_snapshot_sha256,
+        },
         "policy": {
             "minimum_bars": MIN_BARS,
             "near_boundary_gap_pct": NEAR_BOUNDARY_GAP_PCT,
@@ -430,7 +378,7 @@ def _write_output(path: Path, result: FunnelResult, captures: Mapping[str, Price
         },
         "counts": result.counts,
         "cost": {
-            "eodhd_requests": result.eodhd_requests,
+            "price_requests": result.price_requests,
             "downloaded_bytes": result.downloaded_bytes,
             "cache_hits": result.cache_hits,
             "runtime_seconds": result.runtime_seconds,
@@ -444,6 +392,7 @@ def _write_output(path: Path, result: FunnelResult, captures: Mapping[str, Price
         "inputs": {
             ticker: {
                 "source": capture.source,
+                "classification": capture.classification,
                 "bar_count": len(capture.bars),
                 "sha256": hashlib.sha256(json.dumps(
                     capture.bars, ensure_ascii=False, allow_nan=False,
@@ -496,11 +445,13 @@ def render_shortlist(result: FunnelResult, limit: int = 50) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the price-only TRINITY pre-research funnel")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE)
+    parser.add_argument("--snapshot-root", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        result = run_funnel(provider=IncrementalEODHDPrices(cache_dir=args.cache_dir),
-                            output_path=args.output)
+        result = run_funnel(
+            provider=SnapshotPrices(ValidatedPriceSnapshot(args.snapshot_root)),
+            output_path=args.output,
+        )
     except (FunnelDataError, OSError, ValueError) as exc:
         parser.error(str(exc))
     print(render_counts(result))
@@ -512,7 +463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for ticker in CONTROL_TICKERS:
         print(f"{ticker}: {result.control_group[ticker]}")
     print(
-        f"\nEODHD requests: {result.eodhd_requests} | Downloaded bytes: "
+        f"\nPrice provider: {result.price_provider} | Snapshot: {result.price_snapshot_id} | "
+        f"Price requests: {result.price_requests} | Downloaded bytes: "
         f"{result.downloaded_bytes} | Cache hits: {result.cache_hits} | "
         f"Runtime seconds: {result.runtime_seconds:.3f} | LLM calls/tokens: 0/0"
     )

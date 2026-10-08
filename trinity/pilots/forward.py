@@ -12,6 +12,7 @@ import uuid
 from trinity.italia_v1 import analyze_company, build_facts_v3
 from trinity.ledger import LedgerStorage
 from trinity.notifications.telegram import load_committed_setup, render_telegram_message
+from trinity.paths import price_snapshot_root
 from trinity.pilots.multiticker import (
     BatchResult,
     RecordingUSAProvider,
@@ -24,7 +25,8 @@ from trinity.pilots.multiticker import (
     _ticker_result,
     _validate_tickers,
 )
-from trinity.usa_forward import EODHDSECForwardProvider, ForwardTickerSources
+from trinity.twelvedata_prices import PRICE_PROVIDER, ValidatedPriceSnapshot
+from trinity.usa_forward import EODHDNewsSECForwardProvider, ForwardTickerSources
 from trinity.usa_setup_v1 import build_setup
 from trinity.usa_v2 import with_expectation_comparisons
 
@@ -33,13 +35,19 @@ DEFAULT_FORWARD_DATABASE = Path("data/local/trinity_forward_pilot.sqlite3")
 DEFAULT_SOURCE_ROOT = Path("data/local/trinity_forward_sources")
 
 
+def _default_source_provider(root: Path) -> EODHDNewsSECForwardProvider:
+    return EODHDNewsSECForwardProvider(
+        root, price_snapshot=ValidatedPriceSnapshot(price_snapshot_root()),
+    )
+
+
 def run_forward_pilot(
     database: str | Path,
     tickers: Sequence[str],
     *,
     dry_run: bool,
     repository_root: str | Path | None = None,
-    source_provider_factory: Callable[[Path], object] = EODHDSECForwardProvider,
+    source_provider_factory: Callable[[Path], object] = _default_source_provider,
     llm_provider_factory: Callable[[str], RecordingUSAProvider] = (
         lambda _ticker: RecordingUSAProvider()
     ),
@@ -92,6 +100,12 @@ def run_forward_pilot(
                     research_source_bytes=sources.research_archive,
                     research_retrieved_at=sources.research_retrieved_at,
                     price_retrieved_at=sources.price_retrieved_at,
+                    price_provider=sources.price_provider,
+                    price_provider_metadata={
+                        "snapshot_id": sources.price_snapshot_id,
+                        "snapshot_session": sources.price_snapshot_session,
+                        "snapshot_sha256": sources.price_snapshot_sha256,
+                    },
                     forward=True,
                 )
                 provider = llm_provider_factory(ticker)
@@ -141,7 +155,7 @@ def run_forward_pilot(
                     error=f"{type(exc).__name__}: {exc}",
                     fresh_price_timestamp=(sources.fresh_price_timestamp if sources else "-"),
                     freshest_evidence_timestamp=(sources.freshest_evidence_timestamp if sources else "-"),
-                    price_provider="EODHD", news_provider="EODHD",
+                    price_provider=PRICE_PROVIDER, news_provider="EODHD",
                     primary_evidence_provider="SEC EDGAR",
                 ))
         if storage.connection.execute("PRAGMA foreign_key_check").fetchall():

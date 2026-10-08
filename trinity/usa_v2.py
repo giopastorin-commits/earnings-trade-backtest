@@ -269,9 +269,19 @@ def _read_prices(
         "content_sha256": _digest(raw), "raw_path": str(path),
         "published_at_precision": "day", "document_kind": "PRICE",
     }
+    # The frozen Facts/Ledger acquisition contract has an optional
+    # adjusted_close slot. Twelve Data production snapshots deliberately carry
+    # only raw OHLCV (adjust=none), so represent the absent provider field as
+    # null without adding it to the analytical bar series used by Setup V1.
+    acquisition_last_bar = {
+        "date": latest["date"],
+        **{field: latest.get(field) for field in (
+            "open", "high", "low", "close", "adjusted_close", "volume",
+        )},
+    }
     price = {"current_price": latest["close"], **returns, "published_at": latest["date"],
              "acquisition": {"currency": "USD", "market": "USA", "provider_symbol": issuer.provider_symbol,
-                             "last_bar": latest, "reference_bars": reference_bars,
+                             "last_bar": acquisition_last_bar, "reference_bars": reference_bars,
                              "raw_path": str(path), "sha256": evidence["content_sha256"]}}
     return price, evidence
 

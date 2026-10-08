@@ -11,6 +11,14 @@ on:
         options:
           - golden-replay
           - full-shadow
+      price_snapshot_prefix:
+        description: Immutable R2 price snapshot prefix (required for full-shadow)
+        required: false
+        type: string
+      price_snapshot_sha256:
+        description: Expected snapshot-level SHA-256 (required for full-shadow)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -101,6 +109,8 @@ jobs:
       TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+      TRINITY_PRICE_SNAPSHOT_PREFIX: ${{ inputs.price_snapshot_prefix }}
+      TRINITY_PRICE_SNAPSHOT_SHA256: ${{ inputs.price_snapshot_sha256 }}
       TRINITY_COST_GUARD_USD: "5.00"
 
     steps:
@@ -110,6 +120,7 @@ jobs:
           echo "TRINITY_DATA_ROOT=$RUNNER_TEMP/trinity-data" >> "$GITHUB_ENV"
           echo "TRINITY_BASELINE_ROOT=$RUNNER_TEMP/trinity-baseline" >> "$GITHUB_ENV"
           echo "TRINITY_RUN_ROOT=$RUNNER_TEMP/trinity-shadow" >> "$GITHUB_ENV"
+          echo "TRINITY_PRICE_SNAPSHOT_ROOT=$RUNNER_TEMP/trinity-price-snapshot" >> "$GITHUB_ENV"
 
       - name: Check out frozen analytical repository
         # actions/checkout v4.2.2
@@ -128,6 +139,9 @@ jobs:
 
       - name: Restore immutable production baseline from R2
         run: python -m trinity.shadow.cli restore
+
+      - name: Restore and verify explicit immutable Twelve Data price snapshot
+        run: python -m trinity.shadow.cli restore-prices
 
       - name: Execute frozen Shadow Production funnel
         run: python -m trinity.shadow.cli run

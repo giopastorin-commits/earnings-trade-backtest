@@ -7,10 +7,10 @@ import json
 import pytest
 
 from trinity.pilots.pre_research import (
-    IncrementalEODHDPrices,
     PriceCapture,
     Rejection,
     ScreenedTicker,
+    SnapshotPrices,
     UniverseMember,
     classify_proximity,
     order_survivors,
@@ -139,38 +139,26 @@ def test_future_data_is_not_used():
     assert screen_ticker("TEST", [*bars, future], AS_OF) == baseline
 
 
-def test_price_provider_only_calls_eodhd_eod_and_reuses_cache(tmp_path):
-    historical = tmp_path / "historical"
-    historical.mkdir()
-    baseline = _bars(_uptrend(), end="2026-09-30")
-    (historical / "TEST.json").write_text(json.dumps(baseline), encoding="utf-8")
-    delta = [{**baseline[-1], "date": AS_OF, "close": baseline[-1]["close"] + 0.3,
-              "open": baseline[-1]["open"] + 0.3,
-              "high": baseline[-1]["high"] + 0.3,
-              "low": baseline[-1]["low"] + 0.3}]
-    calls = []
+def test_price_provider_reads_validated_snapshot_without_network():
+    bars = _bars(_uptrend(), end=AS_OF)
 
-    class Response:
-        content = json.dumps(delta).encode()
-        def raise_for_status(self):
-            return None
+    class Snapshot:
+        snapshot_id = "snap-1"
+        target_session = AS_OF
+        snapshot_sha256 = "a" * 64
+        def entry(self, ticker):
+            assert ticker == "TEST"
+            return {"classification": "ACTIVE_COMPLETE"}
+        def bars(self, ticker):
+            assert ticker == "TEST"
+            return bars
 
-    class Session:
-        def get(self, url, **kwargs):
-            calls.append((url, kwargs))
-            return Response()
-
-    provider = IncrementalEODHDPrices(
-        cache_dir=tmp_path / "cache", historical_dir=historical,
-        forward_root=tmp_path / "forward", api_key="test-only", session=Session(),
-    )
-    member = UniverseMember("TEST", "TEST.US")
-    first = provider.acquire(member, date.fromisoformat(AS_OF))
-    second = provider.acquire(member, date.fromisoformat(AS_OF))
-    assert len(calls) == 1
-    assert calls[0][0] == "https://eodhd.com/api/eod/TEST.US"
-    assert first.requested is True and second.requested is False
-    assert provider.request_count == 1 and provider.cache_hits == 1
+    provider = SnapshotPrices(Snapshot())
+    captured = provider.acquire(UniverseMember("TEST", "TEST.US"), date.fromisoformat(AS_OF))
+    assert captured.bars == bars
+    assert captured.source == "snap-1"
+    assert captured.requested is False
+    assert provider.request_count == 0 and provider.cache_hits == 1
 
 
 def test_funnel_has_zero_llm_telegram_news_or_sec_calls(tmp_path, monkeypatch):
@@ -198,4 +186,4 @@ def test_funnel_has_zero_llm_telegram_news_or_sec_calls(tmp_path, monkeypatch):
     )
     assert result.counts["universe"] == 1
     assert forbidden == []
-    assert result.eodhd_requests == 1
+    assert result.price_requests == 1

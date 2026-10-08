@@ -292,6 +292,8 @@ def _persist_inputs(
     research_source_bytes: bytes | None = None,
     research_retrieved_at: str | None = None,
     price_retrieved_at: str | None = None,
+    price_provider: str | None = None,
+    price_provider_metadata: dict | None = None,
     forward: bool = False,
 ):
     observed_at = _utc_now()
@@ -321,21 +323,28 @@ def _persist_inputs(
         acquisition_method="live-api-capture" if forward else "checked-in-or-frozen-local",
     )
     ohlcv_source = storage.insert_opaque_artifact(
-        artifact_type="local.eodhd-ohlcv.v1",
+        artifact_type=("provider.twelvedata-ohlcv.v1" if forward
+                       else "local.eodhd-ohlcv.v1"),
         payload=bars_bytes,
         media_type="application/json",
     )
+    observed_price_provider = (
+        price_provider or ("eodhd" if forward else "local")
+    ).strip().lower()
     ohlcv_observation, ohlcv_raw = _observe(
         storage, attempt, ohlcv_source, ticker.lower(), "ohlcv",
         price_retrieved_at or observed_at,
-        provider="eodhd" if forward else "local",
-        acquisition_method="live-api-capture" if forward else "checked-in-or-frozen-local",
+        provider=observed_price_provider,
+        acquisition_method=("validated-immutable-snapshot" if forward
+                            else "checked-in-or-frozen-local"),
+        provider_metadata=price_provider_metadata,
     )
     proof = _artifact(storage, "local.multiticker-source-proof.v1", {
         "ticker": ticker,
         "as_of": as_of,
         "research_source_sha256": hashlib.sha256(source_payload).hexdigest(),
         "ohlcv_sha256": hashlib.sha256(bars_bytes).hexdigest(),
+        "price_provenance": price_provider_metadata or {},
         "evidence": [
             {"identifier": item.get("identifier"), "raw_path": item.get("raw_path"),
              "content_sha256": item.get("content_sha256")}
@@ -699,6 +708,7 @@ def _canonical_fact_numbers(value):
 def _observe(
     storage, attempt, artifact, dataset, record, when, *, provider="local",
     acquisition_method="checked-in-or-frozen-local",
+    provider_metadata=None,
 ):
     source_id = f"{provider}:{dataset}:v1"
     observation = storage.create_input_observation(
@@ -716,7 +726,7 @@ def _observe(
             "source_record_key": record, "acquisition_method": acquisition_method,
             "availability_rule_id": "retrieval-fallback",
             "availability_rule_version": "1", "evidence_artifact_ids": [],
-            "provider_metadata": {}, "future_effective_at": None,
+            "provider_metadata": provider_metadata or {}, "future_effective_at": None,
         },
     )
     node = storage.create_raw_derivation_node(

@@ -16,6 +16,7 @@ from trinity.pilots.luna_triage import (
 )
 from trinity.pilots.pre_research import DEFAULT_CACHE, DEFAULT_OUTPUT
 from trinity.usa_setup_v1 import SetupRecord, build_setup
+from trinity.twelvedata_prices import ValidatedPriceSnapshot
 
 
 DEFAULT_LUNA_OUTPUT = Path("data/local/production_funnel_luna_latest.json")
@@ -126,6 +127,7 @@ def run_production_funnel(
     setup_builder: Callable[..., SetupRecord] = build_setup,
     triage_runner: Callable[..., dict[str, Any]] = run_triage,
     sol_runner: Callable[..., object] | None = None,
+    price_snapshot: ValidatedPriceSnapshot | None = None,
 ) -> ProductionFunnelResult:
     """Run Setup first, then Luna, routing only ESCALATE names to Sol."""
 
@@ -133,6 +135,17 @@ def run_production_funnel(
     inputs = funnel.get("inputs")
     if not isinstance(inputs, dict):
         raise ProductionFunnelError("pre-research funnel artifact lacks input provenance")
+    if price_snapshot is not None:
+        expected = price_snapshot.provenance()
+        actual = funnel.get("price_snapshot")
+        normalized = {
+            "price_provider": actual.get("provider"),
+            "price_snapshot_id": actual.get("snapshot_id"),
+            "price_snapshot_session": actual.get("session"),
+            "price_snapshot_sha256": actual.get("sha256"),
+        } if isinstance(actual, dict) else None
+        if normalized != expected:
+            raise ProductionFunnelError("funnel price snapshot provenance mismatch")
     setups: list[SetupRecord] = []
     operational_rows: list[dict[str, Any]] = []
     for row in ready:
@@ -199,13 +212,18 @@ def run_production_funnel(
                     "production Sol routing requires the current Luna output artifact"
                 )
             from trinity.pilots.forward import run_forward_pilot
-            from trinity.usa_forward import EODHDSECForwardProvider
+            from trinity.usa_forward import EODHDNewsSECForwardProvider
 
             continuity_path = Path(luna_output_path)
+            if price_snapshot is None:
+                raise ProductionFunnelError(
+                    "production Sol routing requires the validated price snapshot"
+                )
             sol_result = run_forward_pilot(
                 ledger_db, escalate, dry_run=True,
-                source_provider_factory=lambda root: EODHDSECForwardProvider(
-                    root, continuity_path=continuity_path,
+                source_provider_factory=lambda root: EODHDNewsSECForwardProvider(
+                    root, price_snapshot=price_snapshot,
+                    continuity_path=continuity_path,
                 ),
             )
     return ProductionFunnelResult(

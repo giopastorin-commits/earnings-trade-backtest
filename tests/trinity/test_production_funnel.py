@@ -163,9 +163,25 @@ def test_default_sol_route_uses_current_luna_artifact_for_facts_v2_continuity(tm
     luna_output = tmp_path / "current-luna.json"
     seen = {}
 
+    class Snapshot:
+        def provenance(self):
+            return {
+                "price_provider": "TWELVE_DATA", "price_snapshot_id": "snap",
+                "price_snapshot_session": "2026-10-01",
+                "price_snapshot_sha256": "a" * 64,
+            }
+    snapshot = Snapshot()
+    value = json.loads(funnel.read_text(encoding="utf-8"))
+    value["price_snapshot"] = {
+        "provider": "TWELVE_DATA", "snapshot_id": "snap",
+        "session": "2026-10-01", "sha256": "a" * 64,
+    }
+    funnel.write_text(json.dumps(value), encoding="utf-8")
+
     class Provider:
-        def __init__(self, root, *, continuity_path):
+        def __init__(self, root, *, price_snapshot, continuity_path):
             seen["root"] = Path(root)
+            seen["price_snapshot"] = price_snapshot
             seen["continuity_path"] = Path(continuity_path)
 
     def forward(database, tickers, *, dry_run, source_provider_factory):
@@ -176,17 +192,18 @@ def test_default_sol_route_uses_current_luna_artifact_for_facts_v2_continuity(tm
         return "forward-result"
 
     with patch("trinity.pilots.forward.run_forward_pilot", side_effect=forward), \
-         patch("trinity.usa_forward.EODHDSECForwardProvider", Provider):
+         patch("trinity.usa_forward.EODHDNewsSECForwardProvider", Provider):
         result = run_production_funnel(
             funnel_path=funnel, price_dir=prices, luna_output_path=luna_output,
             watchlist_path=tmp_path / "watch.json", ledger_db=tmp_path / "ledger.sqlite3",
             setup_builder=_setup_builder_for({"ESC1": "PULLBACK"}),
-            triage_runner=triage, sol_runner=None,
+            triage_runner=triage, sol_runner=None, price_snapshot=snapshot,
         )
     assert result.sol_result == "forward-result"
     assert seen == {
         "database": tmp_path / "ledger.sqlite3", "tickers": ("ESC1",),
         "dry_run": True, "root": tmp_path / "sources",
+        "price_snapshot": snapshot,
         "continuity_path": luna_output,
     }
 

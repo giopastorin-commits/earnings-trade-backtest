@@ -1,4 +1,4 @@
-"""Fresh EODHD and SEC acquisition for the fixed TRINITY forward pilot."""
+"""Snapshot prices plus fresh EODHD News and SEC evidence for the forward pilot."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ import requests
 from trinity.usa_documents import acquire_sec_documents
 from trinity.usa_issuer_registry import get_issuer
 from trinity.usa_v2 import EvidencePack, load_company
+from trinity.twelvedata_prices import PRICE_PROVIDER, ValidatedPriceSnapshot
 
 
-EODHD_EOD = "https://eodhd.com/api/eod/{provider_symbol}"
 EODHD_NEWS = "https://eodhistoricaldata.com/api/news"
 MAX_PRICE_AGE_DAYS = 7
 DEFAULT_CONTINUITY_PATH = Path("data/local/luna_triage_v1_latest.json")
@@ -43,7 +43,10 @@ class ForwardTickerSources:
     research_retrieved_at: str
     fresh_price_timestamp: str
     freshest_evidence_timestamp: str
-    price_provider: str = "EODHD"
+    price_snapshot_id: str = "-"
+    price_snapshot_session: str = "-"
+    price_snapshot_sha256: str = "-"
+    price_provider: str = PRICE_PROVIDER
     news_provider: str = "EODHD"
     primary_evidence_provider: str = "SEC EDGAR"
 
@@ -82,11 +85,12 @@ def validate_forward_bars(
     return normalized
 
 
-class EODHDSECForwardProvider:
-    """Acquire one ticker without consulting any historical fixture path."""
+class EODHDNewsSECForwardProvider:
+    """Use snapshot OHLCV and acquire only EODHD News plus SEC evidence live."""
 
     def __init__(
-        self, source_root: str | Path, *, api_key: str | None = None,
+        self, source_root: str | Path, *, price_snapshot: ValidatedPriceSnapshot,
+        api_key: str | None = None,
         session: requests.Session | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         sec_acquirer: Callable[..., Path] = acquire_sec_documents,
@@ -94,6 +98,7 @@ class EODHDSECForwardProvider:
         decision_cutoff_utc: datetime | None = None,
     ) -> None:
         self.source_root = Path(source_root).resolve()
+        self.price_snapshot = price_snapshot
         self.api_key = api_key or os.getenv("EODHD_API_KEY")
         if not self.api_key:
             raise ForwardAcquisitionError("EODHD_API_KEY is not configured")
@@ -115,23 +120,25 @@ class EODHDSECForwardProvider:
         for path in (prices_dir, news_dir / ticker, sec_dir):
             path.mkdir(parents=True, exist_ok=True)
 
-        price_time = self._now()
-        through = (
-            self.decision_cutoff_utc.astimezone(timezone.utc).date()
-            if self.decision_cutoff_utc is not None else price_time.date()
-        )
-        start = (through - timedelta(days=450)).isoformat()
-        price_raw = self._get(
-            EODHD_EOD.format(provider_symbol=issuer.provider_symbol),
-            {"api_token": self.api_key, "from": start,
-             "to": through.isoformat(), "fmt": "json"},
-            ticker, "price",
-        )
         try:
-            price_value = json.loads(price_raw)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ForwardAcquisitionError(f"{ticker}: fresh price response is not JSON") from exc
-        bars = validate_forward_bars(ticker, price_value, retrieved_at=price_time)
+            price_time = datetime.fromisoformat(
+                self.price_snapshot.acquisition_completed_at.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+            price_raw = self.price_snapshot.normalized_bytes(ticker)
+            price_value = self.price_snapshot.bars(ticker)
+        except (OSError, ValueError, TypeError) as exc:
+            raise ForwardAcquisitionError(
+                f"{ticker}: validated price snapshot read failed"
+            ) from exc
+        if self.decision_cutoff_utc is not None and self.price_snapshot.target_session != \
+                self.decision_cutoff_utc.astimezone(timezone.utc).date().isoformat():
+            raise ForwardAcquisitionError(
+                f"{ticker}: snapshot session differs from decision cutoff"
+            )
+        try:
+            bars = validate_forward_bars(ticker, price_value, retrieved_at=self._now())
+        except (TypeError, ValueError) as exc:
+            raise ForwardAcquisitionError(f"{ticker}: snapshot OHLCV is invalid") from exc
         as_of = str(bars[-1]["date"])
         (prices_dir / f"{ticker}.json").write_bytes(price_raw)
 
@@ -165,7 +172,7 @@ class EODHDSECForwardProvider:
             ticker, as_of, prices_dir=prices_dir, news_dir=news_dir,
             documents_dir=sec_dir, forward=True,
             price_retrieved_at=utc_timestamp(price_time),
-            price_source="EODHD live daily USA API",
+            price_source="Twelve Data validated immutable OHLCV snapshot",
             news_source="EODHD live issuer/news API",
             continuity_evidence_ids=self._continuity_evidence_ids(ticker),
         )
@@ -185,6 +192,9 @@ class EODHDSECForwardProvider:
             research_retrieved_at=utc_timestamp(captured),
             fresh_price_timestamp=as_of,
             freshest_evidence_timestamp=max((item for item in evidence_times if item), default="-"),
+            price_snapshot_id=self.price_snapshot.snapshot_id,
+            price_snapshot_session=self.price_snapshot.target_session,
+            price_snapshot_sha256=self.price_snapshot.snapshot_sha256,
         )
 
     def _continuity_evidence_ids(self, ticker: str) -> tuple[str, ...]:
@@ -281,3 +291,8 @@ class EODHDSECForwardProvider:
                 if path.is_file():
                     archive.writestr(f"sec/{path.relative_to(root / 'sec').as_posix()}", path.read_bytes())
         return output.getvalue()
+
+
+# Compatibility import for non-production callers. The implementation no longer
+# contains or calls an EODHD price endpoint and requires a validated snapshot.
+EODHDSECForwardProvider = EODHDNewsSECForwardProvider

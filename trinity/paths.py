@@ -28,6 +28,15 @@ def run_root(environ: dict[str, str] | None = None) -> Path:
     return Path(configured).expanduser() if configured else data_root(env) / "local" / "shadow_runs"
 
 
+def price_snapshot_root(environ: dict[str, str] | None = None) -> Path:
+    env = os.environ if environ is None else environ
+    configured = env.get("TRINITY_PRICE_SNAPSHOT_ROOT")
+    return (
+        Path(configured).expanduser() if configured
+        else data_root(env) / "local" / "price_snapshot"
+    )
+
+
 def price_cache(environ: dict[str, str] | None = None) -> Path:
     return baseline_root(environ) / PRICE_DATASET / "provider_raw"
 
