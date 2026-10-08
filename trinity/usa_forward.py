@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Callable, Mapping
 import zipfile
 
@@ -214,16 +215,26 @@ class EODHDSECForwardProvider:
     def _get(
         self, url: str, params: Mapping[str, object], ticker: str, kind: str,
     ) -> bytes:
-        try:
-            response = self.session.get(url, params=dict(params), timeout=45)
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            suffix = f" HTTP {status}" if status is not None else ""
-            raise ForwardAcquisitionError(
-                f"{ticker}: EODHD {kind} request failed{suffix} ({type(exc).__name__})"
-            ) from exc
-        return bytes(response.content)
+        retryable_statuses = frozenset({429, 500, 502, 503, 504})
+        retryable_exceptions = (
+            requests.ReadTimeout, requests.ConnectTimeout, requests.ConnectionError,
+        )
+        for attempt in range(1, 4):
+            try:
+                response = self.session.get(url, params=dict(params), timeout=45)
+                response.raise_for_status()
+                return bytes(response.content)
+            except requests.RequestException as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable = isinstance(exc, retryable_exceptions) or status in retryable_statuses
+                if retryable and attempt < 3:
+                    time.sleep(attempt)
+                    continue
+                suffix = f" HTTP {status}" if status is not None else ""
+                raise ForwardAcquisitionError(
+                    f"{ticker}: EODHD {kind} request failed{suffix} ({type(exc).__name__})"
+                ) from exc
+        raise AssertionError("unreachable EODHD retry state")
 
     @staticmethod
     def _normalize_news(

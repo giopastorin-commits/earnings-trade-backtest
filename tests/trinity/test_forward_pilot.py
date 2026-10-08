@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import requests
 
 from trinity.ledger import LedgerStorage
 from trinity.pilots.forward import render_forward_summary, run_forward_pilot
@@ -87,6 +88,108 @@ def _bars(latest: date, count: int = 201):
          "adjusted_close": 101 + index, "volume": 1_000_000 + index}
         for index in range(count)
     ]
+
+
+class _RetryResponse:
+    def __init__(self, content: bytes, status_code: int = 200):
+        self.content = content
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(response=self)
+
+
+class _RetrySession:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        outcome = next(self.outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _retry_provider(tmp_path, outcomes):
+    session = _RetrySession(outcomes)
+    return EODHDSECForwardProvider(
+        tmp_path, api_key="test-only", session=session, continuity_path=None,
+    ), session
+
+
+def test_eodhd_get_retries_read_timeout_once_without_changing_request(
+    monkeypatch, tmp_path,
+):
+    raw = b"exact-response-bytes\x00\xff"
+    provider, session = _retry_provider(
+        tmp_path, [requests.ReadTimeout(), _RetryResponse(raw)],
+    )
+    sleeps = []
+    monkeypatch.setattr("trinity.usa_forward.time.sleep", sleeps.append)
+    params = {"api_token": "test-only", "s": "ABBV.US", "limit": 1000}
+
+    assert provider._get("https://example.test/news", params, "ABBV", "news") == raw
+    assert sleeps == [1]
+    assert len(session.calls) == 2
+    assert all(call == ("https://example.test/news", {"params": params, "timeout": 45})
+               for call in session.calls)
+
+
+def test_eodhd_get_retries_two_connection_errors_then_succeeds(monkeypatch, tmp_path):
+    provider, session = _retry_provider(
+        tmp_path,
+        [requests.ConnectionError(), requests.ConnectionError(), _RetryResponse(b"ok")],
+    )
+    sleeps = []
+    monkeypatch.setattr("trinity.usa_forward.time.sleep", sleeps.append)
+
+    assert provider._get("https://example.test/eod", {"fmt": "json"}, "DE", "price") == b"ok"
+    assert sleeps == [1, 2]
+    assert len(session.calls) == 3
+    assert all(call[1]["timeout"] == 45 for call in session.calls)
+
+
+@pytest.mark.parametrize("status", [503, 429])
+def test_eodhd_get_retries_transient_http_status(monkeypatch, tmp_path, status):
+    provider, session = _retry_provider(
+        tmp_path, [_RetryResponse(b"temporary", status), _RetryResponse(b"ok")],
+    )
+    sleeps = []
+    monkeypatch.setattr("trinity.usa_forward.time.sleep", sleeps.append)
+
+    assert provider._get("https://example.test/news", {}, "ABBV", "news") == b"ok"
+    assert sleeps == [1]
+    assert len(session.calls) == 2
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+def test_eodhd_get_does_not_retry_permanent_http_status(monkeypatch, tmp_path, status):
+    provider, session = _retry_provider(
+        tmp_path, [_RetryResponse(b"permanent", status)],
+    )
+    sleeps = []
+    monkeypatch.setattr("trinity.usa_forward.time.sleep", sleeps.append)
+
+    with pytest.raises(ForwardAcquisitionError, match=rf"HTTP {status}"):
+        provider._get("https://example.test/news", {}, "ABBV", "news")
+    assert sleeps == []
+    assert len(session.calls) == 1
+
+
+def test_eodhd_get_stops_after_three_read_timeouts(monkeypatch, tmp_path):
+    provider, session = _retry_provider(
+        tmp_path, [requests.ReadTimeout(), requests.ReadTimeout(), requests.ReadTimeout()],
+    )
+    sleeps = []
+    monkeypatch.setattr("trinity.usa_forward.time.sleep", sleeps.append)
+
+    with pytest.raises(ForwardAcquisitionError, match=r"request failed \(ReadTimeout\)"):
+        provider._get("https://example.test/news", {}, "ABBV", "news")
+    assert sleeps == [1, 2]
+    assert len(session.calls) == 3
 
 
 def test_stale_and_missing_price_data_are_rejected():
