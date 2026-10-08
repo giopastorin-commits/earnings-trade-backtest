@@ -92,6 +92,7 @@ def run_command() -> int:
         cache = staging / "data" / "prices"
         state.path = staging / "run_state.json"
         state.run_id = run_id
+        state.write("RUNNING")
         atomic_json(run_root() / "current_run.json", {"run_id": run_id, "path": str(staging)})
         atomic_json(artifacts / "decision_cutoff.json", asdict(cutoff))
 

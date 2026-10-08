@@ -204,6 +204,11 @@ def _configure_renamed_run(monkeypatch, tmp_path, production_runner):
     )
 
     def fake_funnel(*, output_path, provider):
+        preliminary_state = json.loads(
+            (output_path.parent.parent / "run_state.json").read_text(encoding="utf-8")
+        )
+        assert preliminary_state["run_id"] == "SHADOW_USA_PENDING_123_A1"
+        assert preliminary_state["state"] == "RUNNING"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text('{"inputs": {}, "survivors": []}', encoding="utf-8")
         provider.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -226,6 +231,13 @@ def test_run_command_rebases_downstream_paths_after_real_directory_rename(
 
     def fail_before_triage(**kwargs):
         captured.update(kwargs)
+        running = json.loads(
+            (kwargs["funnel_path"].parent.parent / "run_state.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert running["run_id"] == "SHADOW_USA_2026-10-06_123_A1"
+        assert running["state"] == "RUNNING"
         raise RuntimeError("setup-stage fixture")
 
     runs = _configure_renamed_run(monkeypatch, tmp_path, fail_before_triage)
@@ -244,6 +256,7 @@ def test_run_command_rebases_downstream_paths_after_real_directory_rename(
     assert pending not in captured["funnel_path"].parents
     assert pending not in captured["price_dir"].parents
     state = json.loads((final / "run_state.json").read_text(encoding="utf-8"))
+    assert state["run_id"] == "SHADOW_USA_2026-10-06_123_A1"
     assert state["state"] == "FAILED_SETUP"
 
 
@@ -270,4 +283,26 @@ def test_run_command_labels_failure_after_triage_entry_as_failed_luna(
     assert shadow_cli.run_command() == 1
     final = runs / "SHADOW_USA_2026-10-06_123_A1"
     state = json.loads((final / "run_state.json").read_text(encoding="utf-8"))
+    assert state["run_id"] == "SHADOW_USA_2026-10-06_123_A1"
     assert state["state"] == "FAILED_LUNA"
+
+
+def test_archive_completion_preserves_canonical_run_id(monkeypatch, tmp_path):
+    runs = tmp_path / "runs"
+    canonical_id = "SHADOW_USA_2026-10-06_123_A1"
+    final = runs / canonical_id
+    final.mkdir(parents=True)
+    RunState(final / "run_state.json", canonical_id)
+    (runs / "current_run.json").write_text(
+        json.dumps({"run_id": canonical_id, "path": str(final)}), encoding="utf-8",
+    )
+    client = _R2()
+    monkeypatch.setenv("TRINITY_RUN_ROOT", str(runs))
+    monkeypatch.setattr(
+        shadow_cli, "client_from_environment", lambda: (client, "trinity-raw"),
+    )
+
+    assert shadow_cli.archive_command() == 0
+    persisted = json.loads((final / "run_state.json").read_text(encoding="utf-8"))
+    assert persisted["run_id"] == canonical_id
+    assert persisted["state"] == "COMPLETE"
