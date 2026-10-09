@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -13,11 +15,14 @@ from typing import Any, Callable, Mapping, Sequence
 import requests
 
 from trinity.ledger import LedgerStorage
+from trinity.shadow.atomic import atomic_json
+from trinity.shadow.manifest import verify_manifest
 
 
 BOT_TOKEN_ENV = "TRINITY_TELEGRAM_BOT_TOKEN"
 CHAT_ID_ENV = "TRINITY_TELEGRAM_CHAT_ID"
 TELEGRAM_TIMEOUT_SECONDS = 15
+DELIVERY_RESULT_NAME = "telegram_delivery.json"
 
 
 class TelegramNotificationError(RuntimeError):
@@ -223,7 +228,8 @@ def _display_level(value: str) -> str:
 
 
 def _display_rr(value: str) -> str:
-    return format(_parse_decimal(value).quantize(Decimal("0.01")), ".2f")
+    _parse_decimal(value)
+    return value
 
 
 def _parse_decimal(value: str) -> Decimal:
@@ -236,17 +242,241 @@ def _parse_decimal(value: str) -> Decimal:
     return decimal
 
 
+def _read_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise TelegramNotificationError(f"Invalid notification input: {path.name}") from exc
+
+
+def _verify_post_archive_run(root: Path) -> str:
+    """Require a completed, integral, manifest-verified and R2-archived run."""
+
+    state = _read_json(root / "run_state.json")
+    if not isinstance(state, Mapping) or state.get("state") != "COMPLETE":
+        raise TelegramNotificationError("Analytical run is not COMPLETE")
+    run_id = str(state.get("run_id") or "")
+    if not run_id:
+        raise TelegramNotificationError("Analytical run identity is missing")
+
+    manifest = _read_json(root / "manifest.json")
+    if not isinstance(manifest, dict) or manifest.get("run_id") != run_id:
+        raise TelegramNotificationError("Run manifest identity does not match")
+    try:
+        verify_manifest(root, manifest)
+    except Exception as exc:
+        raise TelegramNotificationError("Run manifest verification failed") from exc
+
+    archive = _read_json(root / "r2_archive_result.json")
+    if (
+        not isinstance(archive, Mapping)
+        or int(archive.get("object_count") or 0) <= 0
+        or int(archive.get("total_bytes") or 0) <= 0
+    ):
+        raise TelegramNotificationError("Verified R2 archive result is missing")
+
+    ledger = root / "ledger" / "trinity.sqlite3"
+    if not ledger.is_file():
+        raise TelegramNotificationError("Committed Ledger is missing")
+    connection = sqlite3.connect(f"file:{ledger.as_posix()}?mode=ro", uri=True)
+    try:
+        if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            raise TelegramNotificationError("Ledger integrity_check failed")
+        if connection.execute("PRAGMA foreign_key_check").fetchall():
+            raise TelegramNotificationError("Ledger foreign_key_check failed")
+    finally:
+        connection.close()
+    return run_id
+
+
+def _select_sol_candidates(root: Path) -> list[dict[str, str]]:
+    """Select structured, successful, operational Sol outputs deterministically."""
+
+    value = _read_json(root / "artifacts" / "sol_results.json")
+    if not isinstance(value, list):
+        raise TelegramNotificationError("Sol results are malformed")
+    candidates: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise TelegramNotificationError("Sol result entry is malformed")
+        if item.get("run_status") != "SUCCESS" or item.get("error") not in (None, ""):
+            continue
+        if item.get("setup_type") == "NO_SETUP":
+            continue
+        setup_id = str(item.get("setup_id") or "")
+        ledger_run_id = str(item.get("run_id") or "")
+        ticker = str(item.get("ticker") or "")
+        if not setup_id or not ledger_run_id or not ticker:
+            raise TelegramNotificationError("Successful Sol result lacks committed identity")
+        candidates.append({
+            "ticker": ticker,
+            "setup_id": setup_id,
+            "ledger_run_id": ledger_run_id,
+        })
+    candidates.sort(key=lambda item: (item["ticker"], item["setup_id"]))
+    identities = [item["setup_id"] for item in candidates]
+    if len(identities) != len(set(identities)):
+        raise TelegramNotificationError("Sol results contain duplicate committed Setup identity")
+    return candidates
+
+
+def _timestamp(now: Callable[[], datetime]) -> str:
+    value = now()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _safe_error(exc: Exception, *, token: str | None, chat_id: str | None) -> str:
+    message = str(exc) or type(exc).__name__
+    for secret in (token, chat_id):
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    return message[:500]
+
+
+def deliver_completed_run(
+    root: str | Path,
+    *,
+    token: str | None = None,
+    chat_id: str | None = None,
+    transport: Callable[..., Any] | None = None,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    storage_factory: Callable[[str | Path], Any] = LedgerStorage.open,
+) -> dict[str, Any]:
+    """Deliver committed final Sol candidates after archive, once per run root."""
+
+    run_path = Path(root)
+    result_path = run_path / "artifacts" / DELIVERY_RESULT_NAME
+    if result_path.exists():
+        raise TelegramNotificationError(
+            "Telegram delivery state already exists; duplicate invocation refused"
+        )
+
+    effective_token = token if token is not None else os.environ.get(BOT_TOKEN_ENV)
+    effective_chat = chat_id if chat_id is not None else os.environ.get(CHAT_ID_ENV)
+    started_at = _timestamp(now)
+    run_id = "UNKNOWN"
+    try:
+        run_id = _verify_post_archive_run(run_path)
+        candidates = _select_sol_candidates(run_path)
+    except TelegramNotificationError as exc:
+        result = {
+            "schema_name": "trinity.telegram-delivery",
+            "schema_version": "1",
+            "run_id": run_id,
+            "notification_attempted": False,
+            "candidate_count": 0,
+            "candidate_tickers": [],
+            "sent_count": 0,
+            "failed_count": 0,
+            "deliveries": [],
+            "started_at_utc": started_at,
+            "completed_at_utc": _timestamp(now),
+            "telegram_sent": False,
+            "error": _safe_error(exc, token=effective_token, chat_id=effective_chat),
+        }
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json(result_path, result)
+        raise
+
+    result = {
+        "schema_name": "trinity.telegram-delivery",
+        "schema_version": "1",
+        "run_id": run_id,
+        "notification_attempted": bool(candidates),
+        "candidate_count": len(candidates),
+        "candidate_tickers": [item["ticker"] for item in candidates],
+        "sent_count": 0,
+        "failed_count": 0,
+        "deliveries": [],
+        "started_at_utc": started_at,
+        "completed_at_utc": None,
+        "telegram_sent": False,
+        "error": None,
+    }
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(result_path, result)
+    if not candidates:
+        result["completed_at_utc"] = _timestamp(now)
+        atomic_json(result_path, result)
+        return result
+
+    ledger_path = run_path / "ledger" / "trinity.sqlite3"
+    with storage_factory(ledger_path) as storage:
+        for candidate in candidates:
+            delivery = {
+                "delivery_id": f"{run_id}:{candidate['setup_id']}",
+                "ticker": candidate["ticker"],
+                "setup_id": candidate["setup_id"],
+                "attempted_at_utc": _timestamp(now),
+                "completed_at_utc": None,
+                "status": "FAILED",
+                "error": None,
+            }
+            try:
+                notification = load_committed_setup(
+                    storage,
+                    setup_id=candidate["setup_id"],
+                    run_id=candidate["ledger_run_id"],
+                )
+                if notification.setup_type == "NO_SETUP":
+                    raise TelegramNotificationError("Committed Setup is not operational")
+                if notification.ticker != candidate["ticker"]:
+                    raise TelegramNotificationError("Sol and committed Setup ticker differ")
+                message = render_telegram_message(notification)
+                send_telegram_message(
+                    message,
+                    token=effective_token,
+                    chat_id=effective_chat,
+                    transport=transport,
+                )
+                delivery["status"] = "SENT"
+                result["sent_count"] += 1
+            except Exception as exc:
+                delivery["error"] = _safe_error(
+                    exc, token=effective_token, chat_id=effective_chat,
+                )
+                result["failed_count"] += 1
+            delivery["completed_at_utc"] = _timestamp(now)
+            result["deliveries"].append(delivery)
+            atomic_json(result_path, result)
+
+    result["completed_at_utc"] = _timestamp(now)
+    result["telegram_sent"] = (
+        result["candidate_count"] > 0
+        and result["sent_count"] == result["candidate_count"]
+        and result["failed_count"] == 0
+    )
+    if result["failed_count"]:
+        result["error"] = "One or more Telegram deliveries failed"
+    atomic_json(result_path, result)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Send one explicitly identified committed TRINITY Setup to Telegram"
     )
-    parser.add_argument("--ledger-db", required=True, type=Path)
-    parser.add_argument("--setup-id", required=True)
+    parser.add_argument("--ledger-db", type=Path)
+    parser.add_argument("--setup-id")
     parser.add_argument("--run-id")
+    parser.add_argument("--shadow-root", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     try:
+        if args.shadow_root is not None:
+            if args.dry_run or args.ledger_db is not None or args.setup_id is not None:
+                parser.error("--shadow-root cannot be combined with single-Setup options")
+            pointer = _read_json(args.shadow_root / "current_run.json")
+            if not isinstance(pointer, Mapping) or not pointer.get("path"):
+                raise TelegramNotificationError("Current Shadow run pointer is invalid")
+            result = deliver_completed_run(Path(str(pointer["path"])))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 1 if result["failed_count"] else 0
+        if args.ledger_db is None or args.setup_id is None:
+            parser.error("single-Setup mode requires --ledger-db and --setup-id")
         with LedgerStorage.open(args.ledger_db) as storage:
             notification = load_committed_setup(
                 storage, setup_id=args.setup_id, run_id=args.run_id

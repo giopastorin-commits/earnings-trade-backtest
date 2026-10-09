@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from trinity.notifications import telegram
 from trinity.notifications.telegram import (
     TelegramNotification,
     TelegramNotificationError,
+    deliver_completed_run,
     load_committed_setup,
     render_telegram_message,
     send_telegram_message,
@@ -161,8 +163,8 @@ def test_valid_committed_setup_loads_and_renders():
     assert notification.research_id == RESEARCH_ID
     assert "TRINITY — JNJ" in text
     assert "Entry: 264.022" in text
-    assert "RR1: 2.16" in text
-    assert "RR2: 3.00" in text
+    assert "RR1: 2.1634" in text
+    assert "RR2: 3" in text
 
 
 def test_uncommitted_setup_is_rejected():
@@ -201,7 +203,7 @@ def test_reason_order_and_decimal_display_are_deterministic():
     assert text.index("• SECOND") < text.index("• FIRST")
     assert "Entry: 264.022" in text
     assert "Stop: 256.1417" in text
-    assert "RR1: 2.16" in text and "RR2: 3.00" in text
+    assert "RR1: 2.1634" in text and "RR2: 3" in text
 
 
 def test_dry_run_performs_no_network(monkeypatch, capsys, tmp_path):
@@ -277,7 +279,7 @@ def test_jnj_exact_message_content_uses_existing_deterministic_fixture():
     text = render_telegram_message(notification)
     for expected in (
         "JNJ", "PULLBACK", "UPTREND", "INVESTIGATE", "HIGH", "MEDIUM",
-        "264.022", "256.1417", "281.07", "287.6628", "2.16", "3.00",
+        "264.022", "256.1417", "281.07", "287.6628", "2.1634", "3",
         "UPTREND_CONFIRMED", "SMA_SUPPORT_NEARBY",
         "RECONSTRUCTED_NOT_ARCHIVED", "LEGACY_NON_LEDGER_ARTIFACT",
     ):
@@ -311,3 +313,194 @@ def test_jnj_pilot_materializer_creates_committed_no_network_ledger(
         assert storage.connection.execute("PRAGMA foreign_key_check").fetchall() == []
     with pytest.raises(FileExistsError):
         materialize_jnj_telegram_pilot(path)
+
+
+FIXED_NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+
+
+def _delivery_root(tmp_path: Path) -> Path:
+    root = tmp_path / "run"
+    (root / "artifacts").mkdir(parents=True)
+    (root / "ledger").mkdir()
+    (root / "run_state.json").write_text(json.dumps({
+        "run_id": "SHADOW_RUN", "state": "COMPLETE",
+    }), encoding="utf-8")
+    return root
+
+
+def _candidate(setup_id=SETUP_ID, ticker="JNJ"):
+    return {"ticker": ticker, "setup_id": setup_id, "ledger_run_id": RUN_ID}
+
+
+def _mock_delivery_gates(monkeypatch, candidates):
+    monkeypatch.setattr(telegram, "_verify_post_archive_run", lambda _root: "SHADOW_RUN")
+    monkeypatch.setattr(telegram, "_select_sol_candidates", lambda _root: candidates)
+
+
+def test_sol_candidate_selection_is_structured_deterministic_and_exclusive(tmp_path):
+    root = _delivery_root(tmp_path)
+    (root / "artifacts" / "luna_results.json").write_text(json.dumps({
+        "results": [{"ticker": "LUNA_ONLY", "decision": "WATCH"}],
+    }), encoding="utf-8")
+    (root / "artifacts" / "sol_results.json").write_text(json.dumps([
+        {"ticker": "ZZZ", "setup_id": "z", "run_id": "r", "setup_type": "PULLBACK",
+         "run_status": "SUCCESS", "error": None},
+        {"ticker": "DROP", "setup_id": "drop", "run_id": "r", "setup_type": "BREAKOUT",
+         "run_status": "FAILED", "error": "model failure"},
+        {"ticker": "NOPE", "setup_id": "none", "run_id": "r", "setup_type": "NO_SETUP",
+         "run_status": "SUCCESS", "error": None},
+        {"ticker": "AAA", "setup_id": "a", "run_id": "r", "setup_type": "BREAKOUT",
+         "run_status": "SUCCESS", "error": None},
+    ]), encoding="utf-8")
+    assert telegram._select_sol_candidates(root) == [
+        {"ticker": "AAA", "setup_id": "a", "ledger_run_id": "r"},
+        {"ticker": "ZZZ", "setup_id": "z", "ledger_run_id": "r"},
+    ]
+
+
+def test_post_archive_gate_blocks_transport_before_complete(tmp_path):
+    root = _delivery_root(tmp_path)
+    (root / "run_state.json").write_text(json.dumps({
+        "run_id": "SHADOW_RUN", "state": "RUNNING",
+    }), encoding="utf-8")
+    calls = []
+    with pytest.raises(TelegramNotificationError, match="not COMPLETE"):
+        deliver_completed_run(
+            root, token="secret", chat_id="chat",
+            transport=lambda *_a, **_k: calls.append(True), now=lambda: FIXED_NOW,
+        )
+    assert calls == []
+    result = json.loads((root / "artifacts" / telegram.DELIVERY_RESULT_NAME).read_text())
+    assert result["notification_attempted"] is False
+    assert result["telegram_sent"] is False
+    assert "secret" not in json.dumps(result) and "chat" not in json.dumps(result)
+
+
+def test_real_post_archive_gate_verifies_manifest_archive_and_ledger(tmp_path):
+    from trinity.shadow.manifest import generate_manifest
+    from trinity.shadow.sqlite_lifecycle import initialize_fresh_ledger
+
+    root = _delivery_root(tmp_path)
+    (root / "artifacts" / "sol_results.json").write_text("[]", encoding="utf-8")
+    initialize_fresh_ledger(root / "ledger" / "trinity.sqlite3")
+    generate_manifest(root, run_id="SHADOW_RUN")
+    (root / "r2_archive_result.json").write_text(json.dumps({
+        "object_count": 4, "total_bytes": 100,
+    }), encoding="utf-8")
+    result = deliver_completed_run(root, now=lambda: FIXED_NOW)
+    assert result["candidate_count"] == 0
+    assert result["telegram_sent"] is False
+
+
+def test_delivery_uses_committed_values_and_persists_sanitized_success(
+    tmp_path, monkeypatch,
+):
+    root = _delivery_root(tmp_path)
+    _mock_delivery_gates(monkeypatch, [_candidate()])
+    requests = []
+
+    def transport(url, **kwargs):
+        requests.append((url, kwargs))
+        return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+    result = deliver_completed_run(
+        root, token="unit-bot-token", chat_id="unit-chat", transport=transport,
+        now=lambda: FIXED_NOW, storage_factory=lambda _path: _Storage(),
+    )
+    assert result["telegram_sent"] is True
+    assert result["candidate_tickers"] == ["JNJ"]
+    assert result["sent_count"] == 1 and result["failed_count"] == 0
+    message = requests[0][1]["json"]["text"]
+    for exact in (
+        "Entry: 264.022", "Stop: 256.1417", "TP1: 281.07", "TP2: 287.6628",
+        "RR1: 2.1634", "RR2: 3",
+    ):
+        assert exact in message
+    persisted = (root / "artifacts" / telegram.DELIVERY_RESULT_NAME).read_text()
+    assert "unit-bot-token" not in persisted and "unit-chat" not in persisted
+
+
+def test_committed_ledger_validation_gates_each_send(tmp_path, monkeypatch):
+    root = _delivery_root(tmp_path)
+    _mock_delivery_gates(monkeypatch, [_candidate()])
+    calls = []
+    result = deliver_completed_run(
+        root, token="token", chat_id="chat", transport=lambda *_a, **_k: calls.append(1),
+        now=lambda: FIXED_NOW,
+        storage_factory=lambda _path: _Storage(manifest_setup=False),
+    )
+    assert calls == []
+    assert result["sent_count"] == 0 and result["failed_count"] == 1
+    assert result["telegram_sent"] is False
+
+
+def test_missing_credentials_fail_safely_without_network(tmp_path, monkeypatch):
+    root = _delivery_root(tmp_path)
+    _mock_delivery_gates(monkeypatch, [_candidate()])
+    monkeypatch.delenv(telegram.BOT_TOKEN_ENV, raising=False)
+    monkeypatch.delenv(telegram.CHAT_ID_ENV, raising=False)
+    calls = []
+    result = deliver_completed_run(
+        root, transport=lambda *_a, **_k: calls.append(1), now=lambda: FIXED_NOW,
+        storage_factory=lambda _path: _Storage(),
+    )
+    assert calls == [] and result["failed_count"] == 1
+    assert result["deliveries"][0]["error"] == "Telegram credentials are missing"
+
+
+def test_transport_failure_is_isolated_and_duplicate_is_refused(tmp_path, monkeypatch):
+    root = _delivery_root(tmp_path)
+    _mock_delivery_gates(monkeypatch, [_candidate()])
+    attempts = []
+
+    def failure(url, **_kwargs):
+        attempts.append(url)
+        raise RuntimeError(f"failed {url}")
+
+    result = deliver_completed_run(
+        root, token="do-not-persist", chat_id="private-chat", transport=failure,
+        now=lambda: FIXED_NOW, storage_factory=lambda _path: _Storage(),
+    )
+    assert len(attempts) == 1
+    assert result["failed_count"] == 1 and result["telegram_sent"] is False
+    assert json.loads((root / "run_state.json").read_text())["state"] == "COMPLETE"
+    persisted = (root / "artifacts" / telegram.DELIVERY_RESULT_NAME).read_text()
+    assert "do-not-persist" not in persisted and "private-chat" not in persisted
+    with pytest.raises(TelegramNotificationError, match="duplicate invocation"):
+        deliver_completed_run(
+            root, token="do-not-persist", chat_id="private-chat", transport=failure,
+            now=lambda: FIXED_NOW, storage_factory=lambda _path: _Storage(),
+        )
+    assert len(attempts) == 1
+
+
+def test_zero_candidates_produces_audit_record_and_zero_sends(tmp_path, monkeypatch):
+    root = _delivery_root(tmp_path)
+    _mock_delivery_gates(monkeypatch, [])
+    calls = []
+    result = deliver_completed_run(
+        root, transport=lambda *_a, **_k: calls.append(1), now=lambda: FIXED_NOW,
+        storage_factory=lambda _path: pytest.fail("zero-candidate run opened Ledger"),
+    )
+    assert calls == []
+    assert result["candidate_count"] == 0
+    assert result["notification_attempted"] is False
+    assert result["telegram_sent"] is False
+
+
+def test_workflow_scopes_telegram_secrets_to_post_archive_full_shadow_only():
+    root = Path(__file__).resolve().parents[2]
+    workflow = (root / ".github/workflows/trinity-shadow-manual.yml").read_text()
+    archive_at = workflow.index("- name: Archive and verify run in R2")
+    telegram_at = workflow.index("- name: Deliver committed post-archive Telegram notifications")
+    diagnostics_at = workflow.index("- name: Preserve local diagnostics", telegram_at)
+    assert archive_at < telegram_at < diagnostics_at
+    assert "continue-on-error: true" in workflow[telegram_at:diagnostics_at]
+    assert "TRINITY_TELEGRAM_BOT_TOKEN" not in workflow[:telegram_at]
+    telegram_step = workflow[telegram_at:diagnostics_at]
+    assert "secrets.TRINITY_TELEGRAM_BOT_TOKEN" in telegram_step
+    assert "secrets.TRINITY_TELEGRAM_CHAT_ID" in telegram_step
+    price_workflow = (root / ".github/workflows/trinity-price-refresh.yml").read_text()
+    assert "TRINITY_TELEGRAM" not in price_workflow
+    shadow_cli = (root / "trinity/shadow/cli.py").read_text()
+    assert '"broker_execution": False' in shadow_cli

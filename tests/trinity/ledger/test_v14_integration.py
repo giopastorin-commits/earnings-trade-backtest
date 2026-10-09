@@ -588,7 +588,7 @@ def test_jnj_v14_end_to_end_vertical_slice(tmp_path, monkeypatch):
         ))
         for expected in (
             "JNJ", "PULLBACK", "UPTREND", "INVESTIGATE", "HIGH", "MEDIUM",
-            "264.022", "256.1417", "281.07", "287.6628", "2.16", "3.00",
+                "264.022", "256.1417", "281.07", "287.6628", "2.1634", "3",
             "UPTREND_CONFIRMED", "SMA_SUPPORT_NEARBY",
             "RECONSTRUCTED_NOT_ARCHIVED", "LEGACY_NON_LEDGER_ARTIFACT",
         ):

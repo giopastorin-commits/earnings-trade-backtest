@@ -150,6 +150,14 @@ jobs:
         if: always()
         run: python -m trinity.shadow.cli archive
 
+      - name: Deliver committed post-archive Telegram notifications
+        if: success()
+        continue-on-error: true
+        env:
+          TRINITY_TELEGRAM_BOT_TOKEN: ${{ secrets.TRINITY_TELEGRAM_BOT_TOKEN }}
+          TRINITY_TELEGRAM_CHAT_ID: ${{ secrets.TRINITY_TELEGRAM_CHAT_ID }}
+        run: python -m trinity.notifications.telegram --shadow-root "$TRINITY_RUN_ROOT"
+
       - name: Preserve local diagnostics
         if: always()
         # actions/upload-artifact v4.6.2
