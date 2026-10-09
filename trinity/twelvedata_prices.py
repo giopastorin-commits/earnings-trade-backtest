@@ -18,6 +18,7 @@ from trinity.usa_issuer_registry import DEFAULT_REGISTRY, load_registry
 
 
 TWELVE_DATA_TIME_SERIES = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_API_USAGE = "https://api.twelvedata.com/api_usage"
 SNAPSHOT_SCHEMA = "trinity.twelvedata-price-snapshot"
 SNAPSHOT_VERSION = "1"
 PRICE_PROVIDER = "TWELVE_DATA"
@@ -27,6 +28,8 @@ HISTORY_CALENDAR_DAYS = 450
 RATE_CREDITS = 7
 RATE_WINDOW_SECONDS = 61.0
 MAX_ATTEMPTS = 3
+DAILY_CREDIT_RESERVE = 32
+MINIMUM_DAILY_CREDITS = 550
 RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 ALLOWED_READY_STATES = frozenset({
     "ACTIVE_COMPLETE", "CORPORATE_ACTION_NO_LONGER_TRADING",
@@ -49,6 +52,38 @@ class ProviderRequestError(PriceSnapshotError):
         self.raw = raw
 
 
+class CreditGuardError(PriceSnapshotError):
+    """A provider-credit condition makes a complete snapshot impossible."""
+
+    def __init__(
+        self, classification: str, message: str, *, required: int,
+        available: int, shortfall: int,
+    ) -> None:
+        super().__init__(
+            f"{classification}: {message}; required={required} "
+            f"available={available} shortfall={shortfall}"
+        )
+        self.classification = classification
+        self.required = required
+        self.available = available
+        self.shortfall = shortfall
+
+    def evidence(self) -> dict[str, Any]:
+        return {
+            "classification": self.classification,
+            "required": self.required,
+            "available": self.available,
+            "shortfall": self.shortfall,
+            "message": str(self),
+        }
+
+
+class DailyQuotaExhausted(ProviderRequestError):
+    """Twelve Data explicitly reported exhaustion of the daily quota."""
+
+    classification = "DAILY_QUOTA_EXHAUSTED"
+
+
 def utc_timestamp(value: datetime) -> str:
     if value.tzinfo is None:
         raise ValueError("timestamp must be timezone-aware")
@@ -68,6 +103,57 @@ def canonical_sha256(value: object) -> str:
 def exclusive_end_date(target_session: date) -> date:
     """Twelve Data's date-only end boundary is exclusive."""
     return target_session + timedelta(days=1)
+
+
+def required_daily_credits(ticker_count: int) -> int:
+    """Return ticker credits plus reserve, never below the production floor."""
+    if ticker_count < 0:
+        raise ValueError("ticker count must not be negative")
+    return max(MINIMUM_DAILY_CREDITS, ticker_count + DAILY_CREDIT_RESERVE)
+
+
+def _integer(value: object, field: str) -> int:
+    if isinstance(value, bool):
+        raise PriceSnapshotError(f"Twelve Data /api_usage has invalid {field}")
+    try:
+        result = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise PriceSnapshotError(f"Twelve Data /api_usage has invalid {field}") from exc
+    if result < 0:
+        raise PriceSnapshotError(f"Twelve Data /api_usage has invalid {field}")
+    return result
+
+
+def _credit_headers(headers: Mapping[str, Any] | None) -> dict[str, int]:
+    if not headers:
+        return {}
+    lowered = {str(key).lower(): value for key, value in headers.items()}
+    result: dict[str, int] = {}
+    for source, target in (
+        ("api-credits-used", "api_credits_used"),
+        ("api-credits-left", "api_credits_left"),
+        ("api-credits-request", "api_credits_request"),
+    ):
+        value = lowered.get(source)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            result[target] = parsed
+    return result
+
+
+def _is_daily_quota_payload(provider_code: object, provider_message: str | None) -> bool:
+    """Match Twelve Data's observed daily-quota body, not HTTP 429 alone."""
+    if str(provider_code) != "429" or not provider_message:
+        return False
+    normalized = " ".join(provider_message.lower().split())
+    return (
+        "api credits for the day" in normalized
+        and "current limit" in normalized
+        and ("wait for the next day" in normalized or "daily" in normalized)
+    )
 
 
 class RollingWindowThrottle:
@@ -101,6 +187,16 @@ class RollingWindowThrottle:
 class ProviderCapture:
     raw: bytes
     attempts: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class ApiUsageCapture:
+    usage: dict[str, Any]
+    daily_usage: int
+    plan_daily_limit: int
+    daily_remaining: int
+    retrieved_at_utc: str
+    response_headers: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -139,10 +235,107 @@ class TwelveDataClient:
         self.sleep = sleep
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
+        self.credit_events: list[dict[str, Any]] = []
+        self._daily_remaining: int | None = None
+        self._plan_daily_limit: int | None = None
         if self.max_attempts <= 0:
             raise ValueError("max_attempts must be positive")
 
-    def fetch(self, symbol: str, *, start_date: date, target_session: date) -> ProviderCapture:
+    @property
+    def daily_remaining(self) -> int | None:
+        return self._daily_remaining
+
+    def fetch_api_usage(self) -> ApiUsageCapture:
+        retrieved_at = self.now()
+        try:
+            response = self.session.get(
+                TWELVE_DATA_API_USAGE,
+                params={"apikey": self.api_key},
+                timeout=self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise PriceSnapshotError(
+                f"Twelve Data /api_usage request failed ({type(exc).__name__})"
+            ) from exc
+        raw = bytes(response.content)
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PriceSnapshotError("Twelve Data /api_usage response is not JSON") from exc
+        if not isinstance(payload, dict):
+            raise PriceSnapshotError("Twelve Data /api_usage response is not an object")
+        if int(response.status_code) < 200 or int(response.status_code) >= 300 \
+                or payload.get("status") == "error":
+            message = str(payload.get("message") or f"HTTP {response.status_code}").replace(
+                self.api_key, "[REDACTED]",
+            )
+            raise PriceSnapshotError(f"Twelve Data /api_usage failed: {message[:500]}")
+        daily_usage = _integer(payload.get("daily_usage"), "daily_usage")
+        plan_daily_limit = _integer(payload.get("plan_daily_limit"), "plan_daily_limit")
+        actual_fields = (
+            "timestamp", "current_usage", "plan_limit", "plan_category",
+            "daily_usage", "plan_daily_limit",
+        )
+        sanitized = {key: payload[key] for key in actual_fields if key in payload}
+        headers = _credit_headers(getattr(response, "headers", None))
+        event = {
+            "endpoint": "/api_usage",
+            "retrieved_at_utc": utc_timestamp(retrieved_at),
+            "http_status": int(response.status_code),
+            **headers,
+        }
+        self.credit_events.append(event)
+        capture = ApiUsageCapture(
+            usage=sanitized,
+            daily_usage=daily_usage,
+            plan_daily_limit=plan_daily_limit,
+            daily_remaining=max(0, plan_daily_limit - daily_usage),
+            retrieved_at_utc=utc_timestamp(retrieved_at),
+            response_headers=headers,
+        )
+        self._daily_remaining = capture.daily_remaining
+        self._plan_daily_limit = capture.plan_daily_limit
+        return capture
+
+    def _consume_daily_credit(self, remaining_tickers: int | None) -> None:
+        if self._daily_remaining is None or remaining_tickers is None:
+            return
+        required = remaining_tickers + DAILY_CREDIT_RESERVE
+        if self._daily_remaining < required:
+            raise CreditGuardError(
+                "INSUFFICIENT_DAILY_CREDITS",
+                "insufficient Twelve Data daily credits to complete canonical acquisition",
+                required=required,
+                available=self._daily_remaining,
+                shortfall=required - self._daily_remaining,
+            )
+        self._daily_remaining -= 1
+
+    def _record_credit_event(
+        self, *, endpoint: str, symbol: str | None, requested_at: datetime,
+        status: int | None, headers: Mapping[str, Any] | None,
+    ) -> dict[str, int]:
+        credit_headers = _credit_headers(headers)
+        event: dict[str, Any] = {
+            "endpoint": endpoint,
+            "retrieved_at_utc": utc_timestamp(requested_at),
+            "http_status": status,
+        }
+        if symbol is not None:
+            event["symbol"] = symbol
+        event.update(credit_headers)
+        self.credit_events.append(event)
+        used = credit_headers.get("api_credits_used")
+        left = credit_headers.get("api_credits_left")
+        if self._plan_daily_limit is not None and used is not None and left is not None \
+                and used + left == self._plan_daily_limit:
+            self._daily_remaining = left
+        return credit_headers
+
+    def fetch(
+        self, symbol: str, *, start_date: date, target_session: date,
+        remaining_tickers: int | None = None,
+    ) -> ProviderCapture:
         params = {
             "symbol": symbol,
             "interval": INTERVAL,
@@ -156,6 +349,7 @@ class TwelveDataClient:
         last_raw: bytes | None = None
         retryable_exceptions = (requests.Timeout, requests.ConnectionError)
         for ordinal in range(1, self.max_attempts + 1):
+            self._consume_daily_credit(remaining_tickers)
             self.throttle.acquire()
             requested_at = self.now()
             started = self.monotonic()
@@ -168,6 +362,10 @@ class TwelveDataClient:
                 )
                 status = int(response.status_code)
                 last_raw = bytes(response.content)
+                credit_headers = self._record_credit_event(
+                    endpoint="/time_series", symbol=symbol, requested_at=requested_at,
+                    status=status, headers=getattr(response, "headers", None),
+                )
                 try:
                     envelope = json.loads(last_raw)
                 except (UnicodeDecodeError, json.JSONDecodeError):
@@ -184,7 +382,14 @@ class TwelveDataClient:
                     "elapsed_seconds": round(self.monotonic() - started, 6),
                     "provider_code": provider_code,
                     "provider_message": provider_message,
+                    **credit_headers,
                 })
+                if _is_daily_quota_payload(provider_code, provider_message):
+                    self._daily_remaining = 0
+                    raise DailyQuotaExhausted(
+                        f"DAILY_QUOTA_EXHAUSTED: {symbol}: Twelve Data daily quota exhausted",
+                        attempts=attempts, raw=last_raw,
+                    )
                 retryable_provider = str(provider_code) in {
                     str(item) for item in RETRYABLE_HTTP_STATUSES
                 }
@@ -208,6 +413,10 @@ class TwelveDataClient:
                     )
                 return ProviderCapture(last_raw, tuple(attempts))
             except retryable_exceptions as exc:
+                self._record_credit_event(
+                    endpoint="/time_series", symbol=symbol, requested_at=requested_at,
+                    status=status, headers=None,
+                )
                 attempts.append({
                     "attempt": ordinal,
                     "requested_at_utc": utc_timestamp(requested_at),
@@ -343,6 +552,40 @@ def _atomic_write(path: Path, payload: bytes) -> None:
     temporary.replace(path)
 
 
+def _credit_evidence(
+    usage: ApiUsageCapture, provider: TwelveDataClient, *, required: int,
+) -> dict[str, Any]:
+    available = provider.daily_remaining
+    return {
+        "schema_name": "trinity.twelvedata-credit-telemetry",
+        "schema_version": "1",
+        "provider": PRICE_PROVIDER,
+        "retrieved_at_utc": usage.retrieved_at_utc,
+        "provider_response": usage.usage,
+        "response_headers": usage.response_headers,
+        "guard": {
+            "minimum_required_remaining": required,
+            "safety_reserve": DAILY_CREDIT_RESERVE,
+            "available_daily_credits": available,
+            "shortfall": max(0, required - available) if available is not None else None,
+        },
+        "events": list(provider.credit_events),
+    }
+
+
+def _persist_credit_evidence(
+    root: Path, usage: ApiUsageCapture, provider: TwelveDataClient, *, required: int,
+) -> None:
+    _atomic_write(
+        root / "provider_credit_telemetry.json",
+        canonical_bytes(_credit_evidence(usage, provider, required=required)),
+    )
+
+
+def _persist_acquisition_failure(root: Path, evidence: Mapping[str, Any]) -> None:
+    _atomic_write(root / "acquisition_failure.json", canonical_bytes(dict(evidence)))
+
+
 def acquire_snapshot(
     *, target_session: date, output_root: str | Path, run_id: str,
     client: TwelveDataClient | None = None,
@@ -358,10 +601,23 @@ def acquire_snapshot(
     registry = load_registry(registry_path)
     records = registry.supported
     provider = client or TwelveDataClient()
+    usage = provider.fetch_api_usage()
+    minimum_required = required_daily_credits(len(records))
+    _persist_credit_evidence(root, usage, provider, required=minimum_required)
+    if usage.daily_remaining < minimum_required:
+        failure = CreditGuardError(
+            "INSUFFICIENT_DAILY_CREDITS",
+            "insufficient Twelve Data daily credits to start canonical acquisition",
+            required=minimum_required,
+            available=usage.daily_remaining,
+            shortfall=minimum_required - usage.daily_remaining,
+        )
+        _persist_acquisition_failure(root, failure.evidence())
+        raise failure
     acquired_at = now()
     history_start = target_session - timedelta(days=HISTORY_CALENDAR_DAYS)
     entries: list[dict[str, Any]] = []
-    for issuer in records:
+    for index, issuer in enumerate(records):
         ticker = issuer.ticker
         attempts: Sequence[Mapping[str, Any]] = ()
         raw: bytes | None = None
@@ -370,9 +626,23 @@ def acquire_snapshot(
         try:
             capture = provider.fetch(
                 ticker, start_date=history_start, target_session=target_session,
+                remaining_tickers=len(records) - index,
             )
             raw, attempts = capture.raw, capture.attempts
             normalized = normalize_response(ticker, raw, target_session=target_session)
+        except DailyQuotaExhausted as exc:
+            _persist_credit_evidence(root, usage, provider, required=minimum_required)
+            _persist_acquisition_failure(root, {
+                "classification": exc.classification,
+                "ticker": ticker,
+                "message": str(exc),
+                "attempts": [dict(item) for item in exc.attempts],
+            })
+            raise
+        except CreditGuardError as exc:
+            _persist_credit_evidence(root, usage, provider, required=minimum_required)
+            _persist_acquisition_failure(root, {**exc.evidence(), "ticker": ticker})
+            raise
         except ProviderRequestError as exc:
             raw, attempts, error = exc.raw, exc.attempts, str(exc)
         except (PriceSnapshotError, TypeError, ValueError) as exc:
@@ -403,6 +673,7 @@ def acquire_snapshot(
             "retry_count": max(0, len(attempts) - 1),
             "error": error or normalized.error,
         })
+        _persist_credit_evidence(root, usage, provider, required=minimum_required)
     completed_at = now()
     counts = {
         state: sum(item["classification"] == state for item in entries)
@@ -415,6 +686,8 @@ def acquire_snapshot(
     ready = len(entries) == len(records) and all(
         item["classification"] in ALLOWED_READY_STATES for item in entries
     )
+    telemetry_path = root / "provider_credit_telemetry.json"
+    telemetry_sha256 = hashlib.sha256(telemetry_path.read_bytes()).hexdigest()
     manifest: dict[str, Any] = {
         "schema_name": SNAPSHOT_SCHEMA,
         "schema_version": SNAPSHOT_VERSION,
@@ -445,6 +718,12 @@ def acquire_snapshot(
             "maximum_credits": RATE_CREDITS,
             "rolling_window_seconds": RATE_WINDOW_SECONDS,
         },
+        "credit_guard": {
+            "minimum_required_remaining": minimum_required,
+            "safety_reserve": DAILY_CREDIT_RESERVE,
+            "telemetry_file": "provider_credit_telemetry.json",
+            "telemetry_sha256": telemetry_sha256,
+        },
         "tickers": entries,
     }
     manifest["snapshot_sha256"] = snapshot_hash(manifest)
@@ -466,6 +745,17 @@ def verify_snapshot(
     if manifest.get("provider") != PRICE_PROVIDER or manifest.get("interval") != INTERVAL \
             or manifest.get("adjust") != ADJUSTMENT:
         raise PriceSnapshotError("price snapshot provider contract mismatch")
+    credit_guard = manifest.get("credit_guard")
+    if isinstance(credit_guard, dict):
+        telemetry_name = credit_guard.get("telemetry_file")
+        if telemetry_name != "provider_credit_telemetry.json":
+            raise PriceSnapshotError("price snapshot credit telemetry path mismatch")
+        try:
+            telemetry_raw = (base / telemetry_name).read_bytes()
+        except OSError as exc:
+            raise PriceSnapshotError("missing price snapshot credit telemetry") from exc
+        if hashlib.sha256(telemetry_raw).hexdigest() != credit_guard.get("telemetry_sha256"):
+            raise PriceSnapshotError("price snapshot credit telemetry hash mismatch")
     expected_hash = manifest.get("snapshot_sha256")
     if not isinstance(expected_hash, str) or snapshot_hash(manifest) != expected_hash:
         raise PriceSnapshotError("price snapshot manifest hash mismatch")

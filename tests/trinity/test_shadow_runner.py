@@ -152,6 +152,12 @@ def test_price_snapshot_archive_uses_immutable_session_and_run_namespace(tmp_pat
     (tmp_path / "raw").mkdir()
     (tmp_path / "normalized" / "AAPL.json").write_bytes(normalized)
     (tmp_path / "raw" / "AAPL.json").write_bytes(raw)
+    telemetry = canonical_bytes({
+        "provider": "TWELVE_DATA", "provider_response": {
+            "daily_usage": 1, "plan_daily_limit": 800,
+        }, "events": [],
+    })
+    (tmp_path / "provider_credit_telemetry.json").write_bytes(telemetry)
     entry = {
         "canonical_ticker": "AAPL", "provider_symbol": "AAPL",
         "classification": "ACTIVE_COMPLETE", "first_date": "2026-10-07",
@@ -175,6 +181,11 @@ def test_price_snapshot_archive_uses_immutable_session_and_run_namespace(tmp_pat
             "ACTIVE_COMPLETE", "CORPORATE_ACTION_NO_LONGER_TRADING",
         ], "blocking_tickers": []},
         "throttle": {"maximum_credits": 7, "rolling_window_seconds": 61.0},
+        "credit_guard": {
+            "minimum_required_remaining": 550, "safety_reserve": 32,
+            "telemetry_file": "provider_credit_telemetry.json",
+            "telemetry_sha256": hashlib.sha256(telemetry).hexdigest(),
+        },
         "tickers": [entry],
     }
     manifest["snapshot_sha256"] = snapshot_hash(manifest)
@@ -186,6 +197,7 @@ def test_price_snapshot_archive_uses_immutable_session_and_run_namespace(tmp_pat
     assert result["prefix"] == "prices/twelvedata/session=2026-10-07/run_id=123-A1/"
     assert result["snapshot_sha256"] == manifest["snapshot_sha256"]
     assert all(key.startswith(result["prefix"]) for key in client.uploaded)
+    assert result["prefix"] + "provider_credit_telemetry.json" in client.uploaded
 
 
 class _Body:

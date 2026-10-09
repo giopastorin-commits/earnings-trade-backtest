@@ -9,7 +9,11 @@ import requests
 
 from trinity.twelvedata_prices import (
     ADJUSTMENT,
+    DAILY_CREDIT_RESERVE,
     INTERVAL,
+    ApiUsageCapture,
+    CreditGuardError,
+    DailyQuotaExhausted,
     PriceSnapshotError,
     ProviderCapture,
     ProviderRequestError,
@@ -20,6 +24,7 @@ from trinity.twelvedata_prices import (
     canonical_bytes,
     exclusive_end_date,
     normalize_response,
+    required_daily_credits,
     snapshot_hash,
     verify_snapshot,
 )
@@ -43,9 +48,10 @@ def _payload(symbol="AAPL", values=None):
 
 
 class _Response:
-    def __init__(self, content, status=200):
+    def __init__(self, content, status=200, headers=None):
         self.content = content
         self.status_code = status
+        self.headers = headers or {}
 
 
 class _Session:
@@ -75,6 +81,33 @@ def _client(outcomes, *, sleep=lambda _seconds: None):
         monotonic=lambda: next(clock), sleep=sleep,
     )
     return client, session
+
+
+def _usage(*, daily_usage=100, daily_limit=800):
+    return json.dumps({
+        "timestamp": "2026-10-09 00:01:00",
+        "current_usage": 1,
+        "plan_limit": 8,
+        "plan_category": "Basic",
+        "daily_usage": daily_usage,
+        "plan_daily_limit": daily_limit,
+    }).encode()
+
+
+def _registry(path: Path, tickers=("AAPL",)):
+    path.write_text(json.dumps({
+        "schema_name": "trinity.usa-issuer-registry", "schema_version": "1",
+        "canonical_ticker_count": len(tickers),
+        "issuers": [{
+            "ticker": ticker, "provider_symbol": f"{ticker}.US",
+            "company_name": ticker, "sec_cik": f"{index:010d}",
+            "sec_ticker": ticker, "sec_issuer_name": ticker,
+            "sec_sic": 3571, "sec_sic_description": "Electronic Computers",
+            "schema_type": "TECHNOLOGY", "aliases": [ticker], "supported": True,
+            "unsupported_reason": None, "provenance": {"test": "fixture"},
+        } for index, ticker in enumerate(tickers, start=1)],
+    }), encoding="utf-8")
+    return path
 
 
 def test_response_normalization_is_ascending_raw_ohlcv_only():
@@ -113,6 +146,65 @@ def test_rolling_throttle_never_starts_eighth_credit_inside_61_seconds():
     assert starts[7] >= 61.0
 
 
+def test_daily_credit_threshold_is_518_plus_conservative_reserve():
+    assert DAILY_CREDIT_RESERVE == 32
+    assert required_daily_credits(518) == 550
+    assert required_daily_credits(1) == 550
+
+
+def test_api_usage_actual_schema_with_sufficient_credits_allows_acquisition(tmp_path):
+    client, session = _client([
+        _Response(_usage(daily_usage=200), headers={
+            "api-credits-used": "1", "api-credits-left": "7",
+        }),
+        _Response(_payload()),
+    ])
+    manifest = acquire_snapshot(
+        target_session=TARGET, output_root=tmp_path / "snapshot", run_id="usage-ok",
+        client=client, registry_path=_registry(tmp_path / "registry.json"),
+        now=lambda: datetime(2026, 10, 9, tzinfo=timezone.utc),
+    )
+    assert len(session.calls) == 2
+    assert manifest["coverage_gate"]["ready"] is True
+    evidence = json.loads(
+        (tmp_path / "snapshot" / "provider_credit_telemetry.json").read_text()
+    )
+    assert evidence["provider_response"] == {
+        "timestamp": "2026-10-09 00:01:00", "current_usage": 1,
+        "plan_limit": 8, "plan_category": "Basic", "daily_usage": 200,
+        "plan_daily_limit": 800,
+    }
+    assert evidence["response_headers"]["api_credits_left"] == 7
+
+
+def test_insufficient_api_usage_fails_before_any_ticker_request(tmp_path):
+    client, session = _client([_Response(_usage(daily_usage=251))])
+    root = tmp_path / "snapshot"
+    with pytest.raises(CreditGuardError, match="INSUFFICIENT_DAILY_CREDITS") as error:
+        acquire_snapshot(
+            target_session=TARGET, output_root=root, run_id="usage-low",
+            client=client, registry_path=_registry(tmp_path / "registry.json"),
+        )
+    assert len(session.calls) == 1
+    assert (error.value.required, error.value.available, error.value.shortfall) == (550, 549, 1)
+    failure = json.loads((root / "acquisition_failure.json").read_text())
+    assert failure["classification"] == "INSUFFICIENT_DAILY_CREDITS"
+
+
+def test_continuous_guard_stops_retry_when_headroom_would_be_consumed():
+    client, session = _client([
+        _Response(_usage(daily_usage=767)), requests.ReadTimeout(), _Response(_payload()),
+    ])
+    usage = client.fetch_api_usage()
+    assert usage.daily_remaining == 33
+    with pytest.raises(CreditGuardError, match="INSUFFICIENT_DAILY_CREDITS"):
+        client.fetch(
+            "AAPL", start_date=date(2025, 7, 14), target_session=TARGET,
+            remaining_tickers=1,
+        )
+    assert len(session.calls) == 2  # /api_usage plus one ticker attempt; no retry
+
+
 def test_transient_failures_retry_and_record_every_attempt():
     sleeps = []
     client, session = _client([
@@ -124,6 +216,44 @@ def test_transient_failures_retry_and_record_every_attempt():
     assert [item.get("exception") for item in capture.attempts] == ["ReadTimeout", None, None]
     assert capture.attempts[1]["provider_code"] == 429
     assert sleeps == [1.0, 2.0]
+
+
+def test_daily_quota_429_uses_archived_payload_semantics_and_is_not_retried():
+    archived = (
+        Path(__file__).parents[1] / "fixtures" / "twelvedata_daily_quota_429.fixture"
+    ).read_bytes()
+    client, session = _client([_Response(archived, 429), _Response(_payload())])
+    with pytest.raises(DailyQuotaExhausted, match="DAILY_QUOTA_EXHAUSTED") as error:
+        client.fetch("AAPL", start_date=date(2025, 7, 14), target_session=TARGET)
+    assert len(session.calls) == len(error.value.attempts) == 1
+
+
+def test_minute_rate_429_without_daily_semantics_remains_bounded_retry():
+    minute_limit = b'{"status":"error","code":429,"message":"minute rate limit exceeded; retry shortly"}'
+    client, session = _client([_Response(minute_limit, 429), _Response(_payload())])
+    capture = client.fetch("AAPL", start_date=date(2025, 7, 14), target_session=TARGET)
+    assert len(session.calls) == len(capture.attempts) == 2
+
+
+def test_daily_exhaustion_aborts_broader_acquisition_and_persists_sanitized_evidence(tmp_path):
+    archived = (
+        Path(__file__).parents[1] / "fixtures" / "twelvedata_daily_quota_429.fixture"
+    ).read_bytes()
+    client, session = _client([
+        _Response(_usage(daily_usage=100)), _Response(archived, 429), _Response(_payload("MSFT")),
+    ])
+    root = tmp_path / "snapshot"
+    with pytest.raises(DailyQuotaExhausted):
+        acquire_snapshot(
+            target_session=TARGET, output_root=root, run_id="daily-stop",
+            client=client,
+            registry_path=_registry(tmp_path / "registry.json", ("AAPL", "MSFT")),
+        )
+    assert len(session.calls) == 2  # /api_usage and AAPL only
+    failure = json.loads((root / "acquisition_failure.json").read_text())
+    assert failure["classification"] == "DAILY_QUOTA_EXHAUSTED"
+    persisted = b"".join(path.read_bytes() for path in root.rglob("*") if path.is_file())
+    assert b"unit-secret" not in persisted
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
@@ -259,6 +389,18 @@ def test_snapshot_preserves_raw_response_separately_from_normalized_ohlcv(tmp_pa
 
     class Client:
         api_key = "unit-secret"
+        credit_events = []
+        daily_remaining = 800
+        def fetch_api_usage(self):
+            return ApiUsageCapture(
+                usage={
+                    "timestamp": "2026-10-08 00:00:00", "current_usage": 1,
+                    "plan_limit": 8, "plan_category": "Basic", "daily_usage": 0,
+                    "plan_daily_limit": 800,
+                },
+                daily_usage=0, plan_daily_limit=800, daily_remaining=800,
+                retrieved_at_utc="2026-10-08T00:00:00.000000Z", response_headers={},
+            )
         def fetch(self, symbol, **_kwargs):
             assert symbol == "AAPL"
             return ProviderCapture(raw, ({"attempt": 1, "http_status": 200},))
@@ -277,3 +419,42 @@ def test_snapshot_preserves_raw_response_separately_from_normalized_ohlcv(tmp_pa
     assert b"unit-secret" not in b"".join(
         path.read_bytes() for path in root.rglob("*") if path.is_file()
     )
+
+
+def test_mocked_518_credit_successful_path_remains_ready(tmp_path):
+    class FullClient:
+        api_key = "unit-secret"
+        credit_events = []
+        daily_remaining = 799
+
+        def fetch_api_usage(self):
+            return ApiUsageCapture(
+                usage={
+                    "timestamp": "2026-10-09 00:00:00", "current_usage": 1,
+                    "plan_limit": 8, "plan_category": "Basic", "daily_usage": 1,
+                    "plan_daily_limit": 800,
+                },
+                daily_usage=1, plan_daily_limit=800, daily_remaining=799,
+                retrieved_at_utc="2026-10-09T00:00:00.000000Z", response_headers={},
+            )
+
+        def fetch(self, symbol, **_kwargs):
+            self.daily_remaining -= 1
+            if symbol == "WBD":
+                stale = {
+                    "datetime": "2026-10-06", "open": "30.95", "high": "30.95",
+                    "low": "30.95", "close": "30.95", "volume": "0",
+                }
+                raw = _payload("WBD", [stale, _row("2026-10-05", value=30.0)])
+            else:
+                raw = _payload(symbol)
+            return ProviderCapture(raw, ({"attempt": 1, "http_status": 200},))
+
+    manifest = acquire_snapshot(
+        target_session=TARGET, output_root=tmp_path / "full", run_id="full-mock",
+        client=FullClient(), now=lambda: datetime(2026, 10, 9, tzinfo=timezone.utc),
+    )
+    assert manifest["canonical_ticker_count"] == 518
+    assert manifest["active_complete_count"] == 517
+    assert manifest["explicit_exception_count"] == 1
+    assert manifest["coverage_gate"]["ready"] is True

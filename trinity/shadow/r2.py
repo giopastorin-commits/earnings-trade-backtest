@@ -159,6 +159,8 @@ def archive_price_snapshot(
     prefix = price_snapshot_prefix(str(manifest["target_market_session"]), run_id)
     objects: list[tuple[str, Path, str]] = []
     authoritative = [root / "snapshot_manifest.json"]
+    if isinstance(manifest.get("credit_guard"), dict):
+        authoritative.append(root / "provider_credit_telemetry.json")
     authoritative.extend(sorted((root / "raw").glob("*.json")))
     authoritative.extend(sorted((root / "normalized").glob("*.json")))
     for path in authoritative:
@@ -240,6 +242,13 @@ def restore_price_snapshot(
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=True)
     (root / "snapshot_manifest.json").write_bytes(manifest_raw)
+    if isinstance(manifest.get("credit_guard"), dict):
+        telemetry = client.get_object(
+            Bucket=bucket, Key=normalized + "provider_credit_telemetry.json",
+        )["Body"].read()
+        if hashlib.sha256(telemetry).hexdigest() != manifest["credit_guard"].get("telemetry_sha256"):
+            raise R2Error("remote price credit telemetry hash mismatch")
+        (root / "provider_credit_telemetry.json").write_bytes(telemetry)
     entries = manifest.get("tickers")
     if not isinstance(entries, list):
         raise R2Error("remote price snapshot manifest lacks tickers")

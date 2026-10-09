@@ -1,0 +1,5 @@
+{
+  "code": 429,
+  "message": "You have run out of API credits for the day. 803 API credits were used, with the current limit being 800. Wait for the next day or consider switching to a paid plan that will remove daily limits at https://twelvedata.com/pricing",
+  "status": "error"
+}
