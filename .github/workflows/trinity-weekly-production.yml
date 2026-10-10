@@ -1,0 +1,283 @@
+name: TRINITY Weekly Production
+
+on:
+  schedule:
+    - cron: "0 10 * * 1"
+    - cron: "0 11 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: VALIDATION never claims an official prospective cycle
+        required: true
+        default: VALIDATION
+        type: choice
+        options:
+          - VALIDATION
+          - OFFICIAL
+      intended_monday:
+        description: Europe/Rome Monday (YYYY-MM-DD); blank uses the current Rome week
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trinity-weekly-production-v1
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TRINITY_ANALYTICAL_REF: trinity-twelvedata-prices-v1
+  TRINITY_ORCHESTRATOR_METHOD: TRINITY_WEEKLY_ORCHESTRATOR_V1
+
+jobs:
+  schedule-gate:
+    name: Resolve Rome schedule and completed XNYS session
+    runs-on: ubuntu-24.04
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      mode: ${{ steps.gate.outputs.mode }}
+      intended_monday: ${{ steps.gate.outputs.intended_monday }}
+      expected_schedule: ${{ steps.gate.outputs.expected_schedule }}
+      target_market_session: ${{ steps.gate.outputs.target_market_session }}
+      target_session_open_utc: ${{ steps.gate.outputs.target_session_open_utc }}
+      target_session_close_utc: ${{ steps.gate.outputs.target_session_close_utc }}
+      session_calendar: ${{ steps.gate.outputs.session_calendar }}
+      session_calendar_version: ${{ steps.gate.outputs.session_calendar_version }}
+    steps:
+      - name: Check out validated analytical branch for schedule contract
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.TRINITY_ANALYTICAL_REF }}
+
+      - name: Set up exact Python 3.13.15
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.13.15"
+
+      - name: Install XNYS calendar dependency
+        run: python -m pip install --disable-pip-version-check exchange-calendars==4.13.2
+
+      - name: Select the sole valid Rome-noon invocation
+        id: gate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          MANUAL_MONDAY: ${{ inputs.intended_monday }}
+        run: |
+          args=(--event-name "$EVENT_NAME" --run-started-at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')")
+          [[ -n "$EVENT_SCHEDULE" ]] && args+=(--event-schedule "$EVENT_SCHEDULE")
+          [[ -n "$REQUESTED_MODE" ]] && args+=(--mode "$REQUESTED_MODE")
+          [[ -n "$MANUAL_MONDAY" ]] && args+=(--manual-monday "$MANUAL_MONDAY")
+          python -m trinity.shadow.weekly_schedule "${args[@]}"
+
+      - name: Record skipped DST twin
+        if: steps.gate.outputs.should_run != 'true'
+        run: >-
+          echo "No production: ${{ github.event.schedule }} is not Europe/Rome noon for
+          ${{ steps.gate.outputs.intended_monday }}."
+
+  cycle-guard:
+    name: Enforce durable OFFICIAL cycle idempotency
+    needs: schedule-gate
+    if: needs.schedule-gate.outputs.should_run == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      eligible: ${{ steps.guard.outputs.eligible }}
+      completion_marker_key: ${{ steps.guard.outputs.completion_marker_key }}
+    env:
+      TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
+      TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
+      TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
+      TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.TRINITY_ANALYTICAL_REF }}
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.13.15"
+          cache: pip
+          cache-dependency-path: requirements-shadow.txt
+      - run: python -m pip install --disable-pip-version-check -r requirements-shadow.txt
+      - name: Check immutable R2 completion marker
+        id: guard
+        run: >-
+          python -m trinity.shadow.weekly_cycle check
+          --mode "${{ needs.schedule-gate.outputs.mode }}"
+          --intended-monday "${{ needs.schedule-gate.outputs.intended_monday }}"
+          --target-session "${{ needs.schedule-gate.outputs.target_market_session }}"
+      - name: Record completed OFFICIAL duplicate
+        if: steps.guard.outputs.eligible != 'true'
+        run: echo "OFFICIAL weekly identity already completed; no production services will run."
+
+  price-snapshot:
+    name: Acquire and archive this run's immutable price snapshot
+    needs: [schedule-gate, cycle-guard]
+    if: needs.cycle-guard.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 140
+    outputs:
+      target_market_session: ${{ steps.snapshot.outputs.target_market_session }}
+      price_snapshot_id: ${{ steps.snapshot.outputs.price_snapshot_id }}
+      price_snapshot_sha256: ${{ steps.snapshot.outputs.price_snapshot_sha256 }}
+      price_snapshot_r2_prefix: ${{ steps.snapshot.outputs.price_snapshot_r2_prefix }}
+      analytical_commit: ${{ steps.commit.outputs.analytical_commit }}
+    env:
+      TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+      TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
+      TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
+      TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
+      TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.TRINITY_ANALYTICAL_REF }}
+      - name: Record actual analytical checkout
+        id: commit
+        shell: bash
+        run: echo "analytical_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.13.15"
+          cache: pip
+          cache-dependency-path: requirements-shadow.txt
+      - run: python -m pip install --disable-pip-version-check -r requirements-shadow.txt
+      - name: Initialize runner-local price path
+        run: echo "PRICE_ACQUISITION_ROOT=$RUNNER_TEMP/trinity-price-acquisition" >> "$GITHUB_ENV"
+      - name: Validate canonical registry
+        run: >-
+          python -c "from trinity.usa_issuer_registry import REGISTRY;
+          assert len(REGISTRY.records) == 518 and len(REGISTRY.supported) == 518 and not REGISTRY.unsupported"
+      - name: Acquire and hard-gate Twelve Data OHLCV
+        run: >-
+          python -m trinity.shadow.price_refresh acquire
+          --target-session "${{ needs.schedule-gate.outputs.target_market_session }}"
+          --output-root "$PRICE_ACQUISITION_ROOT"
+          --run-id "$GITHUB_RUN_ID-A$GITHUB_RUN_ATTEMPT"
+      - name: Archive immutable price snapshot and verify R2
+        run: >-
+          python -m trinity.shadow.price_refresh archive
+          --output-root "$PRICE_ACQUISITION_ROOT"
+          --run-id "$GITHUB_RUN_ID-A$GITHUB_RUN_ATTEMPT"
+      - name: Expose verified structured same-run identity
+        id: snapshot
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from trinity.shadow.weekly_cycle import validate_snapshot_handoff
+          root = Path(os.environ["PRICE_ACQUISITION_ROOT"])
+          archive = json.loads((root / "r2_archive_result.json").read_text(encoding="utf-8"))
+          manifest = json.loads((root / "snapshot_manifest.json").read_text(encoding="utf-8"))
+          if archive["snapshot_sha256"] != manifest["snapshot_sha256"]:
+              raise SystemExit("archived snapshot SHA differs from manifest")
+          values = validate_snapshot_handoff(
+              target_session=manifest["target_market_session"], snapshot_id=archive["snapshot_id"],
+              snapshot_sha256=archive["snapshot_sha256"], prefix=archive["prefix"],
+              github_run_id=os.environ["GITHUB_RUN_ID"], github_run_attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+          )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as out:
+              for key, value in values.items(): out.write(f"{key}={value}\n")
+          PY
+      - name: Preserve price diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trinity-weekly-prices-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.PRICE_ACQUISITION_ROOT }}
+          if-no-files-found: warn
+          retention-days: 30
+
+  analytical-production:
+    name: Run Full Shadow from the exact same-run snapshot
+    needs: [schedule-gate, price-snapshot]
+    if: needs.price-snapshot.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      TRINITY_BASELINE_PREFIX: ${{ vars.TRINITY_BASELINE_PREFIX }}
+      TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
+      TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
+      TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
+      TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+      TRINITY_PRICE_SNAPSHOT_PREFIX: ${{ needs.price-snapshot.outputs.price_snapshot_r2_prefix }}
+      TRINITY_PRICE_SNAPSHOT_SHA256: ${{ needs.price-snapshot.outputs.price_snapshot_sha256 }}
+      TRINITY_ORCHESTRATOR_MODE: ${{ needs.schedule-gate.outputs.mode }}
+      TRINITY_INTENDED_MONDAY: ${{ needs.schedule-gate.outputs.intended_monday }}
+      TRINITY_TARGET_MARKET_SESSION: ${{ needs.price-snapshot.outputs.target_market_session }}
+      TRINITY_TARGET_SESSION_OPEN_UTC: ${{ needs.schedule-gate.outputs.target_session_open_utc }}
+      TRINITY_TARGET_SESSION_CLOSE_UTC: ${{ needs.schedule-gate.outputs.target_session_close_utc }}
+      TRINITY_SESSION_CALENDAR: ${{ needs.schedule-gate.outputs.session_calendar }}
+      TRINITY_SESSION_CALENDAR_VERSION: ${{ needs.schedule-gate.outputs.session_calendar_version }}
+      TRINITY_ANALYTICAL_GIT_SHA: ${{ needs.price-snapshot.outputs.analytical_commit }}
+      TRINITY_WORKFLOW_GIT_SHA: ${{ github.sha }}
+      TRINITY_COST_GUARD_USD: "5.00"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.TRINITY_ANALYTICAL_REF }}
+      - name: Verify analytical checkout did not drift between jobs
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$TRINITY_ANALYTICAL_GIT_SHA"
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.13.15"
+          cache: pip
+          cache-dependency-path: requirements-shadow.txt
+      - run: python -m pip install --disable-pip-version-check -r requirements-shadow.txt
+      - name: Initialize analytical paths
+        run: |
+          echo "TRINITY_DATA_ROOT=$RUNNER_TEMP/trinity-data" >> "$GITHUB_ENV"
+          echo "TRINITY_BASELINE_ROOT=$RUNNER_TEMP/trinity-baseline" >> "$GITHUB_ENV"
+          echo "TRINITY_RUN_ROOT=$RUNNER_TEMP/trinity-shadow" >> "$GITHUB_ENV"
+          echo "TRINITY_PRICE_SNAPSHOT_ROOT=$RUNNER_TEMP/trinity-price-snapshot" >> "$GITHUB_ENV"
+      - name: Fail closed on malformed or cross-run snapshot handoff
+        run: >-
+          python -m trinity.shadow.weekly_cycle validate-handoff
+          --target-session "${{ needs.price-snapshot.outputs.target_market_session }}"
+          --snapshot-id "${{ needs.price-snapshot.outputs.price_snapshot_id }}"
+          --snapshot-sha256 "$TRINITY_PRICE_SNAPSHOT_SHA256"
+          --prefix "$TRINITY_PRICE_SNAPSHOT_PREFIX"
+          --github-run-id "$GITHUB_RUN_ID" --github-run-attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Restore immutable production baseline from R2
+        run: python -m trinity.shadow.cli restore
+      - name: Restore and verify exact immutable price snapshot
+        run: python -m trinity.shadow.cli restore-prices
+      - name: Execute Full Shadow Production
+        run: python -m trinity.shadow.cli run
+      - name: Archive and verify analytical run in R2
+        if: always()
+        run: python -m trinity.shadow.cli archive
+      - name: Commit immutable OFFICIAL cycle marker
+        run: >-
+          python -m trinity.shadow.weekly_cycle complete
+          --mode "$TRINITY_ORCHESTRATOR_MODE"
+          --intended-monday "$TRINITY_INTENDED_MONDAY"
+          --target-session "$TRINITY_TARGET_MARKET_SESSION"
+          --analytical-commit "$TRINITY_ANALYTICAL_GIT_SHA"
+          --workflow-commit "$TRINITY_WORKFLOW_GIT_SHA"
+          --snapshot-id "${{ needs.price-snapshot.outputs.price_snapshot_id }}"
+          --snapshot-sha256 "$TRINITY_PRICE_SNAPSHOT_SHA256"
+          --snapshot-prefix "$TRINITY_PRICE_SNAPSHOT_PREFIX"
+          --run-root "$TRINITY_RUN_ROOT"
+      - name: Deliver committed post-archive Telegram notifications
+        continue-on-error: true
+        env:
+          TRINITY_TELEGRAM_BOT_TOKEN: ${{ secrets.TRINITY_TELEGRAM_BOT_TOKEN }}
+          TRINITY_TELEGRAM_CHAT_ID: ${{ secrets.TRINITY_TELEGRAM_CHAT_ID }}
+        run: python -m trinity.notifications.telegram --shadow-root "$TRINITY_RUN_ROOT"
+      - name: Preserve analytical diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trinity-weekly-shadow-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ env.TRINITY_RUN_ROOT }}
+          if-no-files-found: warn
+          retention-days: 30
