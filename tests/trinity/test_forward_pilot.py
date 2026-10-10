@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -215,6 +216,29 @@ def test_stale_and_missing_price_data_are_rejected():
         validate_forward_bars("AAPL", _bars(date(2026, 9, 20)), retrieved_at=now)
 
 
+def test_sol_news_filter_uses_research_cutoff_independently_of_price_cutoff(tmp_path):
+    technical = datetime(2026, 10, 9, 20, tzinfo=timezone.utc)
+    research = datetime(2026, 10, 12, 12, tzinfo=timezone.utc)
+    provider = EODHDSECForwardProvider(
+        tmp_path, price_snapshot=_Snapshot(), api_key="test-only",
+        session=SimpleNamespace(), decision_cutoff_utc=technical,
+        research_cutoff_utc=research,
+    )
+    raw = json.dumps([
+        {"date": "2026-10-10T14:00:00Z", "title": "weekend"},
+        {"date": "2026-10-12T11:59:00Z", "title": "premarket"},
+        {"date": "2026-10-12T12:00:01Z", "title": "future"},
+    ]).encode()
+    normalized = provider._normalize_news(
+        "AAPL", raw, "2026-10-12T12:00:00Z", provider.research_cutoff_utc,
+    )
+    assert [item["date"] for item in normalized] == [
+        "2026-10-10T14:00:00Z", "2026-10-12T11:59:00Z",
+    ]
+    assert provider.decision_cutoff_utc == technical
+    assert provider.research_cutoff_utc == research
+
+
 def test_raw_twelve_data_bars_keep_setup_fields_and_null_optional_provenance_slot(tmp_path):
     prices = tmp_path / "prices"
     prices.mkdir()
@@ -274,12 +298,13 @@ def test_mocked_fresh_provider_uses_only_execution_paths(monkeypatch, tmp_path):
 
     class Session:
         headers = {}
-        def get(self, url, **_kwargs):
-            calls.append(url)
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
             return Response(news)
 
     def sec_acquirer(as_of, *, cache_dir, tickers, now, **_kwargs):
-        assert tickers == ("AAPL",) and as_of == "2026-10-01" and now == fixed
+        assert tickers == ("AAPL",) and as_of == "2026-10-02" and now == fixed
+        assert _kwargs["decision_cutoff_utc"] == fixed
         path = Path(cache_dir) / "manifest.json"
         path.write_text("{}", encoding="utf-8")
         return path
@@ -291,6 +316,7 @@ def test_mocked_fresh_provider_uses_only_execution_paths(monkeypatch, tmp_path):
         seen.update(kwargs)
         assert ticker == "AAPL" and as_of == "2026-10-01"
         assert kwargs["forward"] is True
+        assert kwargs["research_as_of"] == "2026-10-02"
         assert str(kwargs["prices_dir"]).startswith(str(tmp_path.resolve()))
         assert str(kwargs["news_dir"]).startswith(str(tmp_path.resolve()))
         assert str(kwargs["documents_dir"]).startswith(str(tmp_path.resolve()))
@@ -306,12 +332,18 @@ def test_mocked_fresh_provider_uses_only_execution_paths(monkeypatch, tmp_path):
     provider = EODHDSECForwardProvider(
         tmp_path, price_snapshot=_Snapshot(), api_key="test-only", session=Session(),
         clock=lambda: fixed, sec_acquirer=sec_acquirer,
+        decision_cutoff_utc=datetime(2026, 10, 1, 20, tzinfo=timezone.utc),
+        research_cutoff_utc=fixed,
     )
     acquired = provider.acquire("AAPL")
     assert acquired.price_retrieved_at == "2026-10-02T12:00:00.000000Z"
     assert acquired.research_retrieved_at == "2026-10-02T12:00:00.000000Z"
+    assert acquired.as_of == "2026-10-01"
+    assert acquired.research_as_of == "2026-10-02"
+    assert acquired.research_cutoff_utc == "2026-10-02T12:00:00.000000Z"
     assert json.loads(acquired.price_raw) == _Snapshot().bars("AAPL")
-    assert calls == ["https://eodhistoricaldata.com/api/news"]
+    assert [item[0] for item in calls] == ["https://eodhistoricaldata.com/api/news"]
+    assert calls[0][1]["params"]["to"] == "2026-10-02"
     assert seen and PRICE_CACHE not in Path(seen["prices_dir"]).parents
 
 
@@ -409,6 +441,40 @@ def test_forward_summary_and_historical_defaults_remain_available(forward_batch)
     historical = load_company("JNJ", AS_OF)
     assert historical.as_of == AS_OF
     assert "frozen" in historical.company_input["evidence"][0]["source"].lower()
+
+
+def test_forward_pipeline_keeps_setup_on_price_session_with_later_research_date(tmp_path):
+    research_day = (date.fromisoformat(AS_OF) + timedelta(days=2)).isoformat()
+
+    class SplitCutoffSource:
+        def acquire(self, ticker):
+            sources = _FixtureSource().acquire(ticker)
+            pack = replace(
+                sources.pack, as_of=research_day,
+                company_input={**sources.pack.company_input, "as_of": research_day},
+            )
+            return replace(
+                sources, pack=pack, research_as_of=research_day,
+                research_cutoff_utc=f"{research_day}T12:00:00.000000Z",
+            )
+
+    batch = run_forward_pilot(
+        tmp_path / "split-cutoff.sqlite3", ["AAPL"], dry_run=True,
+        source_provider_factory=lambda _root: SplitCutoffSource(),
+        llm_provider_factory=_llm,
+    )
+    assert batch.results[0].run_status != "FAILED"
+    assert batch.results[0].fresh_price_timestamp == AS_OF
+    with LedgerStorage.open(batch.ledger_db) as storage:
+        setup_payload = storage.connection.execute(
+            "SELECT a.payload FROM setup s JOIN artifact a "
+            "ON a.artifact_id=s.result_artifact_id"
+        ).fetchone()[0]
+        research_at = storage.connection.execute(
+            "SELECT as_of_at FROM research_record"
+        ).fetchone()[0]
+    assert json.loads(setup_payload)["as_of"] == AS_OF
+    assert research_at == f"{research_day}T12:00:00.000000Z"
 
 
 def test_responses_api_provider_provenance_is_persisted_without_method_change(tmp_path):

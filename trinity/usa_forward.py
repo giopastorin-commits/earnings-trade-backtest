@@ -43,6 +43,8 @@ class ForwardTickerSources:
     research_retrieved_at: str
     fresh_price_timestamp: str
     freshest_evidence_timestamp: str
+    research_as_of: str | None = None
+    research_cutoff_utc: str | None = None
     price_snapshot_id: str = "-"
     price_snapshot_session: str = "-"
     price_snapshot_sha256: str = "-"
@@ -96,6 +98,7 @@ class EODHDNewsSECForwardProvider:
         sec_acquirer: Callable[..., Path] = acquire_sec_documents,
         continuity_path: str | Path | None = DEFAULT_CONTINUITY_PATH,
         decision_cutoff_utc: datetime | None = None,
+        research_cutoff_utc: datetime | None = None,
     ) -> None:
         self.source_root = Path(source_root).resolve()
         self.price_snapshot = price_snapshot
@@ -109,7 +112,10 @@ class EODHDNewsSECForwardProvider:
         self.clock = clock
         self.sec_acquirer = sec_acquirer
         self.continuity_path = Path(continuity_path) if continuity_path is not None else None
+        # decision_cutoff_utc retains its original technical/session meaning.
         self.decision_cutoff_utc = decision_cutoff_utc
+        # Legacy callers used the same boundary for both concerns.
+        self.research_cutoff_utc = research_cutoff_utc or decision_cutoff_utc
 
     def acquire(self, ticker: str) -> ForwardTickerSources:
         issuer = get_issuer(ticker)
@@ -147,11 +153,13 @@ class EODHDNewsSECForwardProvider:
             EODHD_NEWS,
             {"api_token": self.api_key, "s": issuer.provider_symbol,
              "from": (date.fromisoformat(as_of) - timedelta(days=190)).isoformat(),
-             "to": as_of, "limit": 1000, "fmt": "json"},
+             "to": (self.research_cutoff_utc.astimezone(timezone.utc).date().isoformat()
+                    if self.research_cutoff_utc is not None else as_of),
+             "limit": 1000, "fmt": "json"},
             ticker, "news",
         )
         news = self._normalize_news(
-            ticker, news_raw, utc_timestamp(news_time), self.decision_cutoff_utc,
+            ticker, news_raw, utc_timestamp(news_time), self.research_cutoff_utc,
         )
         news_file = news_dir / ticker / f"{as_of[:7]}.jsonl"
         news_file.write_text(
@@ -164,9 +172,13 @@ class EODHDNewsSECForwardProvider:
             "cache_dir": sec_dir, "session": self.session,
             "tickers": (ticker,), "now": sec_time,
         }
-        if self.decision_cutoff_utc is not None:
-            sec_arguments["decision_cutoff_utc"] = self.decision_cutoff_utc
-        self.sec_acquirer(as_of, **sec_arguments)
+        research_as_of = (
+            self.research_cutoff_utc.astimezone(timezone.utc).date().isoformat()
+            if self.research_cutoff_utc is not None else as_of
+        )
+        if self.research_cutoff_utc is not None:
+            sec_arguments["decision_cutoff_utc"] = self.research_cutoff_utc
+        self.sec_acquirer(research_as_of, **sec_arguments)
         captured = self._now()
         pack = load_company(
             ticker, as_of, prices_dir=prices_dir, news_dir=news_dir,
@@ -175,6 +187,7 @@ class EODHDNewsSECForwardProvider:
             price_source="Twelve Data validated immutable OHLCV snapshot",
             news_source="EODHD live issuer/news API",
             continuity_evidence_ids=self._continuity_evidence_ids(ticker),
+            research_as_of=research_as_of,
         )
         if not any(str(item.get("source", "")).startswith("SEC EDGAR")
                    for item in pack.company_input.get("evidence", [])):
@@ -192,6 +205,11 @@ class EODHDNewsSECForwardProvider:
             research_retrieved_at=utc_timestamp(captured),
             fresh_price_timestamp=as_of,
             freshest_evidence_timestamp=max((item for item in evidence_times if item), default="-"),
+            research_as_of=research_as_of,
+            research_cutoff_utc=(
+                utc_timestamp(self.research_cutoff_utc)
+                if self.research_cutoff_utc is not None else None
+            ),
             price_snapshot_id=self.price_snapshot.snapshot_id,
             price_snapshot_session=self.price_snapshot.target_session,
             price_snapshot_sha256=self.price_snapshot.snapshot_sha256,

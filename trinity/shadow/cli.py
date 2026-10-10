@@ -22,7 +22,7 @@ from trinity.twelvedata_prices import ValidatedPriceSnapshot
 from trinity.usa_forward import EODHDNewsSECForwardProvider
 
 from .atomic import atomic_json
-from .cutoff import cutoff_for_verified_session
+from .cutoff import capture_live_research_cutoff, cutoff_for_verified_session
 from .golden_replay import GoldenReplayError, run_golden_replay
 from .manifest import generate_manifest, verify_manifest
 from .model_adapters import ResponsesLuna, ResponsesSolProvider
@@ -127,22 +127,43 @@ def run_command() -> int:
         usage = PersistentCostLedger(artifacts / "api_usage.json", Decimal(os.getenv("TRINITY_COST_GUARD_USD", "5.00")))
         transport = ResponsesAPI(run_root=staging, cost_ledger=usage)
         stage = "SETUP"
+        research_cutoff = None
+
+        def begin_fresh_research() -> None:
+            nonlocal research_cutoff
+            if research_cutoff is not None:
+                raise RuntimeError("fresh research boundary was entered more than once")
+            research_cutoff = capture_live_research_cutoff(
+                verified_price_session=cutoff.session_date,
+                technical_cutoff_utc=cutoff.utc,
+            )
+            atomic_json(artifacts / "research_cutoff.json", asdict(research_cutoff))
 
         def triage_runner(**kwargs):
             nonlocal stage
             stage = "LUNA"
             rows = kwargs["ready_entries"]
             tickers = [str(row["ticker"]) for row in rows]
+            if research_cutoff is None:
+                raise RuntimeError("live research cutoff was not captured")
             source = FreshTriageSources(
                 cache_dir=staging / "luna_sources",
                 sec_root=baseline_root() / "sec_compact",
-                decision_cutoff_utc=cutoff_dt,
+                research_cutoff_utc=research_cutoff_dt(),
             )
             return run_triage(
                 **kwargs, luna=ResponsesLuna(transport, tickers), sources=source,
             )
 
         cutoff_dt = datetime.fromisoformat(cutoff.utc.replace("Z", "+00:00"))
+
+        def research_cutoff_dt() -> datetime:
+            if research_cutoff is None:
+                raise RuntimeError("live research cutoff was not captured")
+            return datetime.fromisoformat(
+                research_cutoff.research_cutoff_utc.replace("Z", "+00:00")
+            )
+
         ledger_path = staging / "ledger" / "trinity.sqlite3"
         sol_ordinal = 10_000
 
@@ -156,6 +177,7 @@ def run_command() -> int:
                     root, price_snapshot=snapshot,
                     continuity_path=artifacts / "luna_results.json",
                     decision_cutoff_utc=cutoff_dt,
+                    research_cutoff_utc=research_cutoff_dt(),
                 ),
                 llm_provider_factory=lambda ticker: ResponsesSolProvider(transport, ticker, sol_ordinal),
             )
@@ -169,7 +191,12 @@ def run_command() -> int:
             luna_source_root=staging / "luna_sources",
             ledger_db=ledger_path, triage_runner=triage_runner, sol_runner=sol_runner,
             price_snapshot=snapshot,
+            before_fresh_research=begin_fresh_research,
         )
+        if research_cutoff is None:
+            # A custom/no-candidate runner may have no fresh research phase, but
+            # the completed live run still carries an explicit boundary.
+            begin_fresh_research()
         atomic_json(artifacts / "setups.json", [item.to_dict() for item in result.setups])
         if result.failed_tickers:
             raise RuntimeError(f"Luna failures: {', '.join(result.failed_tickers)}")
@@ -184,6 +211,11 @@ def run_command() -> int:
                 value=snapshot.provenance(),
                 media_type="application/json",
             )
+            storage.insert_json_artifact(
+                artifact_type="ledger.live-research-cutoff-provenance.v1",
+                value=asdict(research_cutoff),
+                media_type="application/json",
+            )
         stage = "LEDGER"
         close_and_verify(ledger_path)
         sol_rows = [] if result.sol_result is None else [asdict(item) for item in result.sol_result.results]
@@ -196,13 +228,15 @@ def run_command() -> int:
         atomic_json(artifacts / "final_report.json", {
             "run_id": run_id, "git_commit": _git_head(), "github_run_id": github_run_id,
             "github_run_attempt": attempt, "decision_cutoff": asdict(cutoff),
+            "research_cutoff": asdict(research_cutoff),
             "counts": {**funnel.counts, "operational_setup": result.operational_setup_count,
                        "no_setup": result.no_setup_count, "luna_watch": len(result.watch_tickers),
                        "luna_escalate": len(result.escalate_tickers), "luna_drop": len(result.drop_tickers)},
             "watch": list(result.watch_tickers), "escalate": list(result.escalate_tickers),
             "drop": list(result.drop_tickers), "sol_results": sol_rows,
             "method_versions": {"setup": "USA_SETUP_V1", "facts": "USA_V2_FACTS_V3",
-                                "luna": "luna-triage-v1"},
+                                "luna": "luna-triage-v1",
+                                "live_research_cutoff": research_cutoff.method_version},
             "price_snapshot": snapshot.provenance(),
             "runtime_seconds": time.perf_counter() - started,
             "telegram_sent": False, "broker_execution": False,

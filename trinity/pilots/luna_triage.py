@@ -238,6 +238,7 @@ class FreshTriageSources:
         sec_root: str | Path = FORWARD_SEC_ROOT, session: requests.Session | None = None,
         clock: Callable[[], datetime] = utc_now,
         decision_cutoff_utc: datetime | None = None,
+        research_cutoff_utc: datetime | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("EODHD_API_KEY")
         if not self.api_key:
@@ -249,7 +250,12 @@ class FreshTriageSources:
             import truststore
             truststore.inject_into_ssl()
         self.clock = clock
-        self.decision_cutoff_utc = decision_cutoff_utc
+        if (decision_cutoff_utc is not None and research_cutoff_utc is not None and
+                decision_cutoff_utc != research_cutoff_utc):
+            raise TriageError("conflicting legacy and research cutoffs")
+        # decision_cutoff_utc remains a compatibility alias for frozen callers.
+        self.decision_cutoff_utc = research_cutoff_utc or decision_cutoff_utc
+        self.research_cutoff_utc = self.decision_cutoff_utc
         self.news_requests = 0
         self.earnings_requests = 0
         self.news_cache_hits = 0

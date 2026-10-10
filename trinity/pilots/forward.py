@@ -83,20 +83,21 @@ def run_forward_pilot(
                 attempt = _new_forward_attempt(storage, ticker, code_commit, reference)
                 sources = source_provider.acquire(ticker)
                 pack = sources.pack
+                research_as_of = sources.research_as_of or sources.as_of
                 if (
                     sources.ticker != ticker
                     or pack.ticker != ticker
-                    or pack.as_of != sources.as_of
+                    or pack.as_of != research_as_of
                     or pack.company_input.get("ticker") != ticker
-                    or pack.company_input.get("as_of") != sources.as_of
+                    or pack.company_input.get("as_of") != research_as_of
                 ):
                     raise ValueError(f"{ticker}: fresh source bundle identity mismatch")
                 company_input = with_expectation_comparisons(pack.company_input)
-                facts = build_facts_v3(company_input, sources.as_of)
+                facts = build_facts_v3(company_input, research_as_of)
                 persisted = _persist_inputs(
                     storage, attempt, ticker, pack, facts, sources.bars,
                     sources.price_raw, shared["pit_policy"],
-                    as_of=sources.as_of, reference=reference,
+                    as_of=research_as_of, reference=reference,
                     research_source_bytes=sources.research_archive,
                     research_retrieved_at=sources.research_retrieved_at,
                     price_retrieved_at=sources.price_retrieved_at,
@@ -110,7 +111,7 @@ def run_forward_pilot(
                 )
                 provider = llm_provider_factory(ticker)
                 thesis = analyze_company(
-                    company_input, sources.as_of, provider,
+                    company_input, research_as_of, provider,
                     facts_builder=build_facts_v3,
                 )
                 thesis = replace(
@@ -124,13 +125,15 @@ def run_forward_pilot(
                     or provider.critic_stage is None
                 ):
                     raise RuntimeError("Analyst/Critic invocation trace is incomplete")
-                setup_record = build_setup(thesis.to_dict(), sources.bars, sources.as_of)
+                setup_input = {**thesis.to_dict(), "as_of": sources.as_of}
+                setup_record = build_setup(setup_input, sources.bars, sources.as_of)
                 identities = _persist_completed_pipeline(
                     storage, root, code_commit, attempt, ticker, thesis,
                     setup_record, provider, persisted,
                     shared["research_method"], shared["setup_policy"],
                     reference=reference,
-                    research_as_of_at=f"{sources.as_of}T23:59:59.999999Z",
+                    research_as_of_at=(sources.research_cutoff_utc or
+                                       f"{research_as_of}T23:59:59.999999Z"),
                 )
                 notification = load_committed_setup(
                     storage, setup_id=identities["setup_id"], run_id=identities["run_id"],

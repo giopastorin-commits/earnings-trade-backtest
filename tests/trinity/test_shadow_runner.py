@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from decimal import Decimal
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -14,7 +16,10 @@ from trinity.paths import (
     LEGACY_BASELINE_ROOT, baseline_root, price_cache, price_snapshot_root, run_root,
 )
 from trinity.shadow import cli as shadow_cli
-from trinity.shadow.cutoff import cutoff_for_verified_session, filter_timestamped_records
+from trinity.shadow.cutoff import (
+    LIVE_RESEARCH_CUTOFF_METHOD, capture_live_research_cutoff,
+    cutoff_for_verified_session, filter_timestamped_records,
+)
 from trinity.shadow.manifest import generate_manifest, verify_manifest
 from trinity.shadow.model_adapters import ResponsesSolProvider
 from trinity.shadow.r2 import (
@@ -97,6 +102,33 @@ def test_cutoff_consensus_and_post_cutoff_filtering():
     assert len(kept) == 1 and excluded == 1
     with pytest.raises(ValueError, match="consensus"):
         cutoff_for_verified_session("2026-10-05", ["2026-10-05", "2026-10-02"])
+
+
+def test_live_research_cutoff_keeps_friday_technical_boundary_and_monday_news():
+    technical = cutoff_for_verified_session("2026-10-09", ["2026-10-09"])
+    research = capture_live_research_cutoff(
+        verified_price_session=technical.session_date,
+        technical_cutoff_utc=technical.utc,
+        now_utc=datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc),
+    )
+    assert technical.utc == "2026-10-09T20:00:00Z"
+    assert research.technical_cutoff_utc == technical.utc
+    assert research.research_cutoff_utc == "2026-10-12T12:00:00Z"
+    assert research.captured_at_utc == research.research_cutoff_utc
+    assert research.method_version == LIVE_RESEARCH_CUTOFF_METHOD
+    kept, excluded = filter_timestamped_records(
+        [
+            {"date": "2026-10-10T14:00:00Z"},
+            {"date": "2026-10-12T11:59:00Z"},
+            {"date": "2026-10-12T12:00:01Z"},
+        ],
+        research.research_cutoff_utc,
+        fields=("date",),
+    )
+    assert [item["date"] for item in kept] == [
+        "2026-10-10T14:00:00Z", "2026-10-12T11:59:00Z",
+    ]
+    assert excluded == 1
 
 
 def test_run_state_has_one_immutable_terminal_state(tmp_path):
@@ -395,6 +427,69 @@ def test_run_command_labels_failure_after_triage_entry_as_failed_luna(
     assert state["state"] == "FAILED_LUNA"
 
 
+def test_one_live_research_cutoff_is_shared_by_luna_and_every_sol_source(
+    monkeypatch, tmp_path,
+):
+    fixed = capture_live_research_cutoff(
+        verified_price_session="2026-10-06",
+        technical_cutoff_utc="2026-10-06T20:00:00Z",
+        now_utc=datetime(2026, 10, 12, 12, 34, 56, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        shadow_cli, "capture_live_research_cutoff", lambda **_kwargs: fixed,
+    )
+    seen_luna = []
+    seen_sol = []
+
+    def luna_sources(**kwargs):
+        seen_luna.append(kwargs["research_cutoff_utc"])
+        return object()
+
+    def sol_sources(_root, **kwargs):
+        seen_sol.append((kwargs["decision_cutoff_utc"], kwargs["research_cutoff_utc"]))
+        return object()
+
+    monkeypatch.setattr(shadow_cli, "FreshTriageSources", luna_sources)
+    monkeypatch.setattr(shadow_cli, "EODHDNewsSECForwardProvider", sol_sources)
+    monkeypatch.setattr(shadow_cli, "run_triage", lambda **_kwargs: {})
+
+    def forward(_database, _tickers, *, source_provider_factory, **_kwargs):
+        source_provider_factory(tmp_path / "sol-a")
+        source_provider_factory(tmp_path / "sol-b")
+        return SimpleNamespace(results=[])
+
+    monkeypatch.setattr(shadow_cli, "run_forward_pilot", forward)
+
+    def production(**kwargs):
+        kwargs["before_fresh_research"]()
+        kwargs["triage_runner"](
+            ready_entries=[{"ticker": "XYZ"}, {"ticker": "ABC"}],
+            funnel_path=kwargs["funnel_path"], output_path=kwargs["luna_output_path"],
+            source_root=kwargs["luna_source_root"], expected_count=2,
+        )
+        sol_result = kwargs["sol_runner"](
+            kwargs["ledger_db"], ("XYZ", "ABC"), dry_run=True,
+        )
+        return SimpleNamespace(
+            setups=(), failed_tickers=(), sol_result=sol_result,
+            operational_setup_count=2, no_setup_count=0,
+            watch_tickers=(), escalate_tickers=("ABC", "XYZ"), drop_tickers=(),
+        )
+
+    runs, _snapshot = _configure_renamed_run(monkeypatch, tmp_path, production)
+    monkeypatch.setattr(shadow_cli, "_git_head", lambda: "test-commit")
+    assert shadow_cli.run_command() == 0
+    research_dt = datetime(2026, 10, 12, 12, 34, 56, tzinfo=timezone.utc)
+    technical_dt = datetime(2026, 10, 6, 20, 0, tzinfo=timezone.utc)
+    assert seen_luna == [research_dt]
+    assert seen_sol == [(technical_dt, research_dt), (technical_dt, research_dt)]
+    artifact = json.loads((
+        runs / "SHADOW_USA_2026-10-06_123_A1" / "artifacts" /
+        "research_cutoff.json"
+    ).read_text())
+    assert artifact == asdict(fixed)
+
+
 def test_successful_shadow_run_records_snapshot_in_final_report_and_ledger(
     monkeypatch, tmp_path,
 ):
@@ -448,12 +543,26 @@ def test_successful_shadow_run_records_snapshot_in_final_report_and_ledger(
     final_root = runs / "SHADOW_USA_2026-10-06_123_A1"
     report = json.loads((final_root / "artifacts" / "final_report.json").read_text())
     assert report["price_snapshot"] == snapshot.provenance()
+    cutoff = report["research_cutoff"]
+    assert cutoff["verified_price_session"] == "2026-10-06"
+    assert cutoff["technical_cutoff_utc"] == report["decision_cutoff"]["utc"]
+    assert cutoff["research_cutoff_utc"] == cutoff["captured_at_utc"]
+    assert cutoff["method_version"] == LIVE_RESEARCH_CUTOFF_METHOD
+    assert report["broker_execution"] is False
+    assert json.loads(
+        (final_root / "artifacts" / "research_cutoff.json").read_text()
+    ) == cutoff
     with LedgerStorage.open(final_root / "ledger" / "trinity.sqlite3") as storage:
         count = storage.connection.execute(
             "SELECT count(*) FROM artifact "
             "WHERE artifact_kind='ledger.price-snapshot-provenance.v1'"
         ).fetchone()[0]
+        cutoff_count = storage.connection.execute(
+            "SELECT count(*) FROM artifact "
+            "WHERE artifact_kind='ledger.live-research-cutoff-provenance.v1'"
+        ).fetchone()[0]
     assert count == 1
+    assert cutoff_count == 1
 
 
 def test_archive_completion_preserves_canonical_run_id(monkeypatch, tmp_path):

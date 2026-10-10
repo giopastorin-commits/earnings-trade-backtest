@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -16,7 +17,33 @@ from trinity.pilots.luna_triage import (
     make_prompt,
     run_triage,
     validate_reply,
+    FreshTriageSources,
 )
+
+
+def test_live_news_uses_monday_research_cutoff_not_friday_price_session(tmp_path):
+    cutoff = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    source = FreshTriageSources(
+        api_key="test-only", cache_dir=tmp_path,
+        research_cutoff_utc=cutoff,
+    )
+    start = cutoff.date() - timedelta(days=45)
+    path = tmp_path / "news" / f"AAPL_{start}_{cutoff.date()}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([
+        {"date": "2026-10-10T14:00:00Z", "title": "AAPL earnings update",
+         "content": "results", "symbols": ["AAPL.US"]},
+        {"date": "2026-10-12T11:59:00Z", "title": "AAPL guidance update",
+         "content": "outlook", "symbols": ["AAPL.US"]},
+        {"date": "2026-10-12T12:00:01Z", "title": "AAPL future update",
+         "content": "earnings", "symbols": ["AAPL.US"]},
+    ]), encoding="utf-8")
+
+    news, _retrieved_at = source.news("AAPL", "AAPL.US")
+    assert [item["published_at"] for item in news] == [
+        "2026-10-12T11:59:00Z", "2026-10-10T14:00:00Z",
+    ]
+    assert source.post_cutoff_excluded == 1
 
 
 def _row(ticker, state="READY_TECHNICALLY"):

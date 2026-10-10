@@ -8,11 +8,41 @@ from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 
+LIVE_RESEARCH_CUTOFF_METHOD = "LIVE_RESEARCH_CUTOFF_V1"
+
+
 @dataclass(frozen=True)
 class DecisionCutoff:
     session_date: str
     utc: str
     america_new_york: str
+
+
+@dataclass(frozen=True)
+class LiveResearchCutoff:
+    verified_price_session: str
+    technical_cutoff_utc: str
+    research_cutoff_utc: str
+    captured_at_utc: str
+    method_version: str = LIVE_RESEARCH_CUTOFF_METHOD
+
+
+def capture_live_research_cutoff(
+    *, verified_price_session: str, technical_cutoff_utc: str,
+    now_utc: datetime | None = None,
+) -> LiveResearchCutoff:
+    """Capture the single immutable source boundary for one live research run."""
+
+    captured = now_utc or datetime.now(timezone.utc)
+    if captured.tzinfo is None:
+        raise ValueError("live research cutoff must be timezone-aware")
+    captured_text = captured.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return LiveResearchCutoff(
+        verified_price_session=verified_price_session,
+        technical_cutoff_utc=technical_cutoff_utc,
+        research_cutoff_utc=captured_text,
+        captured_at_utc=captured_text,
+    )
 
 
 def cutoff_for_verified_session(

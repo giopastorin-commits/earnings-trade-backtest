@@ -128,6 +128,7 @@ def run_production_funnel(
     triage_runner: Callable[..., dict[str, Any]] = run_triage,
     sol_runner: Callable[..., object] | None = None,
     price_snapshot: ValidatedPriceSnapshot | None = None,
+    before_fresh_research: Callable[[], None] | None = None,
 ) -> ProductionFunnelResult:
     """Run Setup first, then Luna, routing only ESCALATE names to Sol."""
 
@@ -158,6 +159,8 @@ def run_production_funnel(
         if setup.setup_type != "NO_SETUP":
             operational_rows.append(row)
 
+    if before_fresh_research is not None:
+        before_fresh_research()
     if operational_rows:
         luna = triage_runner(
             funnel_path=funnel_path, output_path=luna_output_path,

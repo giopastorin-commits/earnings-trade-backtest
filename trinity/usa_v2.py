@@ -1514,6 +1514,7 @@ def load_company(
     price_source: str = "EODHD frozen daily USA cache",
     news_source: str = "EODHD cached issuer wire release",
     continuity_evidence_ids: tuple[str, ...] = (),
+    research_as_of: str | None = None,
 ) -> EvidencePack:
     """Assemble cached data and source-linked literal facts without network calls."""
     try:
@@ -1521,6 +1522,8 @@ def load_company(
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
     date.fromisoformat(as_of)
+    evidence_as_of = research_as_of or as_of
+    date.fromisoformat(evidence_as_of)
     if not forward and as_of > AS_OF:
         raise ValueError("as_of exceeds frozen news coverage")
     company, sector = issuer.company_name, issuer.schema_type
@@ -1529,7 +1532,7 @@ def load_company(
         retrieved_at=price_retrieved_at,
     )
     records, rejected, news_decisions = _news_records(
-        ticker, as_of, news_dir=news_dir, forward=forward
+        ticker, evidence_as_of, news_dir=news_dir, forward=forward
     )
     issuer_records = [r for r in records if r.get("_source_class") == "ISSUER_RELEASE"]
     third_party_records = [
@@ -1591,7 +1594,9 @@ def load_company(
                        "published_at": item["published_at"], "summary": summary,
                        "facts": event_facts,
                        "guidance": guidance["source_excerpt"] if guidance else None})
-    document_coverage = load_document_coverage(ticker, as_of, cache_dir=documents_dir)
+    document_coverage = load_document_coverage(
+        ticker, evidence_as_of, cache_dir=documents_dir,
+    )
     if document_coverage:
         documents = document_coverage["documents"]
         structured = document_coverage.get("structured_facts", [])
@@ -1699,11 +1704,12 @@ def load_company(
                 "facts": periodic_facts, "guidance": None,
             })
     _attach_fact_ids(ticker, price, str(price_evidence["identifier"]), events)
+    facts_as_of = evidence_as_of if forward and research_as_of is not None else as_of
     company_input = {"company_name": company, "ticker": ticker, "provider_symbol": issuer.provider_symbol,
-                     "as_of": as_of, "schema_type": sector, "price": price,
+                     "as_of": facts_as_of, "schema_type": sector, "price": price,
                      "fundamentals": {}, "financial_facts": {}, "events": events, "evidence": evidence}
     # Run the reused point-in-time/provenance validator before any LLM call.
-    (build_facts_v2 if forward else build_facts)(company_input, as_of)
+    (build_facts_v2 if forward else build_facts)(company_input, facts_as_of)
     limitations = (["SEC periodic report and earnings filings are primary but issuer facts remain unaudited",
                     "Some non-GAAP and guidance metrics are only available in issuer exhibits"]
                    if document_coverage else
@@ -1715,7 +1721,7 @@ def load_company(
               "sec_structured_fact_count": len(document_coverage.get("structured_facts", [])) if document_coverage else 0,
               "material_evidence_continuity": continuity,
               "limitations": limitations}
-    return EvidencePack(ticker, as_of, company_input, triage)
+    return EvidencePack(ticker, facts_as_of, company_input, triage)
 
 
 _FACTS_V3_EXPECTATION_PRECEDENCE = (

@@ -157,6 +157,35 @@ def test_all_no_setup_makes_zero_luna_and_sol_calls(tmp_path):
     assert result.watchlist["entries"] == []
 
 
+def test_live_research_boundary_occurs_once_after_setup_before_luna(tmp_path):
+    funnel, prices = _files(tmp_path, ("ONE", "TWO"))
+    order = []
+
+    def setup_builder(thesis, bars, as_of):
+        order.append(f"setup:{thesis['ticker']}")
+        return _setup_builder_for({"ONE": "PULLBACK", "TWO": "PULLBACK"})(
+            thesis, bars, as_of,
+        )
+
+    def triage(**kwargs):
+        order.append("luna")
+        return {
+            "finished_at": "2026-10-12T12:00:00Z",
+            "results": [{
+                "ticker": row["ticker"], "status": "SUCCESS", "decision": "WATCH",
+                "qualitative_priority": "MEDIUM", "primary_reason": "fixture",
+            } for row in kwargs["ready_entries"]],
+        }
+
+    run_production_funnel(
+        funnel_path=funnel, price_dir=prices, luna_output_path=None,
+        watchlist_path=tmp_path / "watch.json", setup_builder=setup_builder,
+        triage_runner=triage,
+        before_fresh_research=lambda: order.append("research-cutoff"),
+    )
+    assert order == ["setup:ONE", "setup:TWO", "research-cutoff", "luna"]
+
+
 def test_default_sol_route_uses_current_luna_artifact_for_facts_v2_continuity(tmp_path):
     funnel, prices = _files(tmp_path, ("ESC1",))
     triage = FakeTriage({"ESC1": "ESCALATE"})
