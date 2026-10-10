@@ -29,6 +29,45 @@ SETUP_NODE_ID = "setup-node"
 RESEARCH_NODE_ID = "research-node"
 
 
+def _research_result(**changes):
+    value = {
+        "ticker": "JNJ",
+        "status": "INVESTIGATE",
+        "evidence_confidence": "HIGH",
+        "thesis_strength": "MEDIUM",
+        "bull_case": "Ricavi comparabili e generazione di cassa sostengono la tesi.",
+        "earnings_and_news_analysis": "La guidance 2026 è stata aumentata rispetto alla fonte primaria precedente.",
+        "price_context": "Il pullback è avvenuto nel regime tecnico registrato.",
+        "bear_case": "L'integrazione dell'acquisizione resta non verificata.",
+        "risks": ["Ritardi clinici o regolatori."],
+        "catalysts": ["Risultati del prossimo trimestre."],
+        "thesis_invalidation": "Riduzione documentata della guidance 2026.",
+        "critic_notes": ["I benefici acquisitivi non sono ancora verificati."],
+        "claim_refs": [
+            {"claim_id": "support", "field": "price_context", "text": "Rendimento positivo su 60 giorni",
+             "fact_ids": ["fact:support"], "materiality": "SUPPORTING", "period": "2026-10-07"},
+            {"claim_id": "material", "field": "fundamental_analysis", "text": "Ricavi trimestrali in crescita",
+             "fact_ids": ["fact:material"], "materiality": "MATERIAL", "period": "2026Q2"},
+        ],
+        "facts": {"items": [
+            {"fact_id": "fact:support", "evidence_id": "price:JNJ"},
+            {"fact_id": "fact:material", "evidence_id": "sec:JNJ:10-q"},
+        ]},
+        "evidence": [
+            {"identifier": "sec:JNJ:10-q", "source": "SEC EDGAR", "published_at": "2026-07-23",
+             "document_kind": "SEC_PERIODIC_REPORT"},
+            {"identifier": "price:JNJ", "source": "Twelve Data", "published_at": "2026-10-07",
+             "document_kind": "PRICE"},
+        ],
+        "event_assessments": [
+            {"event_id": "sec:JNJ:10-q", "classification": "CONFIRMATION", "material": True,
+             "rationale": "Il deposito conferma i risultati contabili."},
+        ],
+    }
+    value.update(changes)
+    return value
+
+
 def _result(setup_type="PULLBACK"):
     operational = setup_type != "NO_SETUP"
     return {
@@ -80,7 +119,7 @@ class _Storage:
         )
         self.research = SimpleNamespace(
             research_id=RESEARCH_ID, run_id=RUN_ID, attempt_id=ATTEMPT_ID,
-            derivation_node_id=RESEARCH_NODE_ID,
+            derivation_node_id=RESEARCH_NODE_ID, content_artifact_id="research-result",
         )
         self.research_node = SimpleNamespace(
             node_kind="RESEARCH", entity_type="research_record",
@@ -138,8 +177,10 @@ class _Storage:
         return [SimpleNamespace(parent_node_id=RESEARCH_NODE_ID, required=True)]
 
     def validate_v14_artifact(self, artifact_id):
-        assert artifact_id == "setup-result"
-        return _result()
+        if artifact_id == "setup-result":
+            return _result()
+        assert artifact_id == "research-result"
+        return _research_result()
 
 
 def _notification(**changes):
@@ -152,6 +193,7 @@ def _notification(**changes):
         reason_codes=("UPTREND_CONFIRMED", "SMA_SUPPORT_NEARBY"),
         resolved_pit_class="RECONSTRUCTED_NOT_ARCHIVED",
         resolved_record_class="LEGACY_NON_LEDGER_ARTIFACT",
+        research=_research_result(),
     )
     values.update(changes)
     return TelegramNotification(**values)
@@ -162,6 +204,8 @@ def test_valid_committed_setup_loads_and_renders():
     text = render_telegram_message(notification)
     assert notification.research_id == RESEARCH_ID
     assert "TRINITY — JNJ" in text
+    assert "PERCHÉ È ARRIVATO FIN QUI" in text
+    assert "Ricavi trimestrali in crescita" in text
     assert "Entry: 264.022" in text
     assert "RR1: 2.1634" in text
     assert "RR2: 3" in text
@@ -193,17 +237,61 @@ def test_no_setup_omits_operational_levels():
         rr1=None, rr2=None, reason_codes=("NO_VALID_SETUP",),
     ))
     assert "Setup: NO_SETUP" in text
-    assert "• NO_VALID_SETUP" in text
+    assert "No valid setup" in text
     for forbidden in ("Entry:", "Stop:", "TP1:", "TP2:", "RR1:", "RR2:"):
         assert forbidden not in text
 
 
 def test_reason_order_and_decimal_display_are_deterministic():
     text = render_telegram_message(_notification(reason_codes=("SECOND", "FIRST")))
-    assert text.index("• SECOND") < text.index("• FIRST")
+    assert text.index("Second") < text.index("First")
     assert "Entry: 264.022" in text
     assert "Stop: 256.1417" in text
     assert "RR1: 2.1634" in text and "RR2: 3" in text
+
+
+def test_explainable_report_prefers_material_claims_and_renders_committed_fields():
+    text = render_telegram_message(_notification())
+    assert text.index("Ricavi trimestrali in crescita") < text.index("Rendimento positivo su 60 giorni")
+    for committed in (
+        "Ricavi comparabili e generazione di cassa sostengono la tesi.",
+        "L'integrazione dell'acquisizione resta non verificata.",
+        "Ritardi clinici o regolatori.",
+        "Riduzione documentata della guidance 2026.",
+        "Risultati del prossimo trimestre.",
+    ):
+        assert committed in text
+    assert "SEC EDGAR" in text and "CONFIRMATION" in text
+    assert len(text) <= telegram.MAX_TELEGRAM_MESSAGE_CHARS
+
+
+def test_missing_optional_research_lists_render_gracefully():
+    research = _research_result(catalysts=[], risks=[], critic_notes=[], event_assessments=[])
+    text = render_telegram_message(_notification(research=research))
+    assert "RISCHI / CONTROTESI" in text
+    assert "INVALIDAZIONE TESI" in text
+    assert len(text) <= telegram.MAX_TELEGRAM_MESSAGE_CHARS
+
+
+def test_weekly_summary_with_candidates_is_deterministic():
+    report = {
+        "counts": {"universe": 518, "ready_technically": 3, "operational_setup": 2,
+                   "luna_watch": 1, "luna_escalate": 2, "luna_drop": 0},
+        "research_cutoff": {"research_cutoff_utc": "2026-10-12T10:00:00Z"},
+        "price_snapshot": {"target_market_session": "2026-10-09"},
+    }
+    notifications = [_notification(ticker="ABBV"), _notification(ticker="DE", research=_research_result(ticker="DE"))]
+    text = telegram.render_weekly_summary(report, notifications, sol_completed=2)
+    assert "Sessione tecnica: 2026-10-09" in text
+    assert "Candidati finali: 2" in text
+    assert text.index("• ABBV — INVESTIGATE") < text.index("• DE — INVESTIGATE")
+
+
+def test_reporting_adapter_has_no_model_provider_or_broker_execution_path():
+    source = Path(telegram.__file__).read_text(encoding="utf-8")
+    for forbidden in ("ResponsesAPI", "ResponsesLuna", "ResponsesSolProvider",
+                      "TWELVEDATA_API_KEY", "EODHD_API_KEY", "broker_execution"):
+        assert forbidden not in source
 
 
 def test_dry_run_performs_no_network(monkeypatch, capsys, tmp_path):
@@ -325,6 +413,13 @@ def _delivery_root(tmp_path: Path) -> Path:
     (root / "run_state.json").write_text(json.dumps({
         "run_id": "SHADOW_RUN", "state": "COMPLETE",
     }), encoding="utf-8")
+    (root / "artifacts" / "sol_results.json").write_text("[]", encoding="utf-8")
+    (root / "artifacts" / "final_report.json").write_text(json.dumps({
+        "counts": {"universe": 518, "ready_technically": 4, "operational_setup": 2,
+                   "luna_watch": 1, "luna_escalate": 1, "luna_drop": 0},
+        "research_cutoff": {"research_cutoff_utc": "2026-10-12T10:00:00Z"},
+        "price_snapshot": {"target_market_session": "2026-10-09"},
+    }), encoding="utf-8")
     return root
 
 
@@ -387,9 +482,17 @@ def test_real_post_archive_gate_verifies_manifest_archive_and_ledger(tmp_path):
     (root / "r2_archive_result.json").write_text(json.dumps({
         "object_count": 4, "total_bytes": 100,
     }), encoding="utf-8")
-    result = deliver_completed_run(root, now=lambda: FIXED_NOW)
+    sent = []
+    result = deliver_completed_run(
+        root, token="token", chat_id="chat",
+        transport=lambda *_a, **kwargs: (
+            sent.append(kwargs["json"]["text"]) or
+            SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+        ), now=lambda: FIXED_NOW,
+    )
     assert result["candidate_count"] == 0
-    assert result["telegram_sent"] is False
+    assert result["telegram_sent"] is True
+    assert len(sent) == 1 and "Candidati finali: 0" in sent[0]
 
 
 def test_delivery_uses_committed_values_and_persists_sanitized_success(
@@ -410,7 +513,8 @@ def test_delivery_uses_committed_values_and_persists_sanitized_success(
     assert result["telegram_sent"] is True
     assert result["candidate_tickers"] == ["JNJ"]
     assert result["sent_count"] == 1 and result["failed_count"] == 0
-    message = requests[0][1]["json"]["text"]
+    assert "TRINITY — Weekly Report" in requests[0][1]["json"]["text"]
+    message = requests[1][1]["json"]["text"]
     for exact in (
         "Entry: 264.022", "Stop: 256.1417", "TP1: 281.07", "TP2: 287.6628",
         "RR1: 2.1634", "RR2: 3",
@@ -445,7 +549,7 @@ def test_missing_credentials_fail_safely_without_network(tmp_path, monkeypatch):
         storage_factory=lambda _path: _Storage(),
     )
     assert calls == [] and result["failed_count"] == 1
-    assert result["deliveries"][0]["error"] == "Telegram credentials are missing"
+    assert result["summary_delivery"]["error"] == "Telegram credentials are missing"
 
 
 def test_transport_failure_is_isolated_and_duplicate_is_refused(tmp_path, monkeypatch):
@@ -478,14 +582,20 @@ def test_zero_candidates_produces_audit_record_and_zero_sends(tmp_path, monkeypa
     root = _delivery_root(tmp_path)
     _mock_delivery_gates(monkeypatch, [])
     calls = []
+
+    def transport(_url, **kwargs):
+        calls.append(kwargs["json"]["text"])
+        return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
     result = deliver_completed_run(
-        root, transport=lambda *_a, **_k: calls.append(1), now=lambda: FIXED_NOW,
+        root, token="token", chat_id="chat", transport=transport, now=lambda: FIXED_NOW,
         storage_factory=lambda _path: pytest.fail("zero-candidate run opened Ledger"),
     )
-    assert calls == []
+    assert len(calls) == 1 and "Candidati finali: 0" in calls[0]
     assert result["candidate_count"] == 0
-    assert result["notification_attempted"] is False
-    assert result["telegram_sent"] is False
+    assert result["notification_attempted"] is True
+    assert result["summary_sent"] is True
+    assert result["telegram_sent"] is True
 
 
 def test_workflow_scopes_telegram_secrets_to_post_archive_full_shadow_only():

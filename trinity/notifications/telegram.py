@@ -6,6 +6,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -23,6 +24,7 @@ BOT_TOKEN_ENV = "TRINITY_TELEGRAM_BOT_TOKEN"
 CHAT_ID_ENV = "TRINITY_TELEGRAM_CHAT_ID"
 TELEGRAM_TIMEOUT_SECONDS = 15
 DELIVERY_RESULT_NAME = "telegram_delivery.json"
+MAX_TELEGRAM_MESSAGE_CHARS = 3200
 
 
 class TelegramNotificationError(RuntimeError):
@@ -49,6 +51,7 @@ class TelegramNotification:
     reason_codes: tuple[str, ...]
     resolved_pit_class: str
     resolved_record_class: str
+    research: Mapping[str, Any]
 
 
 def load_committed_setup(
@@ -131,10 +134,19 @@ def load_committed_setup(
 
     try:
         result = storage.validate_v14_artifact(setup.result_artifact_id)
+        research_content = storage.validate_v14_artifact(research.content_artifact_id)
     except Exception as exc:
-        raise TelegramNotificationError("Setup result Artifact failed validation") from exc
-    if not isinstance(result, Mapping):
-        raise TelegramNotificationError("Setup result Artifact is malformed")
+        raise TelegramNotificationError("Committed result Artifact failed validation") from exc
+    if not isinstance(result, Mapping) or not isinstance(research_content, Mapping):
+        raise TelegramNotificationError("Committed result Artifact is malformed")
+    if research_content.get("ticker") != result.get("ticker"):
+        raise TelegramNotificationError("Research and Setup ticker differ")
+    for setup_field, research_field in (
+        ("research_status", "status"), ("evidence_confidence", "evidence_confidence"),
+        ("thesis_strength", "thesis_strength"),
+    ):
+        if result.get(setup_field) != research_content.get(research_field):
+            raise TelegramNotificationError("Setup and PRIMARY Research conclusions differ")
 
     return TelegramNotification(
         setup_id=setup.setup_id,
@@ -155,37 +167,85 @@ def load_committed_setup(
         reason_codes=tuple(result["reason_codes"]),
         resolved_pit_class=manifest["resolved_pit_class"],
         resolved_record_class=manifest["resolved_record_class"],
+        research=research_content,
     )
 
 
 def render_telegram_message(notification: TelegramNotification) -> str:
-    """Render deterministic plain text without changing authoritative values."""
+    """Render an explainable report from committed Setup and PRIMARY Research only."""
 
-    lines = [
-        f"TRINITY — {notification.ticker}",
-        "",
-        f"Setup: {notification.setup_type}",
-        f"Regime: {notification.technical_regime}",
-        f"Research: {notification.research_status}",
-        f"Evidence confidence: {notification.evidence_confidence}",
-        f"Thesis strength: {notification.thesis_strength}",
-        "",
-    ]
+    lines = [f"TRINITY — {notification.ticker}", "", "STATO",
+             f"Research: {notification.research_status}",
+             f"Setup: {notification.setup_type}",
+             f"Regime: {notification.technical_regime}",
+             f"Evidence confidence: {notification.evidence_confidence}",
+             f"Thesis strength: {notification.thesis_strength}",
+             "", "PERCHÉ È ARRIVATO FIN QUI"]
+    lines.extend(_explanation_sentences(notification.research))
+    lines.extend(("", "EVIDENZE PRINCIPALI"))
+    evidence = _material_evidence(notification.research)
+    lines.extend(f"• {item}" for item in evidence)
+    if not evidence:
+        lines.append("Nessuna evidenza materiale con fact_id valida esplicitamente registrata.")
+    lines.extend(("", "RISCHI / CONTROTESI"))
+    counter = _counter_thesis(notification.research)
+    lines.extend(f"• {item}" for item in counter)
+    if not counter:
+        lines.append("Nessuna controtesi materiale esplicitamente registrata.")
+    invalidation = _clean_text(notification.research.get("thesis_invalidation"))
+    lines.extend(("", "INVALIDAZIONE TESI", invalidation or
+                  "Condizione di invalidazione non stabilita nel record di ricerca.",
+                  "", "PIANO OPERATIVO"))
     if notification.setup_type != "NO_SETUP":
-        levels = (
-            ("Entry", notification.entry),
-            ("Stop", notification.stop),
-            ("TP1", notification.tp1),
-            ("TP2", notification.tp2),
-        )
+        levels = (("Entry", notification.entry), ("Stop", notification.stop),
+                  ("TP1", notification.tp1), ("TP2", notification.tp2))
         if any(value is None for _, value in levels) or notification.rr1 is None or notification.rr2 is None:
             raise TelegramNotificationError("Operational Setup has incomplete levels")
         lines.extend(f"{label}: {_display_level(value)}" for label, value in levels)
-        lines.extend(("", f"RR1: {_display_rr(notification.rr1)}", f"RR2: {_display_rr(notification.rr2)}", ""))
-    lines.append("Motivi:")
-    lines.extend(f"• {reason}" for reason in notification.reason_codes)
-    lines.extend(("", f"PIT: {notification.resolved_pit_class}", f"Record: {notification.resolved_record_class}"))
-    return "\n".join(lines)
+        lines.extend((f"RR1: {_display_rr(notification.rr1)}", f"RR2: {_display_rr(notification.rr2)}"))
+    lines.extend(("", "DA MONITORARE"))
+    monitoring = _monitoring(notification.research)
+    lines.extend(f"• {item}" for item in monitoring)
+    if not monitoring:
+        lines.append("Nessun elemento di monitoraggio esplicitamente registrato.")
+    lines.extend(("", "MOTIVI SINTETICI"))
+    lines.extend(f"• {_readable_reason(reason)}" for reason in notification.reason_codes)
+    lines.extend(("", "CODICI", ", ".join(notification.reason_codes),
+                  "", f"PIT: {notification.resolved_pit_class}",
+                  f"Record: {notification.resolved_record_class}"))
+    text = "\n".join(lines)
+    if len(text) > MAX_TELEGRAM_MESSAGE_CHARS:
+        raise TelegramNotificationError("Explainable Telegram message exceeds deterministic size limit")
+    return text
+
+
+def render_weekly_summary(report: Mapping[str, Any], notifications: Sequence[TelegramNotification],
+                          *, sol_completed: int) -> str:
+    counts = report.get("counts")
+    research_cutoff = report.get("research_cutoff")
+    snapshot = report.get("price_snapshot")
+    if not isinstance(counts, Mapping) or not isinstance(research_cutoff, Mapping) \
+            or not isinstance(snapshot, Mapping):
+        raise TelegramNotificationError("Final report lacks weekly summary provenance")
+    lines = ["TRINITY — Weekly Report",
+             f"Sessione tecnica: {snapshot.get('target_market_session') or snapshot.get('session') or '-'}",
+             f"Research cutoff: {research_cutoff.get('research_cutoff_utc') or '-'}",
+             f"Universo: {counts.get('universe', 0)}", "",
+             f"READY: {counts.get('ready_technically', 0)}",
+             f"Setup operativi: {counts.get('operational_setup', 0)}",
+             f"Luna WATCH: {counts.get('luna_watch', 0)}",
+             f"Luna ESCALATE: {counts.get('luna_escalate', 0)}",
+             f"Luna DROP: {counts.get('luna_drop', 0)}",
+             f"Sol completati: {sol_completed}", f"Candidati finali: {len(notifications)}"]
+    if notifications:
+        lines.extend(("", "Candidati:"))
+        lines.extend(f"• {item.ticker} — {item.research_status}" for item in notifications)
+    else:
+        lines.extend(("", _zero_candidate_explanation(counts)))
+    text = "\n".join(lines)
+    if len(text) > MAX_TELEGRAM_MESSAGE_CHARS:
+        raise TelegramNotificationError("Weekly summary exceeds deterministic size limit")
+    return text
 
 
 def send_telegram_message(
@@ -240,6 +300,127 @@ def _parse_decimal(value: str) -> Decimal:
     if not decimal.is_finite():
         raise TelegramNotificationError("Setup contains a non-finite decimal value")
     return decimal
+
+
+def _clean_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", value).strip() if isinstance(value, str) else ""
+
+
+def _sentences(value: Any, *, limit: int) -> list[str]:
+    text = _clean_text(value)
+    if not text:
+        return []
+    items = [item.strip() for item in re.split(r"(?<=[.!?])\s+", text) if item.strip()]
+    return [item for item in items if len(item) <= 700][:limit]
+
+
+def _explanation_sentences(research: Mapping[str, Any]) -> list[str]:
+    selected: list[str] = []
+    for field in ("bull_case", "earnings_and_news_analysis", "price_context"):
+        selected.extend(_sentences(research.get(field), limit=1))
+    material_events = sorted(
+        (item for item in research.get("event_assessments", [])
+         if isinstance(item, Mapping) and item.get("material") is True),
+        key=lambda item: (str(item.get("classification")), str(item.get("event_id"))),
+    )
+    if len(selected) < 2 and material_events:
+        selected.extend(_sentences(material_events[0].get("rationale"), limit=1))
+    return selected[:2] or ["Il record PRIMARY non contiene una spiegazione testuale disponibile."]
+
+
+def _fact_evidence_map(facts: Any) -> dict[str, str]:
+    result: dict[str, str] = {}
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            fact_id = value.get("fact_id")
+            evidence_id = value.get("evidence_id") or value.get("evidence_identifier")
+            if isinstance(fact_id, str) and isinstance(evidence_id, str):
+                result[fact_id] = evidence_id
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(facts)
+    return result
+
+
+def _material_evidence(research: Mapping[str, Any]) -> list[str]:
+    fact_map = _fact_evidence_map(research.get("facts", {}))
+    claims = [item for item in research.get("claim_refs", []) if isinstance(item, Mapping)
+              and isinstance(item.get("fact_ids"), list) and item.get("fact_ids")
+              and all(str(fact_id) in fact_map for fact_id in item["fact_ids"])]
+    claims.sort(key=lambda item: (
+        0 if item.get("materiality") == "MATERIAL" else 1,
+        str(item.get("field")), str(item.get("claim_id")),
+    ))
+    evidence = {str(item.get("identifier")): item for item in research.get("evidence", [])
+                if isinstance(item, Mapping) and item.get("identifier")}
+    assessments = {str(item.get("event_id")): item for item in research.get("event_assessments", [])
+                   if isinstance(item, Mapping) and item.get("event_id")}
+    rendered: list[str] = []
+    for claim in claims[:4]:
+        text = _clean_text(claim.get("text"))
+        if not text:
+            continue
+        details: list[str] = []
+        if claim.get("period"):
+            details.append(f"periodo {claim['period']}")
+        evidence_ids = [fact_map.get(str(fact_id)) for fact_id in claim["fact_ids"]]
+        evidence_ids = [item for item in evidence_ids if item]
+        if evidence_ids:
+            source = evidence.get(evidence_ids[0], {})
+            source_name = _clean_text(source.get("source"))
+            published = _clean_text(source.get("published_at"))
+            category = _clean_text(source.get("document_kind"))
+            if source_name:
+                details.append(source_name)
+            if published:
+                details.append(published)
+            if category:
+                details.append(category)
+            assessment = assessments.get(evidence_ids[0])
+            if assessment:
+                details.append(str(assessment.get("classification")))
+        rendered.append(text + (f" — {'; '.join(details)}" if details else ""))
+    return rendered
+
+
+def _counter_thesis(research: Mapping[str, Any]) -> list[str]:
+    items = _sentences(research.get("bear_case"), limit=1)
+    items.extend(_clean_text(item) for item in research.get("risks", [])
+                 if _clean_text(item))
+    notes = [_clean_text(item) for item in research.get("critic_notes", []) if _clean_text(item)]
+    items.extend(notes)
+    return items[:2]
+
+
+def _monitoring(research: Mapping[str, Any]) -> list[str]:
+    catalysts = [_clean_text(item) for item in research.get("catalysts", []) if _clean_text(item)]
+    risks = [_clean_text(item) for item in research.get("risks", []) if _clean_text(item)]
+    material_events = [
+        f"{item.get('classification')}: {_clean_text(item.get('rationale'))}"
+        for item in research.get("event_assessments", [])
+        if isinstance(item, Mapping) and item.get("material") is True
+        and _clean_text(item.get("rationale"))
+    ]
+    return (catalysts + material_events + risks)[:2]
+
+
+def _readable_reason(value: str) -> str:
+    return value.replace("_", " ").strip().capitalize()
+
+
+def _zero_candidate_explanation(counts: Mapping[str, Any]) -> str:
+    if int(counts.get("ready_technically", 0)) == 0:
+        return "Nessun titolo ha raggiunto il gate READY questa settimana."
+    if int(counts.get("operational_setup", 0)) == 0:
+        return "Nessun titolo READY ha prodotto un Setup operativo questa settimana."
+    if int(counts.get("luna_escalate", 0)) == 0:
+        return "Nessun Setup operativo è stato escalato da Luna questa settimana."
+    return "Nessun titolo ha superato tutti i gate fino a un candidato Sol operativo questa settimana."
 
 
 def _read_json(path: Path) -> Any:
@@ -360,16 +541,26 @@ def deliver_completed_run(
     try:
         run_id = _verify_post_archive_run(run_path)
         candidates = _select_sol_candidates(run_path)
+        final_report = _read_json(run_path / "artifacts" / "final_report.json")
+        sol_results = _read_json(run_path / "artifacts" / "sol_results.json")
+        if not isinstance(final_report, Mapping) or not isinstance(sol_results, list):
+            raise TelegramNotificationError("Weekly report inputs are malformed")
+        sol_completed = sum(
+            isinstance(item, Mapping) and item.get("run_status") == "SUCCESS"
+            and item.get("error") in (None, "") for item in sol_results
+        )
     except TelegramNotificationError as exc:
         result = {
             "schema_name": "trinity.telegram-delivery",
-            "schema_version": "1",
+            "schema_version": "2",
             "run_id": run_id,
             "notification_attempted": False,
             "candidate_count": 0,
             "candidate_tickers": [],
             "sent_count": 0,
             "failed_count": 0,
+            "summary_delivery": {"status": "NOT_ATTEMPTED", "error": None},
+            "summary_sent": False,
             "deliveries": [],
             "started_at_utc": started_at,
             "completed_at_utc": _timestamp(now),
@@ -382,13 +573,15 @@ def deliver_completed_run(
 
     result = {
         "schema_name": "trinity.telegram-delivery",
-        "schema_version": "1",
+        "schema_version": "2",
         "run_id": run_id,
-        "notification_attempted": bool(candidates),
+        "notification_attempted": True,
         "candidate_count": len(candidates),
         "candidate_tickers": [item["ticker"] for item in candidates],
         "sent_count": 0,
         "failed_count": 0,
+        "summary_delivery": {"status": "PENDING", "error": None},
+        "summary_sent": False,
         "deliveries": [],
         "started_at_utc": started_at,
         "completed_at_utc": None,
@@ -397,14 +590,11 @@ def deliver_completed_run(
     }
     result_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(result_path, result)
-    if not candidates:
-        result["completed_at_utc"] = _timestamp(now)
-        atomic_json(result_path, result)
-        return result
-
+    loaded: list[tuple[dict[str, str], TelegramNotification]] = []
     ledger_path = run_path / "ledger" / "trinity.sqlite3"
-    with storage_factory(ledger_path) as storage:
-        for candidate in candidates:
+    if candidates:
+        with storage_factory(ledger_path) as storage:
+          for candidate in candidates:
             delivery = {
                 "delivery_id": f"{run_id}:{candidate['setup_id']}",
                 "ticker": candidate["ticker"],
@@ -424,27 +614,53 @@ def deliver_completed_run(
                     raise TelegramNotificationError("Committed Setup is not operational")
                 if notification.ticker != candidate["ticker"]:
                     raise TelegramNotificationError("Sol and committed Setup ticker differ")
-                message = render_telegram_message(notification)
-                send_telegram_message(
-                    message,
-                    token=effective_token,
-                    chat_id=effective_chat,
-                    transport=transport,
-                )
-                delivery["status"] = "SENT"
-                result["sent_count"] += 1
+                loaded.append((candidate, notification))
             except Exception as exc:
                 delivery["error"] = _safe_error(
                     exc, token=effective_token, chat_id=effective_chat,
                 )
                 result["failed_count"] += 1
-            delivery["completed_at_utc"] = _timestamp(now)
             result["deliveries"].append(delivery)
-            atomic_json(result_path, result)
+
+    if result["failed_count"]:
+        result["completed_at_utc"] = _timestamp(now)
+        result["error"] = "Committed candidate lineage validation failed"
+        atomic_json(result_path, result)
+        return result
+
+    notifications = [item[1] for item in loaded]
+    try:
+        summary = render_weekly_summary(final_report, notifications, sol_completed=sol_completed)
+        send_telegram_message(summary, token=effective_token, chat_id=effective_chat, transport=transport)
+        result["summary_delivery"]["status"] = "SENT"
+        result["summary_sent"] = True
+    except Exception as exc:
+        result["summary_delivery"] = {
+            "status": "FAILED", "error": _safe_error(exc, token=effective_token, chat_id=effective_chat),
+        }
+        result["failed_count"] += 1
+        result["completed_at_utc"] = _timestamp(now)
+        result["error"] = "Weekly Telegram summary failed"
+        atomic_json(result_path, result)
+        return result
+
+    for (candidate, notification), delivery in zip(loaded, result["deliveries"]):
+        try:
+            send_telegram_message(
+                render_telegram_message(notification), token=effective_token,
+                chat_id=effective_chat, transport=transport,
+            )
+            delivery["status"] = "SENT"
+            result["sent_count"] += 1
+        except Exception as exc:
+            delivery["error"] = _safe_error(exc, token=effective_token, chat_id=effective_chat)
+            result["failed_count"] += 1
+        delivery["completed_at_utc"] = _timestamp(now)
+        atomic_json(result_path, result)
 
     result["completed_at_utc"] = _timestamp(now)
     result["telegram_sent"] = (
-        result["candidate_count"] > 0
+        result["summary_sent"]
         and result["sent_count"] == result["candidate_count"]
         and result["failed_count"] == 0
     )
