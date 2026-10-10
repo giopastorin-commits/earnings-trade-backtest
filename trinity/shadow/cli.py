@@ -77,6 +77,7 @@ def run_command() -> int:
     # This verification is the hard coverage gate. No analytical artifact or
     # model call is created until the explicit snapshot is READY and hash-valid.
     snapshot = ValidatedPriceSnapshot(price_snapshot_root(), require_ready=True)
+    weekly_provenance = _weekly_orchestrator_provenance()
     started = time.perf_counter()
     github_run_id = os.environ.get("GITHUB_RUN_ID", "local")
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
@@ -123,6 +124,8 @@ def run_command() -> int:
         state.write("RUNNING")
         atomic_json(run_root() / "current_run.json", {"run_id": run_id, "path": str(staging)})
         atomic_json(artifacts / "decision_cutoff.json", asdict(cutoff))
+        if weekly_provenance is not None:
+            atomic_json(artifacts / "weekly_orchestrator.json", weekly_provenance)
 
         usage = PersistentCostLedger(artifacts / "api_usage.json", Decimal(os.getenv("TRINITY_COST_GUARD_USD", "5.00")))
         transport = ResponsesAPI(run_root=staging, cost_ledger=usage)
@@ -216,6 +219,12 @@ def run_command() -> int:
                 value=asdict(research_cutoff),
                 media_type="application/json",
             )
+            if weekly_provenance is not None:
+                storage.insert_json_artifact(
+                    artifact_type="ledger.weekly-orchestrator-provenance.v1",
+                    value=weekly_provenance,
+                    media_type="application/json",
+                )
         stage = "LEDGER"
         close_and_verify(ledger_path)
         sol_rows = [] if result.sol_result is None else [asdict(item) for item in result.sol_result.results]
@@ -225,7 +234,7 @@ def run_command() -> int:
             else "TRINITY Shadow Production\nNo ESCALATE tickers; no Sol research results.\nDRY RUN - NOT SENT"
         )
         (artifacts / "telegram_dry_run.txt").write_text(telegram + "\n", encoding="utf-8")
-        atomic_json(artifacts / "final_report.json", {
+        final_report = {
             "run_id": run_id, "git_commit": _git_head(), "github_run_id": github_run_id,
             "github_run_attempt": attempt, "decision_cutoff": asdict(cutoff),
             "research_cutoff": asdict(research_cutoff),
@@ -240,7 +249,10 @@ def run_command() -> int:
             "price_snapshot": snapshot.provenance(),
             "runtime_seconds": time.perf_counter() - started,
             "telegram_sent": False, "broker_execution": False,
-        })
+        }
+        if weekly_provenance is not None:
+            final_report["weekly_orchestrator"] = weekly_provenance
+        atomic_json(artifacts / "final_report.json", final_report)
         return 0
     except CostGuardStop as exc:
         state.write("COST_GUARD_STOP", str(exc)); return 2
@@ -273,12 +285,37 @@ def archive_command() -> int:
 
 
 def _git_head() -> str:
-    expected = os.environ.get("GITHUB_SHA")
+    expected = os.environ.get("TRINITY_ANALYTICAL_GIT_SHA")
     if expected:
         return expected
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], check=True, text=True, capture_output=True,
     ).stdout.strip()
+
+
+def _weekly_orchestrator_provenance() -> dict[str, object] | None:
+    mode = os.environ.get("TRINITY_ORCHESTRATOR_MODE")
+    if not mode:
+        return None
+    required = {
+        "mode": mode,
+        "method_version": os.environ.get("TRINITY_ORCHESTRATOR_METHOD", ""),
+        "intended_monday_europe_rome": os.environ.get("TRINITY_INTENDED_MONDAY", ""),
+        "target_market_session": os.environ.get("TRINITY_TARGET_MARKET_SESSION", ""),
+        "target_session_open_utc": os.environ.get("TRINITY_TARGET_SESSION_OPEN_UTC", ""),
+        "target_session_close_utc": os.environ.get("TRINITY_TARGET_SESSION_CLOSE_UTC", ""),
+        "session_calendar": os.environ.get("TRINITY_SESSION_CALENDAR", ""),
+        "session_calendar_version": os.environ.get("TRINITY_SESSION_CALENDAR_VERSION", ""),
+        "analytical_commit": os.environ.get("TRINITY_ANALYTICAL_GIT_SHA", ""),
+        "workflow_registration_commit": os.environ.get("TRINITY_WORKFLOW_GIT_SHA", ""),
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        raise ValueError("incomplete weekly orchestrator provenance: " + ", ".join(missing))
+    if required["mode"] not in {"VALIDATION", "OFFICIAL"}:
+        raise ValueError("invalid weekly orchestrator mode")
+    required["official_benchmark_observation"] = required["mode"] == "OFFICIAL"
+    return required
 
 
 def main(argv: list[str] | None = None) -> int:
