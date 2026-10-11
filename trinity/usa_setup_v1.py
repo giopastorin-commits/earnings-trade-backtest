@@ -316,6 +316,9 @@ def build_setup(
         tp2 = max(metrics["high_60d"], entry + 2.0 * risk)
         if tp2 <= tp1:
             tp2 = entry + 3.0 * risk
+        if tp2 <= tp1 or _rounded(tp2) <= _rounded(tp1):
+            return _base_record(thesis, as_of, metrics, regime, setup_type="NO_SETUP",
+                                reason_codes=("TP2_NOT_DETERMINABLE",))
         return _base_record(
             thesis, as_of, metrics, regime, setup_type="PULLBACK",
             reason_codes=("UPTREND_CONFIRMED", "SMA_SUPPORT_NEARBY"),
