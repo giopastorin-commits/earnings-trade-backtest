@@ -477,6 +477,33 @@ def test_forward_pipeline_keeps_setup_on_price_session_with_later_research_date(
     assert research_at == f"{research_day}T12:00:00.000000Z"
 
 
+def test_committed_forward_result_survives_telegram_renderer_failure(monkeypatch, tmp_path):
+    def fail_render(_notification):
+        raise RuntimeError("injected oversized presentation")
+
+    monkeypatch.setattr("trinity.pilots.forward.render_telegram_message", fail_render)
+    database = tmp_path / "renderer-failure.sqlite3"
+    batch = run_forward_pilot(
+        database, ["AAPL"], dry_run=True,
+        source_provider_factory=lambda _root: _FixtureSource(),
+        llm_provider_factory=_llm,
+    )
+
+    result = batch.results[0]
+    assert result.run_status in {"SUCCESS", "NO_SETUP"}
+    assert result.telegram_message is None
+    assert result.telegram_sent is False
+    assert result.error is None
+    assert result.notification_error == "RuntimeError: injected oversized presentation"
+    assert result.run_id and result.research_id and result.setup_id
+    with LedgerStorage.open(database) as storage:
+        assert storage.connection.execute(
+            "SELECT status FROM attempt"
+        ).fetchone()[0] == "SUCCEEDED"
+        assert storage.connection.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 1
+        assert storage.connection.execute("SELECT COUNT(*) FROM setup").fetchone()[0] == 1
+
+
 def test_responses_api_provider_provenance_is_persisted_without_method_change(tmp_path):
     database = tmp_path / "responses.sqlite3"
     batch = run_forward_pilot(

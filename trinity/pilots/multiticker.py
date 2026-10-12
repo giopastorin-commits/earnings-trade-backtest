@@ -136,6 +136,7 @@ class TickerResult:
     setup_id: str | None = None
     telegram_message: str | None = None
     telegram_sent: bool = False
+    notification_error: str | None = None
     error: str | None = None
     fresh_price_timestamp: str = "-"
     freshest_evidence_timestamp: str = "-"
@@ -872,7 +873,7 @@ def _record_failure(storage, attempt, ticker, exc):
 
 
 def _ticker_result(
-    notification: TelegramNotification, message: str, sent: bool,
+    notification: TelegramNotification, message: str | None, sent: bool,
 ) -> TickerResult:
     operational = notification.setup_type != "NO_SETUP"
     return TickerResult(

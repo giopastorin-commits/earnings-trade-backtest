@@ -138,8 +138,21 @@ def run_forward_pilot(
                 notification = load_committed_setup(
                     storage, setup_id=identities["setup_id"], run_id=identities["run_id"],
                 )
-                message = render_telegram_message(notification)
-                result = _ticker_result(notification, message, False)
+                # Research, Setup and Manifest V3 are already committed here.
+                # Rendering is presentation-only and cannot rewrite that
+                # authoritative analytical outcome as FAILED.
+                notification_error = None
+                try:
+                    message = render_telegram_message(notification)
+                except Exception as exc:
+                    message = None
+                    notification_error = (
+                        f"{type(exc).__name__}: {str(exc)[:1000]}"
+                    )
+                result = replace(
+                    _ticker_result(notification, message, False),
+                    notification_error=notification_error,
+                )
                 results.append(replace(
                     result,
                     fresh_price_timestamp=sources.fresh_price_timestamp,

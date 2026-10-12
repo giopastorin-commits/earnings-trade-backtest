@@ -265,6 +265,53 @@ def test_explainable_report_prefers_material_claims_and_renders_committed_fields
     assert len(text) <= telegram.MAX_TELEGRAM_MESSAGE_CHARS
 
 
+def test_report_below_budget_is_not_compressed():
+    notification = _notification()
+    uncompressed = telegram._render_telegram_message(notification, {})
+
+    assert len(uncompressed) < telegram.MAX_TELEGRAM_MESSAGE_CHARS
+    assert render_telegram_message(notification) == uncompressed
+
+
+def test_verbose_swks_like_report_is_bounded_and_keeps_operational_fields():
+    verbose = (
+        "La società ha registrato un aggiornamento documentato con implicazioni "
+        "materiali per ricavi, margini, domanda finale e allocazione del capitale "
+        "nel periodo osservato, secondo le evidenze primarie collegate. " * 12
+    ).strip()
+    research = _research_result(
+        bull_case=verbose,
+        earnings_and_news_analysis=verbose,
+        bear_case=verbose,
+        risks=[verbose, verbose],
+        catalysts=[verbose, verbose],
+        thesis_invalidation=verbose,
+        critic_notes=[verbose],
+        claim_refs=[
+            {"claim_id": f"material-{index}", "field": "fundamental_analysis",
+             "text": verbose, "fact_ids": ["fact:material"],
+             "materiality": "MATERIAL", "period": f"2026Q{index + 1}"}
+            for index in range(3)
+        ],
+    )
+
+    text = render_telegram_message(_notification(ticker="SWKS", research=research))
+
+    assert len(text) <= telegram.MAX_TELEGRAM_MESSAGE_CHARS
+    for required in (
+        "TRINITY — SWKS", "Research: INVESTIGATE", "Setup: PULLBACK",
+        "Regime: UPTREND", "Evidence confidence: HIGH", "Thesis strength: MEDIUM",
+        "Entry: 264.022", "Stop: 256.1417", "TP1: 281.07", "TP2: 287.6628",
+        "RR1: 2.1634", "RR2: 3", "INVALIDAZIONE TESI",
+    ):
+        assert required in text
+    assert "La società ha registrato un aggiornamento documentato" in text
+    assert text.split("INVALIDAZIONE TESI\n", 1)[1].split("\n", 1)[0].startswith(
+        "La società ha registrato un aggiornamento documentato"
+    )
+    assert "…" in text
+
+
 def test_missing_optional_research_lists_render_gracefully():
     research = _research_result(catalysts=[], risks=[], critic_notes=[], event_assessments=[])
     text = render_telegram_message(_notification(research=research))
@@ -445,7 +492,8 @@ def test_sol_candidate_selection_is_structured_deterministic_and_exclusive(tmp_p
         {"ticker": "NOPE", "setup_id": "none", "run_id": "r", "setup_type": "NO_SETUP",
          "run_status": "SUCCESS", "error": None},
         {"ticker": "AAA", "setup_id": "a", "run_id": "r", "setup_type": "BREAKOUT",
-         "run_status": "SUCCESS", "error": None},
+         "run_status": "SUCCESS", "error": None,
+         "notification_error": "prior dry-run rendering failed"},
     ]), encoding="utf-8")
     assert telegram._select_sol_candidates(root) == [
         {"ticker": "AAA", "setup_id": "a", "ledger_run_id": "r"},

@@ -174,6 +174,35 @@ def load_committed_setup(
 def render_telegram_message(notification: TelegramNotification) -> str:
     """Render an explainable report from committed Setup and PRIMARY Research only."""
 
+    # Keep ordinary reports byte-for-byte stable apart from the documented item
+    # bounds.  Only verbose reports enter the deterministic compression ladder.
+    text = _render_telegram_message(notification, {})
+    if len(text) <= MAX_TELEGRAM_MESSAGE_CHARS:
+        return text
+    for limits in (
+        {"explanation": 420, "evidence": 280, "counter": 360,
+         "monitoring": 360, "reason": 180},
+        {"explanation": 240, "evidence": 240, "counter": 220,
+         "monitoring": 200, "reason": 120},
+        {"explanation": 180, "evidence": 180, "counter": 160,
+         "monitoring": 140, "reason": 80},
+        {"explanation": 180, "evidence": 180, "counter": 160,
+         "invalidation": 240, "monitoring": 140, "reason": 80},
+    ):
+        text = _render_telegram_message(notification, limits)
+        if len(text) <= MAX_TELEGRAM_MESSAGE_CHARS:
+            return text
+    raise TelegramNotificationError("Explainable Telegram message exceeds deterministic size limit")
+
+
+def _render_telegram_message(
+    notification: TelegramNotification, limits: Mapping[str, int],
+) -> str:
+    """Render one deterministic compression level without changing source meaning."""
+
+    def bounded(value: str, field: str) -> str:
+        return _truncate_text(value, limits.get(field))
+
     lines = [f"TRINITY — {notification.ticker}", "", "STATO",
              f"Research: {notification.research_status}",
              f"Setup: {notification.setup_type}",
@@ -181,18 +210,21 @@ def render_telegram_message(notification: TelegramNotification) -> str:
              f"Evidence confidence: {notification.evidence_confidence}",
              f"Thesis strength: {notification.thesis_strength}",
              "", "PERCHÉ È ARRIVATO FIN QUI"]
-    lines.extend(_explanation_sentences(notification.research))
+    lines.extend(bounded(item, "explanation") for item in
+                 _explanation_sentences(notification.research))
     lines.extend(("", "EVIDENZE PRINCIPALI"))
     evidence = _material_evidence(notification.research)
-    lines.extend(f"• {item}" for item in evidence)
+    lines.extend(f"• {bounded(item, 'evidence')}" for item in evidence)
     if not evidence:
         lines.append("Nessuna evidenza materiale con fact_id valida esplicitamente registrata.")
     lines.extend(("", "RISCHI / CONTROTESI"))
     counter = _counter_thesis(notification.research)
-    lines.extend(f"• {item}" for item in counter)
+    lines.extend(f"• {bounded(item, 'counter')}" for item in counter)
     if not counter:
         lines.append("Nessuna controtesi materiale esplicitamente registrata.")
-    invalidation = _clean_text(notification.research.get("thesis_invalidation"))
+    invalidation = bounded(
+        _clean_text(notification.research.get("thesis_invalidation")), "invalidation",
+    )
     lines.extend(("", "INVALIDAZIONE TESI", invalidation or
                   "Condizione di invalidazione non stabilita nel record di ricerca.",
                   "", "PIANO OPERATIVO"))
@@ -205,17 +237,16 @@ def render_telegram_message(notification: TelegramNotification) -> str:
         lines.extend((f"RR1: {_display_rr(notification.rr1)}", f"RR2: {_display_rr(notification.rr2)}"))
     lines.extend(("", "DA MONITORARE"))
     monitoring = _monitoring(notification.research)
-    lines.extend(f"• {item}" for item in monitoring)
+    lines.extend(f"• {bounded(item, 'monitoring')}" for item in monitoring)
     if not monitoring:
         lines.append("Nessun elemento di monitoraggio esplicitamente registrato.")
     lines.extend(("", "MOTIVI SINTETICI"))
-    lines.extend(f"• {_readable_reason(reason)}" for reason in notification.reason_codes)
+    lines.extend(f"• {bounded(_readable_reason(reason), 'reason')}"
+                 for reason in notification.reason_codes)
     lines.extend(("", "CODICI", ", ".join(notification.reason_codes),
                   "", f"PIT: {notification.resolved_pit_class}",
                   f"Record: {notification.resolved_record_class}"))
     text = "\n".join(lines)
-    if len(text) > MAX_TELEGRAM_MESSAGE_CHARS:
-        raise TelegramNotificationError("Explainable Telegram message exceeds deterministic size limit")
     return text
 
 
@@ -306,12 +337,26 @@ def _clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", value).strip() if isinstance(value, str) else ""
 
 
+def _truncate_text(value: str, limit: int | None) -> str:
+    """Return a source-faithful prefix with a deterministic word-boundary marker."""
+
+    if limit is None or len(value) <= limit:
+        return value
+    if limit <= 1:
+        return "…"[:limit]
+    prefix = value[:limit - 1].rstrip()
+    boundary = prefix.rfind(" ")
+    if boundary >= max(1, (limit - 1) // 2):
+        prefix = prefix[:boundary].rstrip()
+    return prefix + "…"
+
+
 def _sentences(value: Any, *, limit: int) -> list[str]:
     text = _clean_text(value)
     if not text:
         return []
     items = [item.strip() for item in re.split(r"(?<=[.!?])\s+", text) if item.strip()]
-    return [item for item in items if len(item) <= 700][:limit]
+    return items[:limit]
 
 
 def _explanation_sentences(research: Mapping[str, Any]) -> list[str]:
@@ -361,7 +406,7 @@ def _material_evidence(research: Mapping[str, Any]) -> list[str]:
     assessments = {str(item.get("event_id")): item for item in research.get("event_assessments", [])
                    if isinstance(item, Mapping) and item.get("event_id")}
     rendered: list[str] = []
-    for claim in claims[:4]:
+    for claim in claims[:3]:
         text = _clean_text(claim.get("text"))
         if not text:
             continue
