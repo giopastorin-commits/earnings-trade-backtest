@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from bs4 import BeautifulSoup
 import requests
@@ -410,6 +410,7 @@ def acquire_sec_documents(
 
 def load_document_coverage(
     ticker: str, as_of: str, *, cache_dir: str | Path = DEFAULT_CACHE,
+    local_path_resolver: Callable[[str, str], Path] | None = None,
 ) -> dict[str, Any] | None:
     """Load only a complete, matching cached manifest; never fetch implicitly."""
     path = Path(cache_dir) / "manifest.json"
@@ -422,7 +423,12 @@ def load_document_coverage(
     if not company:
         return None
     for document in company.get("documents", []):
-        local = Path(document["local_path"])
+        original_local_path = str(document["local_path"])
+        expected_sha256 = str(document["content_sha256"])
+        local = (
+            local_path_resolver(original_local_path, expected_sha256)
+            if local_path_resolver is not None else Path(original_local_path)
+        )
         if not local.is_file() or _sha(local.read_bytes()) != document["content_sha256"]:
             raise SECAcquisitionError(f"cached document hash mismatch: {local}")
         if document["published_at"] > as_of or document["filing_date"] > as_of:

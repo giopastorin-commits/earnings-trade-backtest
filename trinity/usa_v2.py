@@ -17,7 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from trinity.italia_real import CodexCLIProvider, _ANALYST_SCHEMA
 from trinity.italia_v1 import (
@@ -1515,6 +1515,7 @@ def load_company(
     news_source: str = "EODHD cached issuer wire release",
     continuity_evidence_ids: tuple[str, ...] = (),
     research_as_of: str | None = None,
+    document_path_resolver: Callable[[str, str], Path] | None = None,
 ) -> EvidencePack:
     """Assemble cached data and source-linked literal facts without network calls."""
     try:
@@ -1596,6 +1597,7 @@ def load_company(
                        "guidance": guidance["source_excerpt"] if guidance else None})
     document_coverage = load_document_coverage(
         ticker, evidence_as_of, cache_dir=documents_dir,
+        local_path_resolver=document_path_resolver,
     )
     if document_coverage:
         documents = document_coverage["documents"]

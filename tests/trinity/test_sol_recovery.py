@@ -29,9 +29,11 @@ from trinity.shadow.responses import (
 )
 from trinity.shadow.sol_recovery import (
     CONFIRMATION, SolRecoveryError, SolRecoverySpec,
+    _archived_sec_path_resolver, _require_inside,
     execute_sol_recovery, preflight_sol_recovery,
 )
 from trinity.usa_setup_v1 import PRICE_CACHE, THESIS_CACHE, _load_latest_thesis
+from trinity.usa_documents import load_document_coverage
 from trinity.usa_v2 import AS_OF
 from trinity.usa_v2 import with_expectation_comparisons
 
@@ -257,6 +259,7 @@ def historical_source(recovery_source, tmp_path, monkeypatch):
         MappingProxyType({
             RUN_ID: HistoricalTrustRecord(
                 source_run_id=RUN_ID,
+                attestation_id=json.loads(raw)["attestation_id"],
                 attestation_sha256=hashlib.sha256(raw).hexdigest(),
                 original_manifest_sha256=manifest_sha,
                 original_ledger_sha256=ledger_sha,
@@ -414,6 +417,7 @@ def test_repository_historical_attestation_has_frozen_identity():
     trusted = historical_reconciliation._HISTORICAL_TRUST_REGISTRY[RUN_ID]
     assert trusted == HistoricalTrustRecord(
         source_run_id=RUN_ID,
+        attestation_id="sha256:321d1907882de2667e3e74ea7bf82140484556619dfae10dc7d103f28c111cb8",
         attestation_sha256="d58658403e12f4c6d1df8e8a7615a982f0938e8ac6a95aa335f33e2ef8a1f5b1",
         original_manifest_sha256="a322cfd900658dee5fc787a79e877262f4aac93fb9cae80f5357502ace464878",
         original_ledger_sha256="c18969c615df6ee465530df6014813b7f55187d7ffa32c3db5fd528d2ef53ae8",
@@ -500,6 +504,122 @@ def test_trust_registry_rejects_coherent_manifest_ledger_snapshot_substitution(
         )
 
 
+def _historical_sec_document(root: Path, ticker: str) -> tuple[str, bytes, Path]:
+    relative = f"{ticker}/verified-document.html"
+    target = root / "fresh_sources" / "trinity" / ticker / "sec" / Path(relative)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    raw = f"immutable SEC bytes for {ticker}".encode("utf-8")
+    target.write_bytes(raw)
+    original = (
+        f"/home/runner/work/_temp/trinity-shadow/{RUN_ID}/"
+        f"fresh_sources/trinity/{ticker}/sec/{relative}"
+    )
+    return original, raw, target
+
+
+@pytest.mark.parametrize("ticker", ["MRNA", "SWKS"])
+def test_historical_sec_absolute_path_relocates_and_preserves_audit_path(tmp_path, ticker):
+    root = tmp_path / RUN_ID
+    original, raw, target = _historical_sec_document(root, ticker)
+    sec_root = root / "fresh_sources" / "trinity" / ticker / "sec"
+    manifest = {
+        "as_of": "2026-10-12",
+        "companies": {ticker: {"documents": [{
+            "local_path": original,
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "published_at": "2026-10-09",
+            "filing_date": "2026-10-09",
+            "evidence_id": f"sec:{ticker}:verified",
+        }]}},
+    }
+    (sec_root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    trusted = historical_reconciliation._HISTORICAL_TRUST_REGISTRY[RUN_ID]
+    resolver = _archived_sec_path_resolver(root, ticker, trusted.attestation_id)
+    assert resolver is not None
+    assert resolver(original, hashlib.sha256(raw).hexdigest()) == target.resolve()
+    loaded = load_document_coverage(
+        ticker, "2026-10-12", cache_dir=sec_root,
+        local_path_resolver=resolver,
+    )
+    assert loaded is not None
+    assert loaded["documents"][0]["local_path"] == original
+
+
+def test_historical_sec_relocation_rejects_digest_mismatch(tmp_path):
+    root = tmp_path / RUN_ID
+    original, _raw, _target = _historical_sec_document(root, "SWKS")
+    trusted = historical_reconciliation._HISTORICAL_TRUST_REGISTRY[RUN_ID]
+    resolver = _archived_sec_path_resolver(root, "SWKS", trusted.attestation_id)
+    with pytest.raises(SolRecoveryError, match="SHA-256 mismatch"):
+        resolver(original, "0" * 64)
+
+
+def test_historical_sec_relocation_rejects_missing_and_duplicate_filename_fallback(tmp_path):
+    root = tmp_path / RUN_ID
+    sec_root = root / "fresh_sources" / "trinity" / "SWKS" / "sec"
+    for directory in ("first", "second"):
+        path = sec_root / directory / "same.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"duplicate filename")
+    original = (
+        f"/home/runner/work/_temp/trinity-shadow/{RUN_ID}/"
+        "fresh_sources/trinity/SWKS/sec/expected/same.html"
+    )
+    trusted = historical_reconciliation._HISTORICAL_TRUST_REGISTRY[RUN_ID]
+    resolver = _archived_sec_path_resolver(root, "SWKS", trusted.attestation_id)
+    with pytest.raises(SolRecoveryError, match="is missing"):
+        resolver(original, hashlib.sha256(b"duplicate filename").hexdigest())
+
+
+@pytest.mark.parametrize("kind", ["traversal", "ambiguous", "substitution"])
+def test_historical_sec_relocation_rejects_unsafe_or_ambiguous_suffix(tmp_path, kind):
+    root = tmp_path / RUN_ID
+    trusted = historical_reconciliation._HISTORICAL_TRUST_REGISTRY[RUN_ID]
+    resolver = _archived_sec_path_resolver(root, "MRNA", trusted.attestation_id)
+    anchor = f"{RUN_ID}/fresh_sources/trinity/MRNA/sec"
+    original = (
+        f"/home/runner/{anchor}/../outside.html" if kind == "traversal" else
+        f"/home/runner/{anchor}/nested/{anchor}/document.html" if kind == "ambiguous" else
+        f"/arbitrary/prefix/{anchor}/document.html"
+    )
+    with pytest.raises(SolRecoveryError, match="unsafe|ambiguous|not authorized"):
+        resolver(original, "0" * 64)
+
+
+def test_historical_sec_relocation_rejects_outside_root_and_unauthorized_run(tmp_path):
+    root = (tmp_path / RUN_ID).resolve()
+    outside = (tmp_path / "outside.html").resolve()
+    with pytest.raises(SolRecoveryError, match="escapes verified source root"):
+        _require_inside(root, outside, "relocated SEC document")
+    unauthorized = tmp_path / "SHADOW_USA_UNAUTHORIZED"
+    with pytest.raises(SolRecoveryError, match="not authorized for this run"):
+        _archived_sec_path_resolver(
+            unauthorized, "SWKS",
+            historical_reconciliation._HISTORICAL_TRUST_REGISTRY[RUN_ID].attestation_id,
+        )
+
+
+def test_normal_sec_loader_path_behavior_is_unchanged(tmp_path):
+    raw = b"ordinary production cache"
+    document = tmp_path / "ordinary.html"
+    document.write_bytes(raw)
+    original = str(document)
+    manifest = {
+        "as_of": "2026-09-12",
+        "companies": {"AAPL": {"documents": [{
+            "local_path": original,
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
+            "published_at": "2026-09-12",
+            "filing_date": "2026-09-12",
+            "evidence_id": "sec:AAPL:ordinary",
+        }]}},
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    loaded = load_document_coverage("AAPL", "2026-09-12", cache_dir=tmp_path)
+    assert loaded is not None
+    assert loaded["documents"][0]["local_path"] == original
+
+
 class _OfflineCriticTransport:
     def __init__(self, ledger, critic):
         self.ledger = ledger
@@ -538,7 +658,7 @@ def test_sol_recovery_calls_only_critic_preserves_source_and_is_idempotent(
     )
     monkeypatch.setattr(
         "trinity.shadow.sol_recovery._rebuild_archived_inputs",
-        lambda *_args: (archived.pack, native_facts),
+        lambda *_args, **_kwargs: (archived.pack, native_facts),
     )
 
     destination = tmp_path / "RECOVERY_38230389276_SWKS_R1"
@@ -585,7 +705,7 @@ def test_sol_recovery_source_mismatch_blocks_before_transport(
     root, spec = recovery_source
     monkeypatch.setattr(
         "trinity.shadow.sol_recovery._rebuild_archived_inputs",
-        lambda *_args: (_ for _ in ()).throw(
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
             SolRecoveryError("archived sources do not reconstruct fact packet")
         ),
     )

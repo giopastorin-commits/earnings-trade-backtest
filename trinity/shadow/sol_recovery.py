@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
 from typing import Any, Callable, Mapping
@@ -29,7 +29,9 @@ from trinity.pilots.multiticker import (
 )
 from trinity.shadow.atomic import atomic_json
 from trinity.shadow.historical_reconciliation import (
+    HISTORICAL_RUN_ID,
     HistoricalReconciliationError,
+    historical_trust_record,
     verify_historical_reconciliation,
 )
 from trinity.shadow.manifest import generate_manifest, verify_manifest
@@ -414,6 +416,7 @@ def execute_sol_recovery(
             pack, facts = _rebuild_archived_inputs(
                 source, spec.ticker, as_of, plan.research_cutoff_utc[:10],
                 original_times["price"], stored_facts,
+                historical_reconciliation_id=plan.historical_reconciliation_id,
             )
             persisted = _persist_inputs(
                 storage, attempt, spec.ticker, pack, facts, bars, price_raw,
@@ -548,7 +551,8 @@ def _load_shared_definitions(storage: LedgerStorage, code_commit: str) -> dict[s
 
 def _rebuild_archived_inputs(
     source_root: Path, ticker: str, price_as_of: str, research_as_of: str,
-    price_retrieved_at: str, stored_facts: Mapping[str, Any],
+    price_retrieved_at: str, stored_facts: Mapping[str, Any], *,
+    historical_reconciliation_id: str | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Rebuild the exact fact packet from manifested files, never from a network."""
     ticker_root = source_root / "fresh_sources" / "trinity" / ticker
@@ -562,6 +566,9 @@ def _rebuild_archived_inputs(
         price_source="Twelve Data validated immutable OHLCV snapshot",
         news_source="EODHD live issuer/news API",
         continuity_evidence_ids=continuity, research_as_of=research_as_of,
+        document_path_resolver=_archived_sec_path_resolver(
+            source_root, ticker, historical_reconciliation_id,
+        ),
     )
     native = build_facts_v3(
         with_expectation_comparisons(pack.company_input), research_as_of,
@@ -584,6 +591,71 @@ def _rebuild_archived_inputs(
             "archived sources do not reconstruct the manifested Analyst fact packet"
         )
     return pack, native
+
+
+def _archived_sec_path_resolver(
+    source_root: Path, ticker: str, reconciliation_id: str | None,
+) -> Callable[[str, str], Path] | None:
+    """Authorize one exact historical SEC path namespace; never a fallback."""
+    if reconciliation_id is None:
+        return None
+    if source_root.name != HISTORICAL_RUN_ID:
+        raise SolRecoveryError("archived SEC relocation is not authorized for this run")
+    try:
+        trusted = historical_trust_record(source_root.name)
+    except HistoricalReconciliationError as exc:
+        raise SolRecoveryError("archived SEC relocation run is not trusted") from exc
+    if reconciliation_id != trusted.attestation_id:
+        raise SolRecoveryError("archived SEC relocation attestation is not authorized")
+
+    verified_root = source_root.resolve()
+    sec_root = (verified_root / "fresh_sources" / "trinity" / ticker / "sec").resolve()
+    _require_inside(verified_root, sec_root, "archived SEC root")
+    anchor = (source_root.name, "fresh_sources", "trinity", ticker, "sec")
+    historical_prefix = (
+        "/", "home", "runner", "work", "_temp", "trinity-shadow", *anchor,
+    )
+
+    def resolve(original_local_path: str, expected_sha256: str) -> Path:
+        pure = PurePosixPath(original_local_path)
+        if (
+            not pure.is_absolute() or "\\" in original_local_path
+            or ".." in pure.parts or original_local_path != pure.as_posix()
+        ):
+            raise SolRecoveryError("unsafe archived SEC local_path")
+        parts = pure.parts
+        positions = [
+            index for index in range(len(parts) - len(anchor) + 1)
+            if tuple(parts[index:index + len(anchor)]) == anchor
+        ]
+        if len(positions) != 1:
+            raise SolRecoveryError("archived SEC local_path mapping is missing or ambiguous")
+        if tuple(parts[:len(historical_prefix)]) != historical_prefix:
+            raise SolRecoveryError("archived SEC local_path namespace is not authorized")
+        suffix = parts[positions[0] + len(anchor):]
+        if not suffix:
+            raise SolRecoveryError("archived SEC local_path has no document suffix")
+        candidate = sec_root.joinpath(*suffix).resolve()
+        _require_inside(verified_root, candidate, "relocated SEC document")
+        _require_inside(sec_root, candidate, "relocated SEC document")
+        if not candidate.is_file():
+            raise SolRecoveryError("relocated SEC document is missing")
+        if not _valid_sha256(expected_sha256):
+            raise SolRecoveryError("archived SEC document SHA-256 is invalid")
+        if hashlib.sha256(candidate.read_bytes()).hexdigest() != expected_sha256:
+            raise SolRecoveryError("relocated SEC document SHA-256 mismatch")
+        return candidate
+
+    return resolve
+
+
+def _require_inside(root: Path, candidate: Path, label: str) -> None:
+    if root != candidate and root not in candidate.parents:
+        raise SolRecoveryError(f"{label} escapes verified source root")
+
+
+def _valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _single_artifact_for_attempt(

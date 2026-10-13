@@ -33,6 +33,7 @@ class HistoricalTrustRecord:
     """Immutable production trust anchor for one authorized historical run."""
 
     source_run_id: str
+    attestation_id: str
     attestation_sha256: str
     original_manifest_sha256: str
     original_ledger_sha256: str
@@ -45,6 +46,7 @@ class HistoricalTrustRecord:
 _HISTORICAL_TRUST_REGISTRY: Mapping[str, HistoricalTrustRecord] = MappingProxyType({
     HISTORICAL_RUN_ID: HistoricalTrustRecord(
         source_run_id=HISTORICAL_RUN_ID,
+        attestation_id="sha256:321d1907882de2667e3e74ea7bf82140484556619dfae10dc7d103f28c111cb8",
         attestation_sha256="d58658403e12f4c6d1df8e8a7615a982f0938e8ac6a95aa335f33e2ef8a1f5b1",
         original_manifest_sha256="a322cfd900658dee5fc787a79e877262f4aac93fb9cae80f5357502ace464878",
         original_ledger_sha256="c18969c615df6ee465530df6014813b7f55187d7ffa32c3db5fd528d2ef53ae8",
@@ -369,6 +371,11 @@ def _trusted_record(run_id: str) -> HistoricalTrustRecord:
     if record is None or record.source_run_id != run_id:
         raise HistoricalReconciliationError("historical run is not in the production trust registry")
     return record
+
+
+def historical_trust_record(run_id: str) -> HistoricalTrustRecord:
+    """Return the immutable trust anchor or fail closed for every other run."""
+    return _trusted_record(run_id)
 
 
 def _required_file_bytes(path: Path, label: str) -> bytes:
