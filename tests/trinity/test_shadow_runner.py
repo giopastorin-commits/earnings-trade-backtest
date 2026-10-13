@@ -146,6 +146,34 @@ def test_manifest_excludes_sqlite_sidecars_and_verifies(tmp_path):
     verify_manifest(tmp_path, manifest)
 
 
+def test_manifest_excludes_only_root_outputs_and_preserves_nested_names(tmp_path):
+    nested = tmp_path / "fresh_sources" / "trinity" / "SWKS" / "sec"
+    nested.mkdir(parents=True)
+    nested_manifest = b'{"source":"sec","filings":["10-Q"]}\n'
+    nested_checksums = b"source-checksum  filing.json\n"
+    (nested / "manifest.json").write_bytes(nested_manifest)
+    (nested / "checksums.sha256").write_bytes(nested_checksums)
+
+    # Stale root outputs must never become self-referential inputs.
+    (tmp_path / "manifest.json").write_bytes(b"stale root manifest")
+    (tmp_path / "checksums.sha256").write_bytes(b"stale root checksums")
+
+    manifest = generate_manifest(tmp_path, run_id="run")
+    entries = {item["path"]: item for item in manifest["files"]}
+    expected = {
+        "fresh_sources/trinity/SWKS/sec/manifest.json": nested_manifest,
+        "fresh_sources/trinity/SWKS/sec/checksums.sha256": nested_checksums,
+    }
+
+    assert set(entries) == set(expected)
+    for relative, payload in expected.items():
+        assert entries[relative]["bytes"] == len(payload)
+        assert entries[relative]["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert manifest["file_count"] == 2
+    assert manifest["total_bytes"] == sum(map(len, expected.values()))
+    verify_manifest(tmp_path, manifest)
+
+
 class _R2:
     def __init__(self, existing=None, metadata=None):
         self.existing = existing or []

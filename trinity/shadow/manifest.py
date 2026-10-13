@@ -9,6 +9,7 @@ from .atomic import atomic_bytes, atomic_json
 
 
 EXCLUDED_SUFFIXES = ("-wal", "-shm", "-journal", ".tmp")
+ROOT_MANIFEST_OUTPUTS = frozenset({Path("manifest.json"), Path("checksums.sha256")})
 
 
 def eligible_files(root: str | Path) -> list[Path]:
@@ -16,7 +17,7 @@ def eligible_files(root: str | Path) -> list[Path]:
     return [
         path for path in sorted(base.rglob("*"))
         if path.is_file() and not path.name.endswith(EXCLUDED_SUFFIXES)
-        and path.name not in {"manifest.json", "checksums.sha256"}
+        and path.relative_to(base) not in ROOT_MANIFEST_OUTPUTS
     ]
 
 
