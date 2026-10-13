@@ -163,6 +163,7 @@ config.json
 # Data files
 *.csv
 *.json
+!attestations/shadow/SHADOW_USA_2026-10-09_38230389276_A1.reconciliation.json
 *.xlsx
 *.parquet
 

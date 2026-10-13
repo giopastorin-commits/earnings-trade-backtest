@@ -1,0 +1,126 @@
+{
+  "attestation_id": "sha256:321d1907882de2667e3e74ea7bf82140484556619dfae10dc7d103f28c111cb8",
+  "schema_name": "trinity.shadow-historical-reconciliation",
+  "schema_version": "1",
+  "statement": {
+    "analytical_commit": "c0558e7c95a90d37baa9cf3fbcc09376ad59e5dd",
+    "control_files": [
+      {
+        "bytes": 7332,
+        "path": "checksums.sha256",
+        "sha256": "34ec92581da9ab0798b64b3c3cd9e8964a5d6720d463611ba57b339b62b6bbaf",
+        "status": "VERIFIED"
+      },
+      {
+        "bytes": 52,
+        "path": "r2_archive_result.json",
+        "sha256": "95391eb3fa251e0062b2216cb800a526b3951e444926ad794fe5394091d46450",
+        "status": "VERIFIED"
+      }
+    ],
+    "defect": {
+      "classification": "GENERATOR_PATH_NAME_FILTER_DEFECT",
+      "component": "trinity/shadow/manifest.py:eligible_files",
+      "historical_predicate": "path.name not in {'manifest.json', 'checksums.sha256'}",
+      "impact": "all nested files with either basename were omitted from the Shadow inventory"
+    },
+    "github_artifact": {
+      "artifact_id": 11742264978,
+      "created_at": "2026-10-12T11:15:10Z",
+      "digest": "sha256:834bf4de257eb1064bd3c335307a2c113760efa248fe271cbe300f426a69101f",
+      "head_sha": "b550a921d4f7bb02fe3cd196422e95f3d583bac6",
+      "name": "trinity-weekly-shadow-38230389276-attempt-1",
+      "size_in_bytes": 7327288,
+      "status": "VERIFIED",
+      "workflow_run_id": 38230389276
+    },
+    "method_version": "SHADOW_MANIFEST_PATH_NAME_RECONCILIATION_V1",
+    "mode": "VALIDATION",
+    "official_benchmark_observation": false,
+    "omissions": [
+      {
+        "bytes": 51323,
+        "path": "fresh_sources/trinity/MRNA/sec/manifest.json",
+        "r2": {
+          "checksum_sha256": "UNKNOWN",
+          "content_length": 51323,
+          "key": "runs/shadow/run_id=SHADOW_USA_2026-10-09_38230389276_A1/manifests/fresh_sources/trinity/MRNA/sec/manifest.json",
+          "last_modified": "2026-10-12T11:14:27+00:00",
+          "metadata_sha256": "a1715a42e22cd9e3a329fd572de2abeb2089e4079800cb9082b5690b6379f6ca",
+          "object_lock_legal_hold": "UNKNOWN",
+          "object_lock_mode": "UNKNOWN",
+          "object_lock_retain_until": "UNKNOWN",
+          "status": "VERIFIED",
+          "version_id": "UNKNOWN"
+        },
+        "sha256": "a1715a42e22cd9e3a329fd572de2abeb2089e4079800cb9082b5690b6379f6ca",
+        "status": "VERIFIED"
+      },
+      {
+        "bytes": 53618,
+        "path": "fresh_sources/trinity/SWKS/sec/manifest.json",
+        "r2": {
+          "checksum_sha256": "UNKNOWN",
+          "content_length": 53618,
+          "key": "runs/shadow/run_id=SHADOW_USA_2026-10-09_38230389276_A1/manifests/fresh_sources/trinity/SWKS/sec/manifest.json",
+          "last_modified": "2026-10-12T11:14:34+00:00",
+          "metadata_sha256": "69cc76fb3f0d8a4db1e8b5d01d75f7c15b70da8fe58e2a971de83cdc41704742",
+          "object_lock_legal_hold": "UNKNOWN",
+          "object_lock_mode": "UNKNOWN",
+          "object_lock_retain_until": "UNKNOWN",
+          "status": "VERIFIED",
+          "version_id": "UNKNOWN"
+        },
+        "sha256": "69cc76fb3f0d8a4db1e8b5d01d75f7c15b70da8fe58e2a971de83cdc41704742",
+        "status": "VERIFIED"
+      }
+    ],
+    "original_shadow": {
+      "ledger": {
+        "bytes": 16969728,
+        "path": "ledger/trinity.sqlite3",
+        "r2": {
+          "checksum_sha256": "UNKNOWN",
+          "content_length": 16969728,
+          "key": "runs/shadow/run_id=SHADOW_USA_2026-10-09_38230389276_A1/ledger/ledger/trinity.sqlite3",
+          "last_modified": "2026-10-12T11:14:36+00:00",
+          "metadata_sha256": "c18969c615df6ee465530df6014813b7f55187d7ffa32c3db5fd528d2ef53ae8",
+          "object_lock_legal_hold": "UNKNOWN",
+          "object_lock_mode": "UNKNOWN",
+          "object_lock_retain_until": "UNKNOWN",
+          "status": "VERIFIED",
+          "version_id": "UNKNOWN"
+        },
+        "sha256": "c18969c615df6ee465530df6014813b7f55187d7ffa32c3db5fd528d2ef53ae8",
+        "status": "VERIFIED"
+      },
+      "manifest": {
+        "bytes": 12070,
+        "path": "manifest.json",
+        "r2": {
+          "checksum_sha256": "UNKNOWN",
+          "content_length": 12070,
+          "key": "runs/shadow/run_id=SHADOW_USA_2026-10-09_38230389276_A1/manifests/manifest.json",
+          "last_modified": "2026-10-12T11:14:49+00:00",
+          "metadata_sha256": "a322cfd900658dee5fc787a79e877262f4aac93fb9cae80f5357502ace464878",
+          "object_lock_legal_hold": "UNKNOWN",
+          "object_lock_mode": "UNKNOWN",
+          "object_lock_retain_until": "UNKNOWN",
+          "status": "VERIFIED",
+          "version_id": "UNKNOWN"
+        },
+        "sha256": "a322cfd900658dee5fc787a79e877262f4aac93fb9cae80f5357502ace464878",
+        "status": "VERIFIED"
+      }
+    },
+    "source_run_id": "SHADOW_USA_2026-10-09_38230389276_A1",
+    "unknown_metadata": [
+      "r2.checksum_sha256",
+      "r2.version_id",
+      "r2.object_lock_mode",
+      "r2.object_lock_retain_until",
+      "r2.object_lock_legal_hold"
+    ],
+    "workflow_commit": "b550a921d4f7bb02fe3cd196422e95f3d583bac6"
+  }
+}
