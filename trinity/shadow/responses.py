@@ -29,7 +29,19 @@ MODEL_PRICES = {
 
 
 class ResponsesTransportError(RuntimeError):
-    pass
+    """Sanitized provider failure suitable for durable diagnostics."""
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None,
+        error_code: str | None = None, request_id: str | None = None,
+        classification: str = "TRANSPORT", retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+        self.request_id = request_id
+        self.classification = classification
+        self.retryable = retryable
 
 
 class CostGuardStop(RuntimeError):
@@ -124,7 +136,12 @@ class ResponsesAPI:
             if int(response.status_code) >= 500 and attempt == 0:
                 continue
             if int(response.status_code) >= 400:
-                raise ResponsesTransportError(f"Responses API HTTP {response.status_code}")
+                failure = _http_failure(response)
+                _checkpoint_transport_error(
+                    self.run_root, failure, model=model, role=role, ticker=ticker,
+                    call_ordinal=call_ordinal, clock=self.clock,
+                )
+                raise failure
             break
         assert response is not None
         duration = time.perf_counter() - started
@@ -196,3 +213,61 @@ def _extract_output_json(value: Mapping[str, Any]) -> dict[str, Any]:
                     raise ResponsesTransportError("structured output must be a JSON object")
                 return parsed
     raise ResponsesTransportError("Responses API body lacks output_text")
+
+
+def _http_failure(response: Any) -> ResponsesTransportError:
+    """Extract only non-sensitive, provider-supplied error metadata."""
+    status = int(response.status_code)
+    code = None
+    error_type = None
+    try:
+        value = json.loads(bytes(response.content))
+        error = value.get("error") if isinstance(value, dict) else None
+        if isinstance(error, dict):
+            code = str(error.get("code") or "").strip() or None
+            error_type = str(error.get("type") or "").strip() or None
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    headers = getattr(response, "headers", {}) or {}
+    request_id = str(
+        headers.get("x-request-id") or headers.get("request-id") or ""
+    ).strip() or None
+    normalized = (code or error_type or "").casefold()
+    if status == 429 and normalized in {
+        "insufficient_quota", "billing_hard_limit_reached", "billing_not_active",
+    }:
+        classification, retryable = "BILLING_OR_QUOTA", False
+    elif status == 429 and normalized in {"rate_limit_exceeded", "requests"}:
+        classification, retryable = "RATE_LIMIT", True
+    elif status == 429:
+        classification, retryable = "RATE_LIMIT_OR_QUOTA", False
+    elif status >= 500:
+        classification, retryable = "PROVIDER_SERVER", True
+    else:
+        classification, retryable = "PROVIDER_REQUEST", False
+    return ResponsesTransportError(
+        f"Responses API HTTP {status}", status_code=status,
+        error_code=code or error_type, request_id=request_id,
+        classification=classification, retryable=retryable,
+    )
+
+
+def _checkpoint_transport_error(
+    run_root: Path, failure: ResponsesTransportError, *, model: str, role: str,
+    ticker: str, call_ordinal: int, clock: Callable[[], datetime],
+) -> None:
+    stamp = f"{call_ordinal:04d}_{ticker}_{role.lower()}"
+    atomic_json(run_root / "transport_errors" / f"{stamp}.json", {
+        "schema_name": "trinity.responses-transport-error",
+        "schema_version": "1",
+        "provider": PROVIDER,
+        "model": model,
+        "role": role,
+        "ticker": ticker,
+        "http_status": failure.status_code,
+        "error_code": failure.error_code,
+        "request_id": failure.request_id,
+        "classification": failure.classification,
+        "retryable": failure.retryable,
+        "recorded_at": clock().astimezone(timezone.utc).isoformat(),
+    })
