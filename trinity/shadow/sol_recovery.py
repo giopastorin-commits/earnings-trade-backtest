@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, fields, replace
 from decimal import Decimal
 import hashlib
 import json
@@ -40,13 +40,14 @@ from trinity.shadow.responses import (
     ResponsesAPI,
     _extract_output_json,
 )
-from trinity.usa_setup_v1 import build_setup
+from trinity.usa_setup_v1 import SetupRecord
 from trinity.usa_v2 import load_company, with_expectation_comparisons
 
 
 RECOVERY_SCHEMA = "trinity.sol-recovery-plan"
 RECOVERY_METHOD = "SOL_CRITIC_RECOVERY_V1"
 CONFIRMATION = "VALIDATION:ONE_SOL_CRITIC:NO_TELEGRAM"
+HISTORICAL_SETUP_PATH = "artifacts/setups.json"
 
 
 class SolRecoveryError(RuntimeError):
@@ -87,6 +88,10 @@ class SolRecoveryPlan:
     technical_cutoff_utc: str
     analytical_commit: str
     workflow_commit: str
+    historical_setup_path: str
+    historical_setup_sha256: str
+    historical_setup_record_sha256: str
+    historical_setup_as_of: str
     historical_reconciliation_id: str | None = None
     historical_reconciliation_sha256: str | None = None
 
@@ -204,6 +209,12 @@ def preflight_sol_recovery(
     if set(escalates) != set((*spec.committed_tickers, spec.ticker)):
         raise SolRecoveryError("original ESCALATE closure differs from recovery specification")
 
+    frozen_setup = load_frozen_historical_setup(
+        root, manifest, ticker=spec.ticker,
+        as_of=str(cutoff.get("verified_price_session") or ""),
+    )
+    frozen_setup_record_sha = _setup_record_sha256(frozen_setup)
+
     usage = _required_json(root / "artifacts" / "api_usage.json")
     if usage.get("schema_name") != "trinity.shadow-api-usage":
         raise SolRecoveryError("invalid source API cost ledger")
@@ -285,6 +296,10 @@ def preflight_sol_recovery(
         research_cutoff_utc=str(cutoff["research_cutoff_utc"]),
         technical_cutoff_utc=str(cutoff["technical_cutoff_utc"]),
         analytical_commit=spec.analytical_commit, workflow_commit=spec.workflow_commit,
+        historical_setup_path=HISTORICAL_SETUP_PATH,
+        historical_setup_sha256=manifest_entries[HISTORICAL_SETUP_PATH],
+        historical_setup_record_sha256=frozen_setup_record_sha,
+        historical_setup_as_of=frozen_setup.as_of,
         historical_reconciliation_id=(
             str(reconciliation["attestation_id"]) if reconciliation else None
         ),
@@ -355,6 +370,15 @@ def execute_sol_recovery(
         allow_historical_reconciliation=allow_historical_reconciliation,
         reconciliation_attestation=reconciliation_attestation,
         reconciliation_sha256=reconciliation_sha256,
+    )
+    source_manifest_raw = _required_bytes(plan.source_root / "manifest.json")
+    if hashlib.sha256(source_manifest_raw).hexdigest() != plan.source_manifest_sha256:
+        raise SolRecoveryError("source manifest changed after recovery preflight")
+    frozen_setup = load_frozen_historical_setup(
+        plan.source_root, _json_bytes(source_manifest_raw, "source manifest"),
+        ticker=spec.ticker, as_of=plan.historical_setup_as_of,
+        expected_file_sha256=plan.historical_setup_sha256,
+        expected_record_sha256=plan.historical_setup_record_sha256,
     )
     destination = Path(recovery_root).resolve()
     if destination.exists():
@@ -457,10 +481,9 @@ def execute_sol_recovery(
                 claim_refs=provider.validated_claim_refs,
                 rejected_claim_refs=provider.rejected_claim_refs,
             )
-            setup = build_setup({**thesis.to_dict(), "as_of": as_of}, bars, as_of)
             identities = _persist_completed_pipeline(
                 storage, repo, spec.analytical_commit, attempt, spec.ticker,
-                thesis, setup, provider, persisted, shared["research_method"],
+                thesis, frozen_setup, provider, persisted, shared["research_method"],
                 shared["setup_policy"], reference=request.analysis_cutoff_at,
                 research_as_of_at=plan.research_cutoff_utc,
             )
@@ -498,6 +521,75 @@ def execute_sol_recovery(
             "error": f"{type(exc).__name__}: {str(exc)[:1000]}",
         })
         raise
+
+
+def load_frozen_historical_setup(
+    source_root: str | Path, manifest: Mapping[str, Any], *, ticker: str,
+    as_of: str, expected_file_sha256: str | None = None,
+    expected_record_sha256: str | None = None,
+) -> SetupRecord:
+    """Load one manifested Setup record from the authorized historical run."""
+    root = Path(source_root).resolve()
+    if root.name != HISTORICAL_RUN_ID or manifest.get("run_id") != HISTORICAL_RUN_ID:
+        raise SolRecoveryError("frozen Setup source run is not authorized")
+    entries = [
+        item for item in manifest.get("files", [])
+        if isinstance(item, Mapping) and item.get("path") == HISTORICAL_SETUP_PATH
+    ]
+    if len(entries) != 1:
+        raise SolRecoveryError("historical setups artifact is not uniquely manifested")
+    entry = entries[0]
+    path = _inside(root, HISTORICAL_SETUP_PATH)
+    raw = _required_bytes(path)
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    if entry.get("bytes") != len(raw) or entry.get("sha256") != actual_sha:
+        raise SolRecoveryError("historical setups artifact does not match source manifest")
+    if expected_file_sha256 is not None and actual_sha != expected_file_sha256:
+        raise SolRecoveryError("historical setups artifact identity changed after preflight")
+    value = _json_bytes(raw, "historical setups artifact")
+    if not isinstance(value, list):
+        raise SolRecoveryError("historical setups artifact must be a JSON array")
+    ticker_records = [
+        item for item in value
+        if isinstance(item, Mapping) and item.get("ticker") == ticker
+    ]
+    if len(ticker_records) != 1:
+        raise SolRecoveryError("historical Setup ticker must have exactly one record")
+    record = dict(ticker_records[0])
+    if record.get("ticker") != ticker:
+        raise SolRecoveryError("historical Setup ticker mismatch")
+    if record.get("as_of") != as_of:
+        raise SolRecoveryError("historical Setup as_of mismatch")
+    expected_fields = {field.name for field in fields(SetupRecord)}
+    if set(record) != expected_fields:
+        raise SolRecoveryError("historical Setup schema mismatch")
+    reason_codes = record.get("reason_codes")
+    if not isinstance(reason_codes, list) or not all(
+        isinstance(item, str) and item for item in reason_codes
+    ):
+        raise SolRecoveryError("historical Setup reason_codes are invalid")
+    converted = {**record, "reason_codes": tuple(reason_codes)}
+    try:
+        setup = SetupRecord(**converted)
+    except (TypeError, ValueError) as exc:
+        raise SolRecoveryError(f"historical Setup is invalid: {exc}") from exc
+    round_trip = setup.to_dict()
+    round_trip["reason_codes"] = list(round_trip["reason_codes"])
+    if round_trip != record:
+        raise SolRecoveryError("historical Setup conversion is not lossless")
+    record_sha = _setup_record_sha256(setup)
+    if expected_record_sha256 is not None and record_sha != expected_record_sha256:
+        raise SolRecoveryError("historical Setup record identity changed after preflight")
+    return setup
+
+
+def _setup_record_sha256(setup: SetupRecord) -> str:
+    value = setup.to_dict()
+    value["reason_codes"] = list(value["reason_codes"])
+    raw = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _verify_ledger_closure(storage: LedgerStorage, spec: SolRecoverySpec) -> tuple[str, str]:

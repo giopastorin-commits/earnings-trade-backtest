@@ -30,9 +30,11 @@ from trinity.shadow.responses import (
 from trinity.shadow.sol_recovery import (
     CONFIRMATION, SolRecoveryError, SolRecoverySpec,
     _archived_sec_path_resolver, _require_inside,
-    execute_sol_recovery, preflight_sol_recovery,
+    execute_sol_recovery, load_frozen_historical_setup, preflight_sol_recovery,
 )
-from trinity.usa_setup_v1 import PRICE_CACHE, THESIS_CACHE, _load_latest_thesis
+from trinity.usa_setup_v1 import (
+    PRICE_CACHE, THESIS_CACHE, _load_latest_thesis, build_setup,
+)
 from trinity.usa_documents import load_document_coverage
 from trinity.usa_v2 import AS_OF
 from trinity.usa_v2 import with_expectation_comparisons
@@ -135,6 +137,14 @@ def recovery_source(tmp_path, monkeypatch):
     (artifacts / "luna_results.json").write_text(json.dumps({
         "counts": {"failed": 0}, "escalate_tickers": ["AAPL", "JNJ"],
     }), encoding="utf-8")
+    archived = _FixtureSource().acquire("JNJ")
+    frozen_setup = build_setup(
+        _load_latest_thesis("JNJ", AS_OF, THESIS_CACHE),
+        archived.bars, AS_OF,
+    )
+    (artifacts / "setups.json").write_text(
+        json.dumps([frozen_setup.to_dict()]), encoding="utf-8",
+    )
     (root / "run_state.json").write_text(json.dumps({
         "run_id": RUN_ID, "state": "FAILED_SOL",
     }), encoding="utf-8")
@@ -660,6 +670,13 @@ def test_sol_recovery_calls_only_critic_preserves_source_and_is_idempotent(
         "trinity.shadow.sol_recovery._rebuild_archived_inputs",
         lambda *_args, **_kwargs: (archived.pack, native_facts),
     )
+    monkeypatch.setattr(
+        "trinity.shadow.sol_recovery.build_setup",
+        lambda *_args, **_kwargs: pytest.fail(
+            "historical recovery must not call build_setup"
+        ),
+        raising=False,
+    )
 
     destination = tmp_path / "RECOVERY_38230389276_SWKS_R1"
     result = execute_sol_recovery(
@@ -688,6 +705,155 @@ def test_sol_recovery_calls_only_critic_preserves_source_and_is_idempotent(
             transport_factory=factory,
         )
     assert len(transports) == 1
+
+
+def _historical_setup_fixture(tmp_path, records):
+    root = tmp_path / RUN_ID
+    artifacts = root / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "setups.json").write_text(json.dumps(records), encoding="utf-8")
+    manifest = generate_manifest(root, run_id=RUN_ID)
+    return root, manifest
+
+
+def _swks_frozen_setup():
+    return {
+        "ticker": "SWKS", "as_of": "2026-10-09",
+        "research_status": "INVESTIGATE", "evidence_confidence": "HIGH",
+        "thesis_strength": "MEDIUM", "technical_regime": "UPTREND",
+        "setup_type": "PULLBACK",
+        "entry_condition": "BUY ON PULLBACK 76.1342-77.2496",
+        "entry_level": 77.2496, "stop_level": 70.5574,
+        "stop_distance_pct": 8.663, "tp1": 92.8, "tp2": 97.326,
+        "risk_per_share": 6.6921, "reward_tp1": 15.5504,
+        "reward_tp2": 20.0764, "rr_tp1": 2.3237, "rr_tp2": 3.0,
+        "close": 76.35, "atr14": 4.4614, "rsi14": 26.8757,
+        "sma20": 85.938, "sma50": 76.1342, "sma200": 66.1962,
+        "distance_sma20_pct": -11.1569, "distance_sma50_pct": 0.2834,
+        "distance_sma200_pct": 15.3389, "return_5d": -10.2082,
+        "return_20d": -13.5823, "return_60d": 32.4831,
+        "high_20d": 92.8, "low_20d": 73.93,
+        "average_volume_20d": 9017730.0, "relative_volume": 1.0162,
+        "reason_codes": ["UPTREND_CONFIRMED", "SMA_SUPPORT_NEARBY"],
+        "invalidation": "Setup invalid below 70.5574 on a closing basis.",
+    }
+
+
+def test_frozen_historical_setup_loader_returns_exact_record_without_mutation(tmp_path):
+    expected = _swks_frozen_setup()
+    root, manifest = _historical_setup_fixture(tmp_path, [expected])
+    before = (root / "artifacts" / "setups.json").read_bytes()
+    loaded = load_frozen_historical_setup(
+        root, manifest, ticker="SWKS", as_of="2026-10-09",
+    )
+    actual = loaded.to_dict()
+    actual["reason_codes"] = list(actual["reason_codes"])
+    assert actual == expected
+    assert (loaded.entry_level, loaded.stop_level, loaded.tp1, loaded.tp2) == (
+        77.2496, 70.5574, 92.8, 97.326,
+    )
+    assert (loaded.rr_tp1, loaded.rr_tp2) == (2.3237, 3.0)
+    assert (root / "artifacts" / "setups.json").read_bytes() == before
+
+
+def test_frozen_historical_setup_loader_rejects_missing_and_duplicate(tmp_path):
+    root, manifest = _historical_setup_fixture(tmp_path / "missing", [])
+    with pytest.raises(SolRecoveryError, match="exactly one"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+    record = _swks_frozen_setup()
+    root, manifest = _historical_setup_fixture(
+        tmp_path / "duplicate", [record, deepcopy(record)],
+    )
+    with pytest.raises(SolRecoveryError, match="exactly one"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+
+
+def test_frozen_historical_setup_loader_rejects_wrong_as_of(tmp_path):
+    record = _swks_frozen_setup()
+    record["as_of"] = "2026-10-08"
+    root, manifest = _historical_setup_fixture(tmp_path, [record])
+    with pytest.raises(SolRecoveryError, match="as_of mismatch"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+
+
+def test_frozen_historical_setup_loader_rejects_manifest_hash_mismatch(tmp_path):
+    root, manifest = _historical_setup_fixture(tmp_path, [_swks_frozen_setup()])
+    path = root / "artifacts" / "setups.json"
+    path.write_bytes(path.read_bytes() + b" ")
+    with pytest.raises(SolRecoveryError, match="does not match source manifest"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+
+
+def test_frozen_historical_setup_loader_rejects_missing_or_unmanifested_file(tmp_path):
+    root = tmp_path / "missing" / RUN_ID
+    root.mkdir(parents=True)
+    manifest = generate_manifest(root, run_id=RUN_ID)
+    with pytest.raises(SolRecoveryError, match="not uniquely manifested"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+    root, manifest = _historical_setup_fixture(
+        tmp_path / "unmanifested", [_swks_frozen_setup()],
+    )
+    manifest["files"] = [
+        item for item in manifest["files"]
+        if item["path"] != "artifacts/setups.json"
+    ]
+    with pytest.raises(SolRecoveryError, match="not uniquely manifested"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+
+
+def test_frozen_historical_setup_loader_rejects_invalid_json_and_schema(tmp_path):
+    root = tmp_path / "invalid-json" / RUN_ID
+    artifacts = root / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "setups.json").write_text("{", encoding="utf-8")
+    manifest = generate_manifest(root, run_id=RUN_ID)
+    with pytest.raises(SolRecoveryError, match="historical setups artifact"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+    record = _swks_frozen_setup()
+    record["unexpected"] = True
+    root, manifest = _historical_setup_fixture(tmp_path / "schema", [record])
+    with pytest.raises(SolRecoveryError, match="schema mismatch"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+
+
+def test_frozen_historical_setup_loader_rejects_wrong_ticker(tmp_path):
+    record = _swks_frozen_setup()
+    record["ticker"] = "MRNA"
+    root, manifest = _historical_setup_fixture(tmp_path, [record])
+    with pytest.raises(SolRecoveryError, match="exactly one"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
+
+
+def test_frozen_historical_setup_loader_rejects_unauthorized_source_run(tmp_path):
+    root = tmp_path / "SHADOW_USA_UNAUTHORIZED"
+    artifacts = root / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "setups.json").write_text(
+        json.dumps([_swks_frozen_setup()]), encoding="utf-8",
+    )
+    manifest = generate_manifest(root, run_id=root.name)
+    with pytest.raises(SolRecoveryError, match="source run is not authorized"):
+        load_frozen_historical_setup(
+            root, manifest, ticker="SWKS", as_of="2026-10-09",
+        )
 
 
 def test_sol_recovery_requires_explicit_validation_confirmation(recovery_source, tmp_path):
