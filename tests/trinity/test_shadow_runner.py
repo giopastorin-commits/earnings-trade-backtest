@@ -15,6 +15,7 @@ from trinity.ledger import LedgerStorage
 from trinity.paths import (
     LEGACY_BASELINE_ROOT, baseline_root, price_cache, price_snapshot_root, run_root,
 )
+from trinity.pilots.multiticker import BatchResult, TickerResult
 from trinity.shadow import cli as shadow_cli
 from trinity.shadow.cutoff import (
     LIVE_RESEARCH_CUTOFF_METHOD, capture_live_research_cutoff,
@@ -43,10 +44,32 @@ class _Session:
     def __init__(self, value):
         self.value = value
         self.request = None
+        self.calls = 0
 
     def post(self, url, **kwargs):
+        self.calls += 1
         self.request = (url, kwargs)
         return _Response(self.value)
+
+
+class _SequenceSession:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.calls = 0
+
+    def post(self, _url, **_kwargs):
+        self.calls += 1
+        value = next(self.responses)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+class _HTTPResponse(_Response):
+    def __init__(self, status_code, value, headers=None):
+        super().__init__(value)
+        self.status_code = status_code
+        self.headers = headers or {}
 
 
 def _envelope(text='{"ok":true}'):
@@ -72,9 +95,13 @@ def test_responses_adapter_uses_store_false_and_checkpoints_before_parse(tmp_pat
     session = _Session(_envelope("not-json"))
     ledger = PersistentCostLedger(tmp_path / "api_usage.json")
     api = ResponsesAPI(run_root=tmp_path, cost_ledger=ledger, api_key="unit-secret", session=session)
-    with pytest.raises(ResponsesTransportError, match="output_text"):
+    with pytest.raises(ResponsesTransportError, match="output_text") as captured:
         api.invoke(model="gpt-5.6-luna", role="LUNA_TRIAGE", ticker="XYZ", prompt="p",
                    schema={"type": "object"}, call_ordinal=1)
+    assert session.calls == 1
+    assert captured.value.classification == "PARSE_ERROR"
+    assert captured.value.retryable is False
+    assert captured.value.cost_usd == Decimal("0.0000462")
     raw = tmp_path / "model_responses" / "0001_XYZ_luna_triage.json"
     assert raw.is_file()
     assert ledger.read()["calls"][0]["response_id"] == "resp_test"
@@ -90,6 +117,134 @@ def test_cost_guard_persists_and_stops_before_next_request(tmp_path):
     ledger.append({"calculated_cost_usd": "5.00"})
     with pytest.raises(CostGuardStop):
         ledger.assert_call_allowed()
+
+
+def test_responses_rate_limit_retries_once_respects_retry_after_and_tracks_cost(tmp_path):
+    session = _SequenceSession([
+        _HTTPResponse(
+            429, {"error": {"code": "rate_limit_exceeded"}},
+            {"Retry-After": "7", "x-request-id": "req-first"},
+        ),
+        _HTTPResponse(200, _envelope()),
+    ])
+    sleeps = []
+    ledger = PersistentCostLedger(tmp_path / "api_usage.json")
+    api = ResponsesAPI(
+        run_root=tmp_path, cost_ledger=ledger, api_key="unit-secret",
+        session=session, sleeper=sleeps.append, resilient_retry_policy=True,
+    )
+
+    result = api.invoke(
+        model="gpt-5.6-sol", role="ANALYST", ticker="MRNA", prompt="p",
+        schema={"type": "object"}, call_ordinal=10001,
+    )
+
+    assert session.calls == 2
+    assert sleeps == [7.0]
+    assert result.attempts == 2 and result.retry_count == 1
+    calls = ledger.read()["calls"]
+    assert len(calls) == 1
+    assert calls[0]["attempt_number"] == 2 and calls[0]["retry_count"] == 1
+    assert ledger.read()["total_cost_usd"] == calls[0]["calculated_cost_usd"]
+
+
+def test_responses_rate_limit_stops_after_one_retry_and_records_both_attempts(tmp_path):
+    limited = lambda request_id: _HTTPResponse(
+        429, {"error": {"code": "rate_limit_exceeded"}},
+        {"Retry-After": "1", "x-request-id": request_id},
+    )
+    session = _SequenceSession([limited("req-1"), limited("req-2")])
+    sleeps = []
+    api = ResponsesAPI(
+        run_root=tmp_path, cost_ledger=PersistentCostLedger(tmp_path / "usage.json"),
+        api_key="unit-secret", session=session, sleeper=sleeps.append,
+        resilient_retry_policy=True,
+    )
+
+    with pytest.raises(ResponsesTransportError) as captured:
+        api.invoke(
+            model="gpt-5.6-sol", role="CRITIC", ticker="SWKS", prompt="p",
+            schema={"type": "object"}, call_ordinal=10002,
+        )
+
+    assert session.calls == 2 and sleeps == [1.0]
+    assert captured.value.attempts == 2 and captured.value.retry_count == 1
+    assert captured.value.status_code == 429
+    errors = sorted((tmp_path / "transport_errors").glob("*.json"))
+    assert [path.name for path in errors] == [
+        "10002_SWKS_critic.json", "10002_SWKS_critic_attempt_1.json",
+        "10002_SWKS_critic_attempt_2.json",
+    ]
+
+
+def test_resilient_rate_limit_retry_is_opt_in_for_normal_weekly_runner(tmp_path):
+    session = _SequenceSession([
+        _HTTPResponse(429, {"error": {"code": "rate_limit_exceeded"}}),
+        _HTTPResponse(200, _envelope()),
+    ])
+    api = ResponsesAPI(
+        run_root=tmp_path, cost_ledger=PersistentCostLedger(tmp_path / "usage.json"),
+        api_key="unit-secret", session=session,
+    )
+
+    with pytest.raises(ResponsesTransportError) as captured:
+        api.invoke(
+            model="gpt-5.6-sol", role="CRITIC", ticker="SWKS", prompt="p",
+            schema={"type": "object"}, call_ordinal=10002,
+        )
+
+    assert captured.value.classification == "RATE_LIMIT"
+    assert session.calls == 1
+
+
+def test_retry_stops_before_network_when_cost_guard_closes(tmp_path):
+    class Guard:
+        def __init__(self):
+            self.checks = 0
+
+        def assert_call_allowed(self):
+            self.checks += 1
+            if self.checks == 2:
+                raise CostGuardStop("retry budget closed")
+
+        def append(self, _record):
+            pytest.fail("failed response must not append usage")
+
+    session = _SequenceSession([
+        _HTTPResponse(429, {"error": {"code": "rate_limit_exceeded"}}),
+        _HTTPResponse(200, _envelope()),
+    ])
+    guard = Guard()
+    api = ResponsesAPI(
+        run_root=tmp_path, cost_ledger=guard, api_key="unit-secret",
+        session=session, sleeper=lambda _delay: None, resilient_retry_policy=True,
+    )
+
+    with pytest.raises(CostGuardStop, match="retry budget closed"):
+        api.invoke(
+            model="gpt-5.6-sol", role="CRITIC", ticker="SWKS", prompt="p",
+            schema={"type": "object"}, call_ordinal=10002,
+        )
+
+    assert guard.checks == 2
+    assert session.calls == 1
+
+
+def test_pipeline_status_is_partial_only_when_a_usable_independent_result_exists():
+    complete = {"ticker": "MRNA", "run_status": "SUCCESS"}
+    failed = {"ticker": "SWKS", "run_status": "FAILED"}
+    assert shadow_cli.classify_operational_status(
+        luna_failed=0, luna_completed=2, sol_rows=[complete, complete], sol_requested=True,
+    ) == "SUCCESS"
+    assert shadow_cli.classify_operational_status(
+        luna_failed=0, luna_completed=2, sol_rows=[complete, failed], sol_requested=True,
+    ) == "PARTIAL_SUCCESS"
+    assert shadow_cli.classify_operational_status(
+        luna_failed=0, luna_completed=2, sol_rows=[failed, complete], sol_requested=True,
+    ) == "PARTIAL_SUCCESS"
+    assert shadow_cli.classify_operational_status(
+        luna_failed=0, luna_completed=2, sol_rows=[failed, failed], sol_requested=True,
+    ) == "FAILED"
 
 
 def test_cutoff_consensus_and_post_cutoff_filtering():
@@ -518,6 +673,79 @@ def test_one_live_research_cutoff_is_shared_by_luna_and_every_sol_source(
     assert artifact == asdict(fixed)
 
 
+def test_shadow_partial_sol_batch_completes_and_preserves_failed_diagnostics(
+    monkeypatch, tmp_path,
+):
+    completed = TickerResult(
+        ticker="MRNA", run_status="SUCCESS", run_id="run-mrna",
+        research_id="research-mrna", setup_id="setup-mrna", cost_usd="0.2",
+    )
+    failed = TickerResult(
+        ticker="SWKS", run_status="FAILED", error="ResponsesTransportError: HTTP 429",
+        failure_class="RATE_LIMIT", failure_message="Responses API HTTP 429",
+        http_status=429, attempts=2, retry_count=1,
+    )
+
+    def production(**kwargs):
+        return SimpleNamespace(
+            setups=(), failed_tickers=(),
+            sol_result=BatchResult(kwargs["ledger_db"], ("MRNA", "SWKS"), (completed, failed)),
+            operational_setup_count=2, no_setup_count=0, watch_tickers=(),
+            escalate_tickers=("MRNA", "SWKS"), drop_tickers=(),
+            luna_result={"results": [
+                {"ticker": "MRNA", "status": "SUCCESS", "decision": "ESCALATE"},
+                {"ticker": "SWKS", "status": "SUCCESS", "decision": "ESCALATE"},
+            ]},
+        )
+
+    runs, _snapshot = _configure_renamed_run(monkeypatch, tmp_path, production)
+    monkeypatch.setattr(shadow_cli, "_git_head", lambda: "test-commit")
+
+    assert shadow_cli.run_command() == 0
+    root = runs / "SHADOW_USA_2026-10-06_123_A1"
+    report = json.loads((root / "artifacts" / "final_report.json").read_text())
+    rows = json.loads((root / "artifacts" / "sol_results.json").read_text())
+    assert report["status"] == "PARTIAL_SUCCESS"
+    assert report["counts"]["sol_completed"] == 1
+    assert report["counts"]["sol_failed"] == 1
+    assert (root / "artifacts" / "telegram_dry_run.txt").is_file()
+    assert rows[0]["ticker"] == "MRNA" and rows[0]["run_id"] == "run-mrna"
+    assert rows[1]["failure_class"] == "RATE_LIMIT"
+    assert rows[1]["http_status"] == 429 and rows[1]["retry_count"] == 1
+    with LedgerStorage.open(root / "ledger" / "trinity.sqlite3") as storage:
+        assert storage.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert storage.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_shadow_all_sol_tickers_failed_is_failed_sol_and_keeps_diagnostics(
+    monkeypatch, tmp_path,
+):
+    failed = TickerResult(
+        ticker="SWKS", run_status="FAILED", error="ResponsesTransportError: HTTP 429",
+        failure_class="RATE_LIMIT", http_status=429, attempts=2, retry_count=1,
+    )
+
+    def production(**kwargs):
+        return SimpleNamespace(
+            setups=(), failed_tickers=(),
+            sol_result=BatchResult(kwargs["ledger_db"], ("SWKS",), (failed,)),
+            operational_setup_count=1, no_setup_count=0, watch_tickers=(),
+            escalate_tickers=("SWKS",), drop_tickers=(),
+            luna_result={"results": [
+                {"ticker": "SWKS", "status": "SUCCESS", "decision": "ESCALATE"},
+            ]},
+        )
+
+    runs, _snapshot = _configure_renamed_run(monkeypatch, tmp_path, production)
+
+    assert shadow_cli.run_command() == 1
+    root = runs / "SHADOW_USA_2026-10-06_123_A1"
+    state = json.loads((root / "run_state.json").read_text())
+    rows = json.loads((root / "artifacts" / "sol_results.json").read_text())
+    assert state["state"] == "FAILED_SOL"
+    assert rows[0]["ticker"] == "SWKS" and rows[0]["run_status"] == "FAILED"
+
+
 def test_successful_shadow_run_records_snapshot_in_final_report_and_ledger(
     monkeypatch, tmp_path,
 ):
@@ -598,6 +826,10 @@ def test_archive_completion_preserves_canonical_run_id(monkeypatch, tmp_path):
     canonical_id = "SHADOW_USA_2026-10-06_123_A1"
     final = runs / canonical_id
     final.mkdir(parents=True)
+    (final / "artifacts").mkdir()
+    (final / "artifacts" / "final_report.json").write_text(
+        json.dumps({"status": "PARTIAL_SUCCESS"}), encoding="utf-8",
+    )
     RunState(final / "run_state.json", canonical_id)
     (runs / "current_run.json").write_text(
         json.dumps({"run_id": canonical_id, "path": str(final)}), encoding="utf-8",
@@ -612,3 +844,4 @@ def test_archive_completion_preserves_canonical_run_id(monkeypatch, tmp_path):
     persisted = json.loads((final / "run_state.json").read_text(encoding="utf-8"))
     assert persisted["run_id"] == canonical_id
     assert persisted["state"] == "COMPLETE"
+    assert persisted["operational_status"] == "PARTIAL_SUCCESS"

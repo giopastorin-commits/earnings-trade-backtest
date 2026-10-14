@@ -951,6 +951,11 @@ def _real_existing_critic_spec() -> ExistingCriticSpec:
 def _require_real_r2_fixture() -> None:
     if not REAL_SOURCE_ROOT.is_dir() or not REAL_R2_ROOT.is_dir():
         pytest.skip("authorized immutable historical R2 fixture is not locally available")
+    if (REAL_R2_ROOT / "artifacts" / "offline_finalization_result.json").is_file():
+        pytest.skip(
+            "authorized historical R2 is already finalized; "
+            "pre-finalization integration fixture is no longer available"
+        )
 
 
 def test_existing_critic_preflight_real_archive_is_read_only_and_exact():

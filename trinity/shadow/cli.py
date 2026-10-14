@@ -34,6 +34,21 @@ from .sqlite_lifecycle import close_and_verify, initialize_fresh_ledger
 from .state import RunState
 
 
+def classify_operational_status(
+    *, luna_failed: int, luna_completed: int,
+    sol_rows: list[dict[str, object]], sol_requested: bool,
+) -> str:
+    """Collapse independent ticker outcomes into the public three-state contract."""
+
+    sol_failed = sum(item.get("run_status") == "FAILED" for item in sol_rows)
+    sol_completed = sum(item.get("run_status") != "FAILED" for item in sol_rows)
+    if sol_requested and sol_rows and sol_completed == 0:
+        return "FAILED"
+    if luna_failed and luna_completed == 0:
+        return "FAILED"
+    return "PARTIAL_SUCCESS" if luna_failed or sol_failed else "SUCCESS"
+
+
 def restore_command() -> int:
     try:
         client, bucket = client_from_environment()
@@ -128,7 +143,9 @@ def run_command() -> int:
             atomic_json(artifacts / "weekly_orchestrator.json", weekly_provenance)
 
         usage = PersistentCostLedger(artifacts / "api_usage.json", Decimal(os.getenv("TRINITY_COST_GUARD_USD", "5.00")))
-        transport = ResponsesAPI(run_root=staging, cost_ledger=usage)
+        transport = ResponsesAPI(
+            run_root=staging, cost_ledger=usage, resilient_retry_policy=True,
+        )
         stage = "SETUP"
         research_cutoff = None
 
@@ -201,11 +218,21 @@ def run_command() -> int:
             # the completed live run still carries an explicit boundary.
             begin_fresh_research()
         atomic_json(artifacts / "setups.json", [item.to_dict() for item in result.setups])
-        if result.failed_tickers:
-            raise RuntimeError(f"Luna failures: {', '.join(result.failed_tickers)}")
         stage = "SOL"
-        if result.sol_result is not None and any(item.run_status == "FAILED" for item in result.sol_result.results):
-            raise RuntimeError("one or more Sol ticker pipelines failed")
+        sol_rows = [] if result.sol_result is None else [asdict(item) for item in result.sol_result.results]
+        atomic_json(artifacts / "sol_results.json", sol_rows)
+        sol_failed = [item for item in sol_rows if item["run_status"] == "FAILED"]
+        sol_completed = [item for item in sol_rows if item["run_status"] != "FAILED"]
+        luna_rows = getattr(result, "luna_result", {}).get("results", [])
+        luna_completed = [item for item in luna_rows if item.get("status") == "SUCCESS"]
+        operational_status = classify_operational_status(
+            luna_failed=len(result.failed_tickers), luna_completed=len(luna_completed),
+            sol_rows=sol_rows, sol_requested=result.sol_result is not None,
+        )
+        if operational_status == "FAILED" and result.sol_result is not None:
+            raise RuntimeError("no Sol ticker pipeline produced a usable result")
+        if operational_status == "FAILED":
+            raise RuntimeError("no Luna ticker produced a usable result")
         if not ledger_path.exists():
             initialize_fresh_ledger(ledger_path)
         with LedgerStorage.open(ledger_path) as storage:
@@ -227,8 +254,6 @@ def run_command() -> int:
                 )
         stage = "LEDGER"
         close_and_verify(ledger_path)
-        sol_rows = [] if result.sol_result is None else [asdict(item) for item in result.sol_result.results]
-        atomic_json(artifacts / "sol_results.json", sol_rows)
         telegram = (
             render_forward_summary(result.sol_result.results) if result.sol_result is not None
             else "TRINITY Shadow Production\nNo ESCALATE tickers; no Sol research results.\nDRY RUN - NOT SENT"
@@ -237,16 +262,20 @@ def run_command() -> int:
         final_report = {
             "run_id": run_id, "git_commit": _git_head(), "github_run_id": github_run_id,
             "github_run_attempt": attempt, "decision_cutoff": asdict(cutoff),
+            "status": operational_status,
             "research_cutoff": asdict(research_cutoff),
             "counts": {**funnel.counts, "operational_setup": result.operational_setup_count,
                        "no_setup": result.no_setup_count, "luna_watch": len(result.watch_tickers),
-                       "luna_escalate": len(result.escalate_tickers), "luna_drop": len(result.drop_tickers)},
+                       "luna_escalate": len(result.escalate_tickers), "luna_drop": len(result.drop_tickers),
+                       "luna_failed": len(result.failed_tickers),
+                       "sol_completed": len(sol_completed), "sol_failed": len(sol_failed)},
             "watch": list(result.watch_tickers), "escalate": list(result.escalate_tickers),
             "drop": list(result.drop_tickers), "sol_results": sol_rows,
             "method_versions": {"setup": "USA_SETUP_V1", "facts": "USA_V2_FACTS_V3",
                                 "luna": "luna-triage-v1",
                                 "live_research_cutoff": research_cutoff.method_version},
             "price_snapshot": snapshot.provenance(),
+            "api_cost_usd": usage.read()["total_cost_usd"],
             "runtime_seconds": time.perf_counter() - started,
             "telegram_sent": False, "broker_execution": False,
         }
@@ -268,7 +297,14 @@ def archive_command() -> int:
     root = Path(pointer["path"])
     state_value = json.loads((root / "run_state.json").read_text(encoding="utf-8"))
     if state_value["state"] == "RUNNING":
-        state_value.update({"state": "COMPLETE", "recorded_at": datetime.now(timezone.utc).isoformat(), "error": None})
+        report_path = root / "artifacts" / "final_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8")) \
+            if report_path.is_file() else {}
+        state_value.update({
+            "state": "COMPLETE",
+            "operational_status": report.get("status", "SUCCESS"),
+            "recorded_at": datetime.now(timezone.utc).isoformat(), "error": None,
+        })
         atomic_json(root / "run_state.json", state_value)
     manifest = generate_manifest(root, run_id=pointer["run_id"])
     verify_manifest(root, manifest)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 from typing import Mapping
 
@@ -41,6 +42,9 @@ class ResponsesSolProvider(RecordingUSAProvider):
         self.ticker = ticker
         self.ordinal_base = ordinal_base
         self._api_ordinal = 0
+        self.transport_attempts = 0
+        self.retry_count = 0
+        self.cost_usd = Decimal("0")
         super().__init__(requester=self._invoke)
         self.provenance = {
             "provider": "OPENAI_RESPONSES_API", "transport": "RESPONSES_API_HTTPS",
@@ -52,8 +56,17 @@ class ResponsesSolProvider(RecordingUSAProvider):
     def _invoke(self, prompt: str, schema: Mapping[str, object]) -> dict[str, object]:
         self._api_ordinal += 1
         role = "ANALYST" if self._api_ordinal == 1 else "CRITIC"
-        result = self.transport.invoke(
-            model="gpt-5.6-sol", role=role, ticker=self.ticker, prompt=prompt,
-            schema=schema, call_ordinal=self.ordinal_base + self._api_ordinal,
-        )
+        try:
+            result = self.transport.invoke(
+                model="gpt-5.6-sol", role=role, ticker=self.ticker, prompt=prompt,
+                schema=schema, call_ordinal=self.ordinal_base + self._api_ordinal,
+            )
+        except Exception as exc:
+            self.transport_attempts += int(getattr(exc, "attempts", 1))
+            self.retry_count += int(getattr(exc, "retry_count", 0))
+            self.cost_usd += Decimal(str(getattr(exc, "cost_usd", "0")))
+            raise
+        self.transport_attempts += result.attempts
+        self.retry_count += result.retry_count
+        self.cost_usd += result.cost_usd
         return result.parsed

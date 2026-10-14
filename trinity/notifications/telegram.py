@@ -258,7 +258,11 @@ def render_weekly_summary(report: Mapping[str, Any], notifications: Sequence[Tel
     if not isinstance(counts, Mapping) or not isinstance(research_cutoff, Mapping) \
             or not isinstance(snapshot, Mapping):
         raise TelegramNotificationError("Final report lacks weekly summary provenance")
-    lines = ["TRINITY — Weekly Report",
+    operational_status = str(report.get("status") or "SUCCESS")
+    heading = "TRINITY — Weekly Report"
+    if operational_status == "PARTIAL_SUCCESS":
+        heading += " — PARTIAL SUCCESS"
+    lines = [heading,
              f"Sessione tecnica: {snapshot.get('target_market_session') or snapshot.get('session') or '-'}",
              f"Research cutoff: {research_cutoff.get('research_cutoff_utc') or '-'}",
              f"Universo: {counts.get('universe', 0)}", "",
@@ -268,11 +272,36 @@ def render_weekly_summary(report: Mapping[str, Any], notifications: Sequence[Tel
              f"Luna ESCALATE: {counts.get('luna_escalate', 0)}",
              f"Luna DROP: {counts.get('luna_drop', 0)}",
              f"Sol completati: {sol_completed}", f"Candidati finali: {len(notifications)}"]
+    if report.get("api_cost_usd") is not None:
+        lines.append(f"Costo run: ${report['api_cost_usd']}")
     if notifications:
-        lines.extend(("", "Candidati:"))
-        lines.extend(f"• {item.ticker} — {item.research_status}" for item in notifications)
+        lines.extend(("", "Completati:"))
+        lines.extend(
+            f"• {item.ticker} — {item.research_status} — "
+            f"{item.evidence_confidence} / {item.thesis_strength}"
+            for item in notifications
+        )
     else:
         lines.extend(("", _zero_candidate_explanation(counts)))
+    sol_results = report.get("sol_results")
+    if isinstance(sol_results, list):
+        failed = [item for item in sol_results if isinstance(item, Mapping)
+                  and item.get("run_status") == "FAILED"]
+        skipped = [item for item in sol_results if isinstance(item, Mapping)
+                   and item.get("run_status") == "NO_SETUP"]
+        if failed:
+            lines.extend(("", "Falliti:"))
+            for item in failed:
+                detail = str(item.get("failure_class") or "FAILED")
+                if item.get("http_status") is not None:
+                    detail += f" HTTP {item['http_status']}"
+                retry_count = int(item.get("retry_count") or 0)
+                if retry_count:
+                    detail += f" dopo {retry_count} retry"
+                lines.append(f"• {item.get('ticker') or '-'} — {detail}")
+        if skipped:
+            lines.extend(("", "Saltati:"))
+            lines.extend(f"• {item.get('ticker') or '-'} — NO_SETUP" for item in skipped)
     text = "\n".join(lines)
     if len(text) > MAX_TELEGRAM_MESSAGE_CHARS:
         raise TelegramNotificationError("Weekly summary exceeds deterministic size limit")

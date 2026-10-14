@@ -6,6 +6,7 @@ import argparse
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import hashlib
 import json
 from pathlib import Path
@@ -143,6 +144,12 @@ class TickerResult:
     price_provider: str = "-"
     news_provider: str = "-"
     primary_evidence_provider: str = "-"
+    attempts: int = 0
+    retry_count: int = 0
+    failure_class: str | None = None
+    failure_message: str | None = None
+    http_status: int | None = None
+    cost_usd: str = "0"
 
 
 @dataclass(frozen=True)
@@ -154,6 +161,18 @@ class BatchResult:
     @property
     def telegram_render_count(self) -> int:
         return sum(item.telegram_message is not None for item in self.results)
+
+    @property
+    def operational_status(self) -> str:
+        if self.results and not any(item.run_status != "FAILED" for item in self.results):
+            return "FAILED"
+        if any(item.run_status == "FAILED" for item in self.results):
+            return "PARTIAL_SUCCESS"
+        return "SUCCESS"
+
+    @property
+    def total_cost_usd(self) -> Decimal:
+        return sum((Decimal(item.cost_usd) for item in self.results), Decimal("0"))
 
 
 def run_multiticker_pilot(
@@ -881,12 +900,24 @@ def _classify_derived(storage, attempt, policy, node, parents, *, reference=REFE
     )
 
 
-def _record_failure(storage, attempt, ticker, exc):
-    details = _artifact(storage, "local.multiticker-failure.v1", {
+def _record_failure(
+    storage, attempt, ticker, exc, *, include_transport_diagnostics: bool = False,
+):
+    value = {
         "ticker": ticker,
         "failure_class": type(exc).__name__,
         "failure_message": str(exc)[:1000],
-    })
+    }
+    if include_transport_diagnostics:
+        value.update({
+            "provider_classification": getattr(exc, "classification", None),
+            "http_status": getattr(exc, "status_code", None),
+            "request_id": getattr(exc, "request_id", None),
+            "retryable": bool(getattr(exc, "retryable", False)),
+            "attempts": int(getattr(exc, "attempts", 1)),
+            "retry_count": int(getattr(exc, "retry_count", 0)),
+        })
+    details = _artifact(storage, "local.multiticker-failure.v1", value)
     storage.attach_attempt_artifact(
         attempt_id=attempt.attempt_id, fence_token=attempt.fence_token,
         artifact_id=details.artifact_id, role="FAILED_ATTEMPT_OUTPUT",

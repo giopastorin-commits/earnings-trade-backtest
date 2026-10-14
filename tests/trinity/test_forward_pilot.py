@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ import requests
 from trinity.ledger import LedgerStorage
 from trinity.pilots.forward import render_forward_summary, run_forward_pilot
 from trinity.pilots.jnj_telegram import _role_values
-from trinity.pilots.multiticker import RecordingUSAProvider
+from trinity.pilots.multiticker import BatchResult, RecordingUSAProvider, TickerResult
 from trinity.usa_forward import (
     EODHDSECForwardProvider,
     ForwardAcquisitionError,
@@ -411,6 +412,24 @@ def test_mocked_forward_success_has_independent_native_lineage_and_real_timestam
         assert [row[0] for row in records] == ["USA_V2_FACTS_V3"]
 
 
+def test_batch_status_is_success_partial_or_failed_without_losing_completed_result(tmp_path):
+    complete = TickerResult(ticker="MRNA", run_status="SUCCESS", cost_usd="0.20")
+    failed = TickerResult(
+        ticker="SWKS", run_status="FAILED", failure_class="RATE_LIMIT",
+        failure_message="Responses API HTTP 429", http_status=429,
+        attempts=2, retry_count=1, cost_usd="0",
+    )
+    both = BatchResult(tmp_path / "ledger.sqlite3", ("MRNA", "SWKS"), (complete, complete))
+    partial = BatchResult(tmp_path / "ledger.sqlite3", ("MRNA", "SWKS"), (complete, failed))
+    none = BatchResult(tmp_path / "ledger.sqlite3", ("MRNA", "SWKS"), (failed, failed))
+
+    assert both.operational_status == "SUCCESS"
+    assert partial.operational_status == "PARTIAL_SUCCESS"
+    assert none.operational_status == "FAILED"
+    assert partial.results[0] == complete
+    assert partial.total_cost_usd == Decimal("0.20")
+
+
 def test_ledger_ohlcv_observation_records_twelve_data_snapshot_provenance(forward_batch):
     batch, _started = forward_batch
     with LedgerStorage.open(batch.ledger_db) as storage:
@@ -502,6 +521,34 @@ def test_committed_forward_result_survives_telegram_renderer_failure(monkeypatch
         ).fetchone()[0] == "SUCCEEDED"
         assert storage.connection.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 1
         assert storage.connection.execute("SELECT COUNT(*) FROM setup").fetchone()[0] == 1
+
+
+def test_ledger_invariant_failure_never_retries_model_calls(monkeypatch, tmp_path):
+    calls = []
+
+    def provider_factory(ticker):
+        thesis = _load_latest_thesis(ticker, AS_OF, THESIS_CACHE)
+        analyst, critic, _ = _role_values(thesis)
+        responses = iter((analyst, critic))
+
+        def requester(_prompt, _schema):
+            calls.append(ticker)
+            return next(responses)
+
+        return RecordingUSAProvider(requester)
+
+    monkeypatch.setattr(
+        "trinity.pilots.forward._persist_completed_pipeline",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Ledger invariant")),
+    )
+    batch = run_forward_pilot(
+        tmp_path / "ledger-failure.sqlite3", ["AAPL"], dry_run=True,
+        source_provider_factory=lambda _root: _FixtureSource(),
+        llm_provider_factory=provider_factory,
+    )
+
+    assert batch.results[0].run_status == "FAILED"
+    assert calls == ["AAPL", "AAPL"]
 
 
 def test_responses_api_provider_provenance_is_persisted_without_method_change(tmp_path):

@@ -78,6 +78,7 @@ def run_forward_pilot(
         for ticker in selected:
             attempt = None
             sources: ForwardTickerSources | None = None
+            provider: RecordingUSAProvider | None = None
             try:
                 reference = _future_reference()
                 attempt = _new_forward_attempt(storage, ticker, code_commit, reference)
@@ -152,6 +153,9 @@ def run_forward_pilot(
                 result = replace(
                     _ticker_result(notification, message, False),
                     notification_error=notification_error,
+                    attempts=int(getattr(provider, "transport_attempts", len(provider.invocations))),
+                    retry_count=int(getattr(provider, "retry_count", 0)),
+                    cost_usd=str(getattr(provider, "cost_usd", "0")),
                 )
                 results.append(replace(
                     result,
@@ -165,10 +169,22 @@ def run_forward_pilot(
                 if attempt is not None and storage.is_attempt_authorized(
                     attempt.attempt_id, attempt.fence_token
                 ):
-                    _record_failure(storage, attempt, ticker, exc)
+                    _record_failure(
+                        storage, attempt, ticker, exc,
+                        include_transport_diagnostics=True,
+                    )
                 results.append(TickerResult(
                     ticker=ticker, run_status="FAILED",
                     error=f"{type(exc).__name__}: {exc}",
+                    attempts=int(getattr(
+                        provider, "transport_attempts",
+                        len(provider.invocations) if provider is not None else 0,
+                    )),
+                    retry_count=int(getattr(provider, "retry_count", 0)),
+                    failure_class=str(getattr(exc, "classification", type(exc).__name__)),
+                    failure_message=str(exc)[:1000],
+                    http_status=getattr(exc, "status_code", None),
+                    cost_usd=str(getattr(provider, "cost_usd", "0")),
                     fresh_price_timestamp=(sources.fresh_price_timestamp if sources else "-"),
                     freshest_evidence_timestamp=(sources.freshest_evidence_timestamp if sources else "-"),
                     price_provider=PRICE_PROVIDER, news_provider="EODHD",

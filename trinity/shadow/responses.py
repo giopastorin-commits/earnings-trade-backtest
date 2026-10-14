@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
@@ -35,6 +36,8 @@ class ResponsesTransportError(RuntimeError):
         self, message: str, *, status_code: int | None = None,
         error_code: str | None = None, request_id: str | None = None,
         classification: str = "TRANSPORT", retryable: bool = False,
+        attempts: int = 1, retry_count: int = 0,
+        cost_usd: Decimal = Decimal("0"),
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -42,6 +45,9 @@ class ResponsesTransportError(RuntimeError):
         self.request_id = request_id
         self.classification = classification
         self.retryable = retryable
+        self.attempts = attempts
+        self.retry_count = retry_count
+        self.cost_usd = cost_usd
 
 
 class CostGuardStop(RuntimeError):
@@ -57,6 +63,8 @@ class ResponseCheckpoint:
     cost_usd: Decimal
     duration_seconds: float
     raw_sha256: str
+    attempts: int = 1
+    retry_count: int = 0
 
 
 class PersistentCostLedger:
@@ -98,6 +106,8 @@ class ResponsesAPI:
         self, *, run_root: str | Path, cost_ledger: PersistentCostLedger,
         api_key: str | None = None, session: Any | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        sleeper: Callable[[float], None] = time.sleep,
+        resilient_retry_policy: bool = False,
     ) -> None:
         self.run_root = Path(run_root)
         self.cost_ledger = cost_ledger
@@ -106,6 +116,8 @@ class ResponsesAPI:
             raise ResponsesTransportError("OPENAI_API_KEY is not configured")
         self.session = session or requests.Session()
         self.clock = clock
+        self.sleeper = sleeper
+        self.resilient_retry_policy = resilient_retry_policy
 
     def invoke(
         self, *, model: str, role: str, ticker: str, prompt: str,
@@ -113,7 +125,6 @@ class ResponsesAPI:
     ) -> ResponseCheckpoint:
         if model not in MODEL_PRICES:
             raise ResponsesTransportError(f"unsupported frozen model: {model}")
-        self.cost_ledger.assert_call_allowed()
         body = {
             "model": model, "service_tier": "default", "store": False,
             "input": prompt,
@@ -123,6 +134,7 @@ class ResponsesAPI:
         started = time.perf_counter()
         response = None
         for attempt in range(2):
+            self.cost_ledger.assert_call_allowed()
             try:
                 response = self.session.post(
                     API_URL,
@@ -130,17 +142,53 @@ class ResponsesAPI:
                     json=body, timeout=300,
                 )
             except requests.RequestException as exc:
-                if attempt == 0:
-                    continue
-                raise ResponsesTransportError(f"Responses API transport failure: {type(exc).__name__}") from exc
-            if int(response.status_code) >= 500 and attempt == 0:
-                continue
-            if int(response.status_code) >= 400:
-                failure = _http_failure(response)
+                retryable = True
+                classification = "TRANSPORT"
+                if self.resilient_retry_policy:
+                    retryable = isinstance(exc, (requests.Timeout, requests.ConnectionError)) \
+                        and not isinstance(exc, requests.SSLError)
+                    classification = "NETWORK_TRANSIENT" if retryable else "TRANSPORT"
+                failure = ResponsesTransportError(
+                    f"Responses API transport failure: {type(exc).__name__}",
+                    classification=classification,
+                    retryable=retryable, attempts=attempt + 1,
+                    retry_count=attempt,
+                )
                 _checkpoint_transport_error(
                     self.run_root, failure, model=model, role=role, ticker=ticker,
                     call_ordinal=call_ordinal, clock=self.clock,
+                    attempt_number=attempt + 1, final=not (retryable and attempt == 0),
+                    record_attempt_file=self.resilient_retry_policy,
                 )
+                if retryable and attempt == 0:
+                    if self.resilient_retry_policy:
+                        self.sleeper(1.0)
+                    continue
+                raise failure from exc
+            if int(response.status_code) >= 400:
+                failure = _http_failure(response)
+                failure.attempts = attempt + 1
+                failure.retry_count = attempt
+                status = int(response.status_code)
+                if self.resilient_retry_policy:
+                    retry_allowed = attempt == 0 and (
+                        (status == 429 and failure.classification != "BILLING_OR_QUOTA")
+                        or (failure.retryable and status in {500, 502, 503, 504})
+                    )
+                else:
+                    retry_allowed = attempt == 0 and status >= 500
+                _checkpoint_transport_error(
+                    self.run_root, failure, model=model, role=role, ticker=ticker,
+                    call_ordinal=call_ordinal, clock=self.clock,
+                    attempt_number=attempt + 1,
+                    final=not retry_allowed,
+                    record_attempt_file=self.resilient_retry_policy,
+                )
+                if retry_allowed:
+                    if self.resilient_retry_policy:
+                        self.sleeper(_retry_delay_seconds(response, clock=self.clock))
+                    response = None
+                    continue
                 raise failure
             break
         assert response is not None
@@ -166,11 +214,20 @@ class ResponsesAPI:
             "raw_sha256": digest, "raw_path": raw_path.relative_to(self.run_root).as_posix(),
             "recorded_at": self.clock().astimezone(timezone.utc).isoformat(),
         }
+        if self.resilient_retry_policy:
+            record.update({"attempt_number": attempt + 1, "retry_count": attempt})
         self.cost_ledger.append(record)
-        parsed = _extract_output_json(envelope)
+        try:
+            parsed = _extract_output_json(envelope)
+        except ResponsesTransportError as exc:
+            exc.attempts = attempt + 1
+            exc.retry_count = attempt
+            exc.cost_usd = cost
+            raise
         return ResponseCheckpoint(
             parsed=parsed, response_id=record["response_id"], raw_path=raw_path,
             usage=usage, cost_usd=cost, duration_seconds=duration, raw_sha256=digest,
+            attempts=attempt + 1, retry_count=attempt,
         )
 
 
@@ -208,11 +265,18 @@ def _extract_output_json(value: Mapping[str, Any]) -> dict[str, Any]:
                 try:
                     parsed = json.loads(str(content.get("text") or ""))
                 except json.JSONDecodeError as exc:
-                    raise ResponsesTransportError("checkpointed output_text is invalid JSON") from exc
+                    raise ResponsesTransportError(
+                        "checkpointed output_text is invalid JSON",
+                        classification="PARSE_ERROR",
+                    ) from exc
                 if not isinstance(parsed, dict):
-                    raise ResponsesTransportError("structured output must be a JSON object")
+                    raise ResponsesTransportError(
+                        "structured output must be a JSON object", classification="PARSE_ERROR",
+                    )
                 return parsed
-    raise ResponsesTransportError("Responses API body lacks output_text")
+    raise ResponsesTransportError(
+        "Responses API body lacks output_text", classification="PARSE_ERROR",
+    )
 
 
 def _http_failure(response: Any) -> ResponsesTransportError:
@@ -255,9 +319,11 @@ def _http_failure(response: Any) -> ResponsesTransportError:
 def _checkpoint_transport_error(
     run_root: Path, failure: ResponsesTransportError, *, model: str, role: str,
     ticker: str, call_ordinal: int, clock: Callable[[], datetime],
+    attempt_number: int = 1, final: bool = True,
+    record_attempt_file: bool = False,
 ) -> None:
     stamp = f"{call_ordinal:04d}_{ticker}_{role.lower()}"
-    atomic_json(run_root / "transport_errors" / f"{stamp}.json", {
+    value = {
         "schema_name": "trinity.responses-transport-error",
         "schema_version": "1",
         "provider": PROVIDER,
@@ -270,4 +336,37 @@ def _checkpoint_transport_error(
         "classification": failure.classification,
         "retryable": failure.retryable,
         "recorded_at": clock().astimezone(timezone.utc).isoformat(),
-    })
+    }
+    if record_attempt_file:
+        value.update({
+            "attempt_number": attempt_number,
+            "retry_count": max(0, attempt_number - 1),
+        })
+        atomic_json(
+            run_root / "transport_errors" / f"{stamp}_attempt_{attempt_number}.json",
+            value,
+        )
+    if final:
+        atomic_json(run_root / "transport_errors" / f"{stamp}.json", value)
+
+
+def _retry_delay_seconds(
+    response: Any, *, clock: Callable[[], datetime], maximum: float = 30.0,
+) -> float:
+    """Return a deterministic, bounded Retry-After delay."""
+
+    headers = getattr(response, "headers", {}) or {}
+    raw = str(headers.get("retry-after") or headers.get("Retry-After") or "").strip()
+    if not raw:
+        return 1.0
+    try:
+        delay = float(raw)
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(raw)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            delay = (target.astimezone(timezone.utc) - clock().astimezone(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return 1.0
+    return min(max(delay, 0.0), maximum)

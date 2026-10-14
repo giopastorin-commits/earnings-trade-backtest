@@ -334,6 +334,32 @@ def test_weekly_summary_with_candidates_is_deterministic():
     assert text.index("• ABBV — INVESTIGATE") < text.index("• DE — INVESTIGATE")
 
 
+def test_weekly_summary_delivers_completed_and_failed_tickers_on_partial_success():
+    report = {
+        "status": "PARTIAL_SUCCESS",
+        "counts": {"universe": 518, "ready_technically": 2, "operational_setup": 2,
+                   "luna_watch": 0, "luna_escalate": 2, "luna_drop": 0},
+        "research_cutoff": {"research_cutoff_utc": "2026-10-12T10:00:00Z"},
+        "price_snapshot": {"target_market_session": "2026-10-09"},
+        "api_cost_usd": "0.42",
+        "sol_results": [
+            {"ticker": "MRNA", "run_status": "SUCCESS"},
+            {"ticker": "SWKS", "run_status": "FAILED", "failure_class": "RATE_LIMIT",
+             "http_status": 429, "retry_count": 1},
+        ],
+    }
+
+    text = telegram.render_weekly_summary(
+        report, [_notification(ticker="MRNA", research=_research_result(ticker="MRNA"))],
+        sol_completed=1,
+    )
+
+    assert "PARTIAL SUCCESS" in text
+    assert "Completati:" in text and "• MRNA — INVESTIGATE — HIGH / MEDIUM" in text
+    assert "Falliti:" in text and "• SWKS — RATE_LIMIT HTTP 429 dopo 1 retry" in text
+    assert "Costo run: $0.42" in text
+
+
 def test_reporting_adapter_has_no_model_provider_or_broker_execution_path():
     source = Path(telegram.__file__).read_text(encoding="utf-8")
     for forbidden in ("ResponsesAPI", "ResponsesLuna", "ResponsesSolProvider",
@@ -570,6 +596,39 @@ def test_delivery_uses_committed_values_and_persists_sanitized_success(
         assert exact in message
     persisted = (root / "artifacts" / telegram.DELIVERY_RESULT_NAME).read_text()
     assert "unit-bot-token" not in persisted and "unit-chat" not in persisted
+
+
+def test_post_archive_delivery_sends_partial_summary_and_completed_candidate(tmp_path, monkeypatch):
+    root = _delivery_root(tmp_path)
+    report_path = root / "artifacts" / "final_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report.update({
+        "status": "PARTIAL_SUCCESS", "api_cost_usd": "0.42",
+        "sol_results": [
+            {"ticker": "JNJ", "run_status": "SUCCESS"},
+            {"ticker": "SWKS", "run_status": "FAILED", "failure_class": "RATE_LIMIT",
+             "http_status": 429, "retry_count": 1},
+        ],
+    })
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    (root / "artifacts" / "sol_results.json").write_text(
+        json.dumps(report["sol_results"]), encoding="utf-8",
+    )
+    _mock_delivery_gates(monkeypatch, [_candidate()])
+    sent = []
+
+    result = deliver_completed_run(
+        root, token="token", chat_id="chat",
+        transport=lambda *_a, **kwargs: (
+            sent.append(kwargs["json"]["text"])
+            or SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+        ),
+        now=lambda: FIXED_NOW, storage_factory=lambda _path: _Storage(),
+    )
+
+    assert result["telegram_sent"] is True
+    assert len(sent) == 2
+    assert "PARTIAL SUCCESS" in sent[0] and "SWKS" in sent[0] and "JNJ" in sent[0]
 
 
 def test_committed_ledger_validation_gates_each_send(tmp_path, monkeypatch):
