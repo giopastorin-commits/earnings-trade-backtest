@@ -414,6 +414,8 @@ def _persist_completed_pipeline(
     storage, root, code_commit, attempt, ticker, thesis, setup_record, provider,
     persisted, method, setup_policy, *, reference: str = REFERENCE,
     research_as_of_at: str | None = None,
+    llm_post_reference_reconstruction: bool = False,
+    llm_reconstruction_support_artifact_ids=(),
 ):
     analyst = _interaction(
         storage, root, code_commit, attempt,
@@ -453,6 +455,8 @@ def _persist_completed_pipeline(
     pit_policy = persisted["pit_policy"]
     analyst_raw_class = _classify_llm_raw(
         storage, attempt, pit_policy, analyst, reference=reference,
+        post_reference_reconstruction=llm_post_reference_reconstruction,
+        supporting_artifact_ids=llm_reconstruction_support_artifact_ids,
     )
     analyst_stage_class = _classify_derived(
         storage, attempt, pit_policy, analyst["stage_node"],
@@ -460,6 +464,8 @@ def _persist_completed_pipeline(
     )
     critic_raw_class = _classify_llm_raw(
         storage, attempt, pit_policy, critic, reference=reference,
+        post_reference_reconstruction=llm_post_reference_reconstruction,
+        supporting_artifact_ids=llm_reconstruction_support_artifact_ids,
     )
     critic_stage_class = _classify_derived(
         storage, attempt, pit_policy, critic["stage_node"],
@@ -814,10 +820,30 @@ def _classify_raw(
     )
 
 
-def _classify_llm_raw(storage, attempt, policy, interaction, *, reference=REFERENCE):
+def _classify_llm_raw(
+    storage, attempt, policy, interaction, *, reference=REFERENCE,
+    post_reference_reconstruction=False,
+    supporting_artifact_ids=(),
+):
     observation = interaction["observation"]
     node = interaction["raw_node"]
     artifact = interaction["raw"]
+    if post_reference_reconstruction:
+        classification = {
+            "pit_evidence_kind": "POST_REFERENCE_RECONSTRUCTION",
+            "verifier_id": "LEDGER_RECONSTRUCTION_EVIDENCE_V1",
+            "archive_captured_at": None,
+            "reconstruction_completed_at": observation.effective_available_at,
+            "rationale_code": "POST_REFERENCE_RECONSTRUCTION_VERIFIED",
+        }
+    else:
+        classification = {
+            "pit_evidence_kind": "PIT_IRRELEVANT_CONTENT",
+            "verifier_id": "LEDGER_PIT_IRRELEVANCE_V1",
+            "archive_captured_at": None,
+            "reconstruction_completed_at": None,
+            "rationale_code": "PIT_NOT_APPLICABLE_BY_ARTIFACT_KIND",
+        }
     evidence = _artifact(storage, "ledger.pit-classification-evidence.v1", {
         "schema_name": "ledger.pit-classification-evidence", "schema_version": "1",
         "derivation_node_id": node.derivation_node_id,
@@ -825,11 +851,12 @@ def _classify_llm_raw(storage, attempt, policy, interaction, *, reference=REFERE
         "artifact_id": artifact.artifact_id, "pit_reference_at": reference,
         "record_origin_evidence_kind": "LEDGER_AUTHORIZED_CAPTURE",
         "legacy_namespace": None, "legacy_record_key": None, "legacy_record_id": None,
-        "pit_evidence_kind": "PIT_IRRELEVANT_CONTENT",
-        "verifier_id": "LEDGER_PIT_IRRELEVANCE_V1",
-        "archive_captured_at": None, "reconstruction_completed_at": None,
-        "supporting_artifact_ids": [],
-        "rationale_code": "PIT_NOT_APPLICABLE_BY_ARTIFACT_KIND",
+        "pit_evidence_kind": classification["pit_evidence_kind"],
+        "verifier_id": classification["verifier_id"],
+        "archive_captured_at": classification["archive_captured_at"],
+        "reconstruction_completed_at": classification["reconstruction_completed_at"],
+        "supporting_artifact_ids": sorted(set(supporting_artifact_ids)),
+        "rationale_code": classification["rationale_code"],
     })
     storage.attach_attempt_artifact(
         attempt_id=attempt.attempt_id, fence_token=attempt.fence_token,

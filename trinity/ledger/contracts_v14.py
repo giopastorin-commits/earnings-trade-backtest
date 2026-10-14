@@ -426,8 +426,12 @@ def _validate_parameters(value: Any) -> None:
         "sandbox": "not-applicable", "skip_git_repo_check": False,
         "ignore_user_config": False,
     }
+    offline_replay = {
+        **responses,
+        "transport": "OFFLINE_VERIFIED_R2_REPLAY", "timeout_seconds": 0,
+    }
     if not any(all(value[key] == item for key, item in profile.items())
-               for profile in (codex, responses)):
+               for profile in (codex, responses, offline_replay)):
         _fail("invocation parameters differ from an approved transport profile")
     _artifact_id(value["response_schema_artifact_id"])
 

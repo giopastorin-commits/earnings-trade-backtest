@@ -3,14 +3,18 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import hashlib
+import inspect
 import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
 from trinity.ledger import LedgerStorage
+from trinity.ledger.errors import ArtifactIntegrityError
 from trinity.italia_v1 import build_facts_v3
 from trinity.pilots.forward import run_forward_pilot
 from trinity.pilots.jnj_telegram import _role_values
@@ -28,9 +32,12 @@ from trinity.shadow.responses import (
     PersistentCostLedger, ResponsesAPI, ResponsesTransportError,
 )
 from trinity.shadow.sol_recovery import (
-    CONFIRMATION, SolRecoveryError, SolRecoverySpec,
+    CONFIRMATION, FINALIZE_EXISTING_CONFIRMATION,
+    ExistingCriticSpec, SolRecoveryError, SolRecoverySpec,
+    _EXISTING_CRITIC_TRUST_REGISTRY,
     _archived_sec_path_resolver, _require_inside,
-    execute_sol_recovery, load_frozen_historical_setup, preflight_sol_recovery,
+    execute_sol_recovery, finalize_existing, load_frozen_historical_setup,
+    preflight_finalize_existing, preflight_sol_recovery,
 )
 from trinity.usa_setup_v1 import (
     PRICE_CACHE, THESIS_CACHE, _load_latest_thesis, build_setup,
@@ -925,3 +932,227 @@ def test_responses_429_persists_only_sanitized_diagnostics(tmp_path):
     assert "secret prompt" not in serialized
     assert "must not be persisted" not in serialized
     assert not (tmp_path / "api_usage.json").exists()
+
+
+REAL_SOURCE_ROOT = Path(
+    "C:/Users/giopa/trinity_run_38230389276_analysis/"
+    "SHADOW_USA_2026-10-09_38230389276_A1"
+)
+REAL_R2_ROOT = Path(
+    "C:/Users/giopa/trinity_run_38230389276_analysis/"
+    "RECOVERY_SHADOW_USA_2026-10-09_38230389276_A1_SWKS_R2"
+)
+
+
+def _real_existing_critic_spec() -> ExistingCriticSpec:
+    return _EXISTING_CRITIC_TRUST_REGISTRY[(RUN_ID, "SWKS")]
+
+
+def _require_real_r2_fixture() -> None:
+    if not REAL_SOURCE_ROOT.is_dir() or not REAL_R2_ROOT.is_dir():
+        pytest.skip("authorized immutable historical R2 fixture is not locally available")
+
+
+def test_existing_critic_preflight_real_archive_is_read_only_and_exact():
+    _require_real_r2_fixture()
+    before = {
+        path.relative_to(REAL_R2_ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in REAL_R2_ROOT.rglob("*") if path.is_file()
+    }
+    plan = preflight_finalize_existing(
+        REAL_SOURCE_ROOT, REAL_R2_ROOT, _real_existing_critic_spec(),
+    )
+    after = {
+        path.relative_to(REAL_R2_ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in REAL_R2_ROOT.rglob("*") if path.is_file()
+    }
+    assert before == after
+    assert plan.spec.response_id == (
+        "resp_049a7d460a02ea8c016ace3db1d28c87d2b31136f5b772754f"
+    )
+    assert plan.spec.model == "gpt-5.6-sol"
+    assert plan.spec.research_cutoff_at == "2026-10-12T11:09:36.364663Z"
+    assert plan.spec.original_analysis_reference_at == "2026-10-12T11:43:00.974465Z"
+    assert plan.spec.critic_generated_at == "2026-10-13T14:19:31.462433Z"
+    value = plan.to_dict()
+    assert value["request_kind"] == "RECONSTRUCTION"
+    assert value["pit_class"] == "RECONSTRUCTED_NOT_ARCHIVED"
+    assert value["official_benchmark_observation"] is False
+    assert value["telegram_delivery"] is False
+    assert value["broker_execution"] is False
+    assert value["cloud_write"] is False
+    assert value["network_enabled"] is False
+
+
+@pytest.mark.parametrize("field,replacement", [
+    ("response_id", "resp_substituted"),
+    ("model", "gpt-substituted"),
+    ("critic_file_sha256", "0" * 64),
+    ("raw_output_artifact_id", "sha256:" + "1" * 64),
+    ("parsed_output_artifact_id", "sha256:" + "2" * 64),
+    ("critic_cost_usd", "0.000001"),
+    ("research_cutoff_at", "2026-10-12T11:09:35.000000Z"),
+    ("original_analysis_reference_at", "2026-10-12T11:42:59.000000Z"),
+    ("critic_generated_at", "2026-10-12T11:43:00.974465Z"),
+])
+def test_existing_critic_preflight_rejects_cli_substitution_before_io(
+    tmp_path, field, replacement,
+):
+    changed = replace(_real_existing_critic_spec(), **{field: replacement})
+    with pytest.raises(SolRecoveryError, match="not authorized"):
+        preflight_finalize_existing(
+            tmp_path / RUN_ID,
+            tmp_path / changed.recovery_run_id,
+            changed,
+        )
+
+
+def test_existing_critic_preflight_rejects_file_tamper(tmp_path):
+    _require_real_r2_fixture()
+    copied = tmp_path / REAL_R2_ROOT.name
+    shutil.copytree(REAL_R2_ROOT, copied)
+    critic = copied / "model_responses" / "10002_SWKS_critic.json"
+    critic.write_bytes(critic.read_bytes() + b" ")
+    with pytest.raises(SolRecoveryError, match="SHA-256 mismatch"):
+        preflight_finalize_existing(
+            REAL_SOURCE_ROOT, copied, _real_existing_critic_spec(),
+        )
+
+
+def test_finalize_existing_uses_only_verified_r2_bytes_on_temporary_copy(
+    tmp_path, monkeypatch,
+):
+    _require_real_r2_fixture()
+    copied = tmp_path / REAL_R2_ROOT.name
+    shutil.copytree(REAL_R2_ROOT, copied)
+    spec = _real_existing_critic_spec()
+    ledger = copied / "ledger" / "trinity.sqlite3"
+    usage = copied / "artifacts" / "api_usage.json"
+    original_usage = usage.read_bytes()
+
+    monkeypatch.setattr(
+        "trinity.shadow.sol_recovery.ResponsesAPI",
+        lambda *_args, **_kwargs: pytest.fail("OpenAI transport must not be constructed"),
+    )
+    monkeypatch.setattr(
+        "trinity.shadow.sol_recovery.build_setup",
+        lambda *_args, **_kwargs: pytest.fail("build_setup must not be called"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "socket.create_connection",
+        lambda *_args, **_kwargs: pytest.fail("network must not be called"),
+    )
+    real_getenv = os.getenv
+    monkeypatch.setattr(
+        os, "getenv",
+        lambda name, *args: (
+            pytest.fail("OPENAI_API_KEY must not be read")
+            if name == "OPENAI_API_KEY" else real_getenv(name, *args)
+        ),
+    )
+    source = inspect.getsource(finalize_existing)
+    assert "ResponsesAPI" not in source
+    assert "OPENAI_API_KEY" not in source
+    assert "build_setup" not in source
+
+    result = finalize_existing(
+        REAL_SOURCE_ROOT, copied, spec,
+        confirmation=FINALIZE_EXISTING_CONFIRMATION,
+    )
+    assert result["state"] == "COMPLETE_RECONSTRUCTION"
+    assert result["request_kind"] == "RECONSTRUCTION"
+    assert result["pit_class"] == "RECONSTRUCTED_NOT_ARCHIVED"
+    assert result["additional_openai_calls"] == 0
+    assert result["additional_api_cost_usd"] == "0"
+    assert result["critic_generated_at"] == spec.critic_generated_at
+    assert result["finalized_at"] > spec.critic_generated_at
+    assert usage.read_bytes() == original_usage
+
+    with LedgerStorage.open(ledger) as storage:
+        assert storage.connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert not storage.connection.execute("PRAGMA foreign_key_check").fetchall()
+        old_attempt = storage.get_attempt(spec.failed_attempt_id)
+        assert old_attempt.status == "FAILED"
+        old_research = storage.get_research_record(
+            "5a891cd4-49a5-4513-afda-e2d961f36590"
+        )
+        old_setup = storage.get_setup("a7594497-4ce5-4a01-8d5a-12a8a447c5c7")
+        assert old_research.run_id is None and old_setup.run_id is None
+        committed = storage.connection.execute(
+            "SELECT r.run_id, rr.request_kind, a.attempt_id "
+            "FROM run r JOIN run_request rr USING(run_request_id) "
+            "JOIN attempt a ON a.attempt_id=r.attempt_id "
+            "JOIN research_record rec ON rec.run_id=r.run_id "
+            "WHERE rec.subject_key='ticker:SWKS' AND r.status='COMMITTED'"
+        ).fetchall()
+        assert len(committed) == 1
+        assert committed[0]["request_kind"] == "RECONSTRUCTION"
+        assert committed[0]["attempt_id"] != spec.failed_attempt_id
+        run = storage.get_run(str(committed[0]["run_id"]))
+        manifest = json.loads(
+            storage.get_artifact(run.result_manifest_artifact_id).payload
+        )
+        assert manifest["resolved_pit_class"] == "RECONSTRUCTED_NOT_ARCHIVED"
+        assert manifest["pit_reference_at"] == spec.original_analysis_reference_at
+        assert manifest["analysis_cutoff_at"] == spec.critic_generated_at
+        assert storage.connection.execute(
+            "SELECT count(*) FROM research_record rr JOIN run r ON rr.run_id=r.run_id "
+            "WHERE rr.subject_key='ticker:MRNA' AND r.status='COMMITTED'"
+        ).fetchone()[0] == 1
+        new_setup = storage.connection.execute(
+            "SELECT result_artifact_id FROM setup WHERE run_id=?",
+            (run.run_id,),
+        ).fetchone()
+        payload = json.loads(storage.get_artifact(new_setup[0]).payload)
+        assert payload["setup_type"] == "PULLBACK"
+        assert payload["entry_condition"] == "BUY ON PULLBACK 76.1342-77.2496"
+        assert payload["entry_level"] == "77.2496"
+        assert payload["stop_level"] == "70.5574"
+        assert payload["tp1"] == "92.8"
+        assert payload["tp2"] == "97.326"
+        assert payload["rr_tp1"] == "2.3237"
+        assert payload["rr_tp2"] == "3"
+
+    with pytest.raises(SolRecoveryError, match="SHA-256 mismatch|already finalized"):
+        finalize_existing(
+            REAL_SOURCE_ROOT, copied, spec,
+            confirmation=FINALIZE_EXISTING_CONFIRMATION,
+        )
+    with LedgerStorage.open(ledger) as storage:
+        assert storage.connection.execute(
+            "SELECT count(*) FROM research_record rr JOIN run r ON rr.run_id=r.run_id "
+            "WHERE rr.subject_key='ticker:SWKS' AND r.status='COMMITTED'"
+        ).fetchone()[0] == 1
+
+
+def test_finalize_existing_offline_transport_rejects_pit_safe_request(
+    tmp_path, monkeypatch,
+):
+    _require_real_r2_fixture()
+    copied = tmp_path / REAL_R2_ROOT.name
+    shutil.copytree(REAL_R2_ROOT, copied)
+    original = LedgerStorage.create_run_request
+
+    def force_pit_safe(storage, *args, **kwargs):
+        kwargs["request_kind"] = "PIT_SAFE_DECISION"
+        kwargs["parameters"] = {}
+        return original(storage, *args, **kwargs)
+
+    monkeypatch.setattr(LedgerStorage, "create_run_request", force_pit_safe)
+    monkeypatch.setattr(
+        "trinity.shadow.sol_recovery.ResponsesAPI",
+        lambda *_args, **_kwargs: pytest.fail("OpenAI transport must not be constructed"),
+    )
+    monkeypatch.setattr(
+        "socket.create_connection",
+        lambda *_args, **_kwargs: pytest.fail("network must not be called"),
+    )
+    with pytest.raises(
+        ArtifactIntegrityError,
+        match="offline replay transport requires a RECONSTRUCTION request",
+    ):
+        finalize_existing(
+            REAL_SOURCE_ROOT, copied, _real_existing_critic_spec(),
+            confirmation=FINALIZE_EXISTING_CONFIRMATION,
+        )

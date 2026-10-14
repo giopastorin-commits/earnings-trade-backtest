@@ -1486,6 +1486,17 @@ class LedgerStorage:
         parameters = validate_json_artifact(
             self.get_artifact(request_value["invocation_parameters_artifact_id"]), resolver=self.get_artifact
         )
+        if parameters["transport"] == "OFFLINE_VERIFIED_R2_REPLAY":
+            request_kind = self.connection.execute(
+                "SELECT rr.request_kind FROM attempt a "
+                "JOIN run_request rr ON rr.run_request_id=a.run_request_id "
+                "WHERE a.attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if request_kind is None or request_kind[0] != "RECONSTRUCTION":
+                raise ArtifactIntegrityError(
+                    "offline replay transport requires a RECONSTRUCTION request"
+                )
         if parameters["response_schema_artifact_id"] != request_value["response_schema_artifact_id"]:
             raise ArtifactIntegrityError("request and invocation parameters name different schemas")
         identity = (provider, model, model_version)
