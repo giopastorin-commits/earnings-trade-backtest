@@ -150,6 +150,7 @@ class TickerResult:
     failure_message: str | None = None
     http_status: int | None = None
     cost_usd: str = "0"
+    execution_status: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -955,6 +956,7 @@ def _ticker_result(
         setup_id=notification.setup_id,
         telegram_message=message,
         telegram_sent=sent,
+        execution_status=notification.execution_status,
     )
 
 

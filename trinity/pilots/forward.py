@@ -10,6 +10,7 @@ from typing import Callable, Sequence
 import uuid
 
 from trinity.italia_v1 import analyze_company, build_facts_v3
+from trinity.execution_freshness import evaluate_execution_status
 from trinity.ledger import LedgerStorage
 from trinity.notifications.telegram import load_committed_setup, render_telegram_message
 from trinity.paths import price_snapshot_root
@@ -139,6 +140,17 @@ def run_forward_pilot(
                 notification = load_committed_setup(
                     storage, setup_id=identities["setup_id"], run_id=identities["run_id"],
                 )
+                if setup_record.setup_type != "NO_SETUP":
+                    latest_bar = sources.bars[-1]
+                    execution = evaluate_execution_status(
+                        setup_record,
+                        setup_id=identities["setup_id"],
+                        current_price=latest_bar.get("close"),
+                        price_as_of=str(latest_bar.get("date") or ""),
+                        price_provider=sources.price_provider,
+                        price_retrieved_at=sources.price_retrieved_at,
+                    )
+                    notification = replace(notification, execution_status=execution.to_dict())
                 # Research, Setup and Manifest V3 are already committed here.
                 # Rendering is presentation-only and cannot rewrite that
                 # authoritative analytical outcome as FAILED.

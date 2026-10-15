@@ -598,6 +598,33 @@ def test_delivery_uses_committed_values_and_persists_sanitized_success(
     assert "unit-bot-token" not in persisted and "unit-chat" not in persisted
 
 
+def test_post_archive_delivery_propagates_current_execution_status(tmp_path, monkeypatch):
+    root = _delivery_root(tmp_path)
+    execution = {
+        "current_price": "275", "price_as_of": "2026-10-09",
+        "price_freshness": "VERIFIED_SAME_SESSION", "current_rr1": "0.25",
+        "current_rr2": "0.75", "execution_status": "RR_TOO_LOW",
+    }
+    candidate = {**_candidate(), "execution_status": execution}
+    _mock_delivery_gates(monkeypatch, [candidate])
+    sent = []
+
+    result = deliver_completed_run(
+        root, token="token", chat_id="chat",
+        transport=lambda *_a, **kwargs: (
+            sent.append(kwargs["json"]["text"])
+            or SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+        ),
+        now=lambda: FIXED_NOW, storage_factory=lambda _path: _Storage(),
+    )
+
+    assert result["telegram_sent"] is True
+    assert "SETUP ORIGINALE" in sent[1]
+    assert "ESECUZIONE CORRENTE" in sent[1]
+    assert "Current RR1: 0.25" in sent[1]
+    assert "Execution status: RR_TOO_LOW" in sent[1]
+
+
 def test_post_archive_delivery_sends_partial_summary_and_completed_candidate(tmp_path, monkeypatch):
     root = _delivery_root(tmp_path)
     report_path = root / "artifacts" / "final_report.json"

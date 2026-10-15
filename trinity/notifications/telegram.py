@@ -8,7 +8,7 @@ import json
 import os
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -52,6 +52,7 @@ class TelegramNotification:
     resolved_pit_class: str
     resolved_record_class: str
     research: Mapping[str, Any]
+    execution_status: Mapping[str, Any] | None = None
 
 
 def load_committed_setup(
@@ -229,12 +230,25 @@ def _render_telegram_message(
                   "Condizione di invalidazione non stabilita nel record di ricerca.",
                   "", "PIANO OPERATIVO"))
     if notification.setup_type != "NO_SETUP":
+        lines.append("SETUP ORIGINALE")
         levels = (("Entry", notification.entry), ("Stop", notification.stop),
                   ("TP1", notification.tp1), ("TP2", notification.tp2))
         if any(value is None for _, value in levels) or notification.rr1 is None or notification.rr2 is None:
             raise TelegramNotificationError("Operational Setup has incomplete levels")
         lines.extend(f"{label}: {_display_level(value)}" for label, value in levels)
         lines.extend((f"RR1: {_display_rr(notification.rr1)}", f"RR2: {_display_rr(notification.rr2)}"))
+        if notification.execution_status is not None:
+            execution = notification.execution_status
+            lines.extend((
+                "", "ESECUZIONE CORRENTE",
+                f"Price: {_display_optional_decimal(execution.get('current_price'))}",
+                f"Price as of: {execution.get('price_as_of') or '-'}",
+                f"Freshness: {execution.get('price_freshness') or '-'}",
+                f"Current RR1: {_display_optional_decimal(execution.get('current_rr1'))}",
+                f"Current RR2: {_display_optional_decimal(execution.get('current_rr2'))}",
+                f"Execution status: {execution.get('execution_status') or '-'}",
+                "Action: " + _execution_action(str(execution.get("execution_status") or "")),
+            ))
     lines.extend(("", "DA MONITORARE"))
     monitoring = _monitoring(notification.research)
     lines.extend(f"• {bounded(item, 'monitoring')}" for item in monitoring)
@@ -350,6 +364,24 @@ def _display_level(value: str) -> str:
 def _display_rr(value: str) -> str:
     _parse_decimal(value)
     return value
+
+
+def _display_optional_decimal(value: object) -> str:
+    if value is None:
+        return "-"
+    text = str(value)
+    _parse_decimal(text)
+    return text
+
+
+def _execution_action(status: str) -> str:
+    return {
+        "VALID": "ENTRY CONDITIONS VALID",
+        "WAIT": "WAIT",
+        "EXTENDED": "DO NOT CHASE",
+        "INVALIDATED": "SETUP INVALIDATED",
+        "RR_TOO_LOW": "WAIT / DO NOT CHASE",
+    }.get(status, "UNAVAILABLE")
 
 
 def _parse_decimal(value: str) -> Decimal:
@@ -544,13 +576,13 @@ def _verify_post_archive_run(root: Path) -> str:
     return run_id
 
 
-def _select_sol_candidates(root: Path) -> list[dict[str, str]]:
+def _select_sol_candidates(root: Path) -> list[dict[str, Any]]:
     """Select structured, successful, operational Sol outputs deterministically."""
 
     value = _read_json(root / "artifacts" / "sol_results.json")
     if not isinstance(value, list):
         raise TelegramNotificationError("Sol results are malformed")
-    candidates: list[dict[str, str]] = []
+    candidates: list[dict[str, Any]] = []
     for item in value:
         if not isinstance(item, Mapping):
             raise TelegramNotificationError("Sol result entry is malformed")
@@ -563,11 +595,17 @@ def _select_sol_candidates(root: Path) -> list[dict[str, str]]:
         ticker = str(item.get("ticker") or "")
         if not setup_id or not ledger_run_id or not ticker:
             raise TelegramNotificationError("Successful Sol result lacks committed identity")
-        candidates.append({
+        candidate = {
             "ticker": ticker,
             "setup_id": setup_id,
             "ledger_run_id": ledger_run_id,
-        })
+        }
+        execution = item.get("execution_status")
+        if execution is not None:
+            if not isinstance(execution, Mapping):
+                raise TelegramNotificationError("Execution status is malformed")
+            candidate["execution_status"] = dict(execution)
+        candidates.append(candidate)
     candidates.sort(key=lambda item: (item["ticker"], item["setup_id"]))
     identities = [item["setup_id"] for item in candidates]
     if len(identities) != len(set(identities)):
@@ -664,7 +702,7 @@ def deliver_completed_run(
     }
     result_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_json(result_path, result)
-    loaded: list[tuple[dict[str, str], TelegramNotification]] = []
+    loaded: list[tuple[dict[str, Any], TelegramNotification]] = []
     ledger_path = run_path / "ledger" / "trinity.sqlite3"
     if candidates:
         with storage_factory(ledger_path) as storage:
@@ -684,6 +722,10 @@ def deliver_completed_run(
                     setup_id=candidate["setup_id"],
                     run_id=candidate["ledger_run_id"],
                 )
+                if "execution_status" in candidate:
+                    notification = replace(
+                        notification, execution_status=candidate["execution_status"],
+                    )
                 if notification.setup_type == "NO_SETUP":
                     raise TelegramNotificationError("Committed Setup is not operational")
                 if notification.ticker != candidate["ticker"]:
