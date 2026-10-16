@@ -96,6 +96,24 @@ manifest, and pass a hard coverage gate before outcomes can become complete.
 It must not modify the canonical issuer registry or price snapshot: SPY is not
 the 519th ticker.
 
+### Immutable SPY benchmark snapshot
+
+The acquisition implementation lives only in `trinity.validation` and writes
+a separate benchmark root containing `raw/SPY.json`, `normalized/SPY.json`,
+`benchmark_manifest.json`, and a final `READY` marker. Snapshot IDs use
+`SPY_TWELVEDATA_<SESSION>_RUN_<RUN_ID>`. Existing/non-empty roots are never
+overwritten. The verifier checks the manifest and marker hashes, raw and
+normalized hashes, canonical reproducibility, ordered unique XNYS sessions,
+valid OHLCV, and exact target-session coverage before constructing a
+`BenchmarkSeries`.
+
+Each normalized bar contains `date`, `open`, `high`, `low`, `close`, `volume`,
+and `tradable_at`. The latter is the authoritative XNYS session open from the
+versioned `exchange-calendars` schedule; it is not a fixed UTC assumption, so
+daylight-saving changes remain explicit. A TRINITY/SPY target-session mismatch
+fails closed. The explicit future CLI is `python -m trinity.validation.cli
+acquire-spy`; it is not called by any workflow.
+
 ## Execution analytics
 
 Selection and execution performance are separate. A Setup that never triggers
