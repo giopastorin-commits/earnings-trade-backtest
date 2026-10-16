@@ -12,6 +12,23 @@ class ValidationContractError(ValueError):
     """An input cannot satisfy the frozen validation contract."""
 
 
+SMOKE_ONLY = "SMOKE_ONLY"
+OFFICIAL_ELIGIBLE = "OFFICIAL_ELIGIBLE"
+INELIGIBLE = "INELIGIBLE"
+
+
+def classify_run_eligibility(mode: object, official_benchmark_observation: object) -> str:
+    """Classify only the two coherent, explicit source-run combinations."""
+
+    if mode == "VALIDATION" and official_benchmark_observation is False:
+        return SMOKE_ONLY
+    if mode == "OFFICIAL" and official_benchmark_observation is True:
+        return OFFICIAL_ELIGIBLE
+    raise ValidationContractError(
+        "INELIGIBLE: incoherent run mode and official_benchmark_observation eligibility"
+    )
+
+
 def _sha(value: str | None, field: str, *, optional: bool = False) -> None:
     if value is None and optional:
         return
@@ -55,12 +72,15 @@ class SelectionObservation:
     snapshot_id: str
     snapshot_sha256: str
     data_quality_flags: tuple[str, ...] = ()
+    eligibility: str = SMOKE_ONLY
     protocol_version: str = PROTOCOL_ID
     protocol_epoch: int = PROTOCOL_EPOCH
 
     def __post_init__(self) -> None:
         if not self.run_id or not self.ticker or self.scanner_state != "READY_TECHNICALLY":
             raise ValidationContractError("selection identity or Scanner membership is invalid")
+        if self.eligibility not in {SMOKE_ONLY, OFFICIAL_ELIGIBLE}:
+            raise ValidationContractError("selection has invalid eligibility")
         if self.luna_decision not in {"ESCALATE", "WATCH", "DROP", "NOT_EVALUATED", "EVALUATED_FAILED"}:
             raise ValidationContractError("invalid Luna decision")
         if self.sol_status not in {"PROMOTED", "REJECTED", "NOT_EVALUATED", "EVALUATED_FAILED"}:
@@ -153,6 +173,7 @@ class OutcomeObservation:
     maturity_status: str
     source_snapshot_id: str
     source_snapshot_sha256: str
+    eligibility: str
     benchmark_snapshot_id: str | None = None
     benchmark_snapshot_sha256: str | None = None
     quality_flags: tuple[str, ...] = ()
@@ -166,6 +187,8 @@ class OutcomeObservation:
             raise ValidationContractError("invalid cohort")
         if self.maturity_status not in {"PENDING", "COMPLETE", "DATA_QUALITY_FAILURE"}:
             raise ValidationContractError("invalid maturity status")
+        if self.eligibility not in {SMOKE_ONLY, OFFICIAL_ELIGIBLE}:
+            raise ValidationContractError("outcome has invalid eligibility")
         _sha(self.source_snapshot_sha256, "source_snapshot_sha256")
         _sha(self.benchmark_snapshot_sha256, "benchmark_snapshot_sha256", optional=True)
 
@@ -182,6 +205,7 @@ class CollectedRun:
     setups: tuple[SetupObservation, ...]
     executions: tuple[ExecutionObservation, ...]
     total_api_cost_usd: str
+    eligibility: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +213,7 @@ class CollectedRun:
             "source_root": self.source_root,
             "source_manifest_sha256": self.source_manifest_sha256,
             "total_api_cost_usd": self.total_api_cost_usd,
+            "eligibility": self.eligibility,
             "selections": [item.to_dict() for item in self.selections],
             "setups": [item.to_dict() for item in self.setups],
             "executions": [item.to_dict() for item in self.executions],

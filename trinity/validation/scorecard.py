@@ -8,6 +8,7 @@ import random
 from statistics import fmean, median
 from typing import Iterable, Mapping
 
+from .contracts import OFFICIAL_ELIGIBLE, ValidationContractError
 from .protocol_v1 import PROTOCOL, PROTOCOL_HASH, PROTOCOL_ID
 
 
@@ -27,7 +28,9 @@ class Scorecard:
 def missed_winner_rate_20d(rows: Iterable[Mapping[str, object]]) -> dict[str, object]:
     """DIAGNOSTIC only: trace Scanner winners through the frozen funnel."""
 
-    winners = [row for row in rows if row.get("maturity_status") == "COMPLETE"
+    values = tuple(rows)
+    _require_official(values)
+    winners = [row for row in values if row.get("maturity_status") == "COMPLETE"
                and float(row.get("active_return_20d") or float("-inf")) >= 10.0]
     denominator = len(winners)
     return {
@@ -41,6 +44,16 @@ def missed_winner_rate_20d(rows: Iterable[Mapping[str, object]]) -> dict[str, ob
         "missed_by_sol_rate": None if denominator == 0 else
             1.0 - sum(bool(row.get("sol_promoted")) for row in winners) / denominator,
     }
+
+
+def _require_official(rows: tuple[Mapping[str, object], ...]) -> None:
+    ineligible = [row.get("run_id", "UNKNOWN") for row in rows
+                  if row.get("eligibility") != OFFICIAL_ELIGIBLE]
+    if ineligible:
+        raise ValidationContractError(
+            "official analytics received non-OFFICIAL_ELIGIBLE observations: "
+            + ", ".join(str(value) for value in ineligible)
+        )
 
 
 def _block_bootstrap_ci(values: list[float]) -> tuple[float, float]:
@@ -68,6 +81,7 @@ def _block_bootstrap_ci(values: list[float]) -> tuple[float, float]:
 def build_scorecard(weekly: Iterable[Mapping[str, object]], *,
                     diagnostics: Mapping[str, object] | None = None) -> Scorecard:
     rows = tuple(weekly)
+    _require_official(rows)
     complete = [row for row in rows if all(row.get(key) is not None for key in (
         "scanner_ar20", "luna_ar20", "sol_ar20"
     ))]

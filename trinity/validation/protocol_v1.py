@@ -32,7 +32,7 @@ def _load() -> tuple[Mapping[str, Any], str]:
     value = json.loads(_PATH.read_text(encoding="utf-8"))
     if value.get("protocol_id") != _EXPECTED_ID or value.get("protocol_epoch") != _EXPECTED_EPOCH:
         raise RuntimeError("TRINITY Live Validation protocol identity drift")
-    if value.get("primary_horizon_sessions") != 20 or value.get("benchmark") != "SPY_TOTAL_RETURN":
+    if value.get("primary_horizon_sessions") != 20 or value.get("benchmark") != "SPY_PRICE_RETURN":
         raise RuntimeError("TRINITY Live Validation primary contract drift")
     return _freeze(value), hashlib.sha256(canonical_json(value)).hexdigest()
 

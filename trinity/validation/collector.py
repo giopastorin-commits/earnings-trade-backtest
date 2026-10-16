@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from .contracts import (
     CollectedRun, ExecutionObservation, SelectionObservation, SetupObservation,
-    ValidationContractError,
+    ValidationContractError, classify_run_eligibility,
 )
 from .protocol_v1 import canonical_json
 
@@ -173,8 +173,12 @@ def collect_run(root: str | Path) -> CollectedRun:
         raise CollectionError("run identity differs across authoritative artifacts")
     if run_state.get("state") != "COMPLETE":
         raise CollectionError("only COMPLETE Shadow runs can be collected")
-    if orchestrator.get("mode") != "VALIDATION" or orchestrator.get("official_benchmark_observation") is not False:
-        raise CollectionError("source run is not a non-official VALIDATION run")
+    try:
+        eligibility = classify_run_eligibility(
+            orchestrator.get("mode"), orchestrator.get("official_benchmark_observation")
+        )
+    except ValidationContractError as exc:
+        raise CollectionError(str(exc)) from exc
     commit = str(orchestrator.get("analytical_commit") or "")
     if report.get("git_commit") != commit:
         raise CollectionError("analytical commit provenance mismatch")
@@ -285,6 +289,7 @@ def collect_run(root: str | Path) -> CollectedRun:
             sol_cost_usd=str(sol_row.get("cost_usd") or "0") if sol_row else "0",
             analytical_commit_sha=commit, snapshot_id=snapshot_id, snapshot_sha256=snapshot_sha,
             data_quality_flags=tuple(flags),
+            eligibility=eligibility,
         ))
         setup = setup_map[ticker]
         lower, upper = _setup_bounds(setup)
@@ -318,6 +323,7 @@ def collect_run(root: str | Path) -> CollectedRun:
         run_id=run_id, source_root=str(base), source_manifest_sha256=manifest_sha,
         selections=tuple(selections), setups=tuple(setup_observations),
         executions=tuple(executions), total_api_cost_usd=str(usage.get("total_cost_usd") or "0"),
+        eligibility=eligibility,
     )
 
 

@@ -2,6 +2,8 @@
 
 Status: frozen prospective protocol
 
+Freeze note: `PRE-LIVE HARDENING BEFORE FIRST OFFICIAL OBSERVATION`
+
 Protocol ID: `TRINITY_LIVE_VALIDATION_V1`
 Protocol epoch: `1`
 
@@ -11,6 +13,23 @@ historical recovery. Inputs are immutable run artifacts; collection is
 offline and read-only. Validation records are written to a separate,
 append-only store. Identical replays are no-ops and identity conflicts fail
 closed.
+
+No `OFFICIAL_ELIGIBLE` observation existed when this hardening was frozen.
+The earlier protocol hash
+`074ced65bbdef589ff94ce31a5214982ffd482f830c508f15143638cc7bf30f5`
+is retired for future official observations. Existing smoke data remains
+non-official and is never upgraded retroactively.
+
+## Run eligibility
+
+- `VALIDATION` plus `official_benchmark_observation=false` is `SMOKE_ONLY`.
+- `OFFICIAL` plus `official_benchmark_observation=true` is `OFFICIAL_ELIGIBLE`.
+- Every other combination is `INELIGIBLE` and fails closed.
+
+Collection supports both coherent categories. Official cohorts, endpoints,
+bootstrap, confidence intervals, missed-winner diagnostics, and scheduled
+review windows accept only `OFFICIAL_ELIGIBLE` inputs. Mixed or smoke inputs
+to official analytics fail closed.
 
 ## Frozen selection cohorts
 
@@ -31,8 +50,10 @@ an entry later triggers.
 
 The statistical unit is the weekly run. Stage baskets are equal-weight.
 The primary horizon is 20 trading sessions; secondary horizons are 5 and 60.
-The benchmark is SPY total return supplied through a separate immutable,
-point-in-time series. SPY is not part of the investible 518-ticker universe.
+The benchmark is SPY price return supplied through a separate immutable,
+point-in-time series using Twelve Data, interval `1day`, adjustment `none`.
+This matches the non-adjusted price methodology of the investible series.
+SPY is benchmark-only and is not part of the investible 518-ticker universe.
 
 Primary endpoint:
 
@@ -59,10 +80,21 @@ created the signal is never treated as an executable fill. A horizon remains
 `PENDING` until all required sessions exist. A mature stock outcome without a
 valid matching SPY series is `DATA_QUALITY_FAILURE`; no benchmark is invented.
 
+An N-session outcome is measured from the open of the first actually tradable
+session after the decision to the close of the Nth tradable session,
+inclusively. Thus 5, 20, and 60 sessions use D1 open to D5, D20, and D60 close,
+respectively; D21 is never used for the 20-session endpoint.
+
 The current canonical 518-name snapshot does not contain SPY. V1 therefore
 defines the benchmark interface but makes no data request. A future, separately
 reviewed acquisition must archive SPY under an immutable benchmark namespace
-with session coverage and content hashes.
+with symbol `SPY`, provider `TWELVE_DATA`, interval `1day`, adjustment `none`,
+return kind `PRICE_RETURN`, explicit session coverage, snapshot ID, and SHA-256.
+The future acquisition must use the same target market session as its TRINITY
+run, preserve immutable raw and normalized objects, generate and verify a
+manifest, and pass a hard coverage gate before outcomes can become complete.
+It must not modify the canonical issuer registry or price snapshot: SPY is not
+the 519th ticker.
 
 ## Execution analytics
 
@@ -73,6 +105,13 @@ For long trades, `R0 = fill_price - stop`. MFE and MAE are reported in R and
 are diagnostic only. If daily OHLC indicates both stop and a target in the
 same bar, the record is marked `AMBIGUOUS_OHLC` and the primary V1 result uses
 the frozen worst-case `STOP_FIRST` policy.
+
+BREAKOUT uses stop-entry semantics distinct from PULLBACK. If the next bar
+opens at or above entry, the actual fill is the open and `R0` uses that fill.
+If open is below entry but high reaches entry, fill is the frozen entry. A gap
+opening at or beyond TP1/TP2 is `GAP_BEYOND_TARGET`, has no result R, and is
+never counted as a win. Same-bar ordering ambiguity remains flagged and uses
+the conservative `STOP_FIRST` primary policy. PULLBACK semantics are unchanged.
 
 ## Costs and inference
 

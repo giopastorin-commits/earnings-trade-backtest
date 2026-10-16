@@ -29,6 +29,7 @@ def _collect(args: argparse.Namespace) -> int:
     print(json.dumps({
         "run_id": collected.run_id, "scanner": len(collected.selections),
         "setups": len(collected.setups), "execution": len(collected.executions),
+        "eligibility": collected.eligibility,
         "protocol_hash": PROTOCOL_HASH, "integrity_check": integrity,
         "foreign_key_violations": foreign_keys,
     }, sort_keys=True))

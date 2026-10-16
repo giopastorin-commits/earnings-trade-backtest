@@ -62,11 +62,25 @@ def evaluate_execution_lifecycle(
     eligible = [row for row in normalized if str(row["date"]) > setup.setup_timestamp]
     expiry = setup.expiry
     fill_index: int | None = None
+    fill_price: float | None = None
     for index, row in enumerate(eligible):
         if expiry is not None and str(row["date"]) > expiry:
             break
-        if float(row["low"]) <= float(setup.entry_upper) and float(row["high"]) >= float(setup.entry_lower):
-            fill_index = index
+        if setup.setup_type == "BREAKOUT":
+            if float(row["open"]) >= float(setup.entry_level):
+                fill_index, fill_price = index, float(row["open"])
+                if fill_price >= float(setup.tp1) or fill_price >= float(setup.tp2):
+                    return ExecutionOutcome(
+                        setup.ticker, "GAP_BEYOND_TARGET", str(row["date"]), fill_price,
+                        None, None, None, None, None, False,
+                    )
+                break
+            if float(row["high"]) >= float(setup.entry_level):
+                fill_index, fill_price = index, float(setup.entry_level)
+                break
+        elif float(row["low"]) <= float(setup.entry_upper) \
+                and float(row["high"]) >= float(setup.entry_lower):
+            fill_index, fill_price = index, float(setup.entry_level)
             break
         if float(row["low"]) <= float(setup.stop):
             return ExecutionOutcome(setup.ticker, "INVALIDATED_BEFORE_ENTRY", None, None,
@@ -75,7 +89,9 @@ def evaluate_execution_lifecycle(
         expired = expiry is not None and through_session >= expiry
         return ExecutionOutcome(setup.ticker, "EXPIRED" if expired else "NOT_TRIGGERED",
                                 None, None, None, None, None, None, None, False)
-    fill = float(setup.entry_level)
+    if fill_price is None:
+        raise ValidationContractError("triggered Setup lacks deterministic fill")
+    fill = fill_price
     risk = fill - float(setup.stop)
     if risk <= 0:
         raise ValidationContractError("Setup has non-positive initial risk")
@@ -88,7 +104,9 @@ def evaluate_execution_lifecycle(
         stop_hit = low <= float(setup.stop)
         tp1_hit = high >= float(setup.tp1)
         tp2_hit = high >= float(setup.tp2)
-        ambiguous = stop_hit and (tp1_hit or tp2_hit)
+        ambiguous = stop_hit and (
+            tp1_hit or tp2_hit or (setup.setup_type == "BREAKOUT" and row is path[0])
+        )
         if stop_hit:  # frozen V1 primary policy: stop first
             return ExecutionOutcome(
                 setup.ticker, "STOPPED", str(path[0]["date"]), fill, str(row["date"]),

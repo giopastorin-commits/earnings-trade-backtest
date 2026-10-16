@@ -9,6 +9,9 @@ import sqlite3
 import pytest
 
 from trinity.validation.collector import CollectionError, collect_run
+from trinity.validation.contracts import (
+    OFFICIAL_ELIGIBLE, SMOKE_ONLY, ValidationContractError, classify_run_eligibility,
+)
 
 
 SHA = "a" * 64
@@ -20,7 +23,7 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
-def _fixture(root: Path) -> Path:
+def _fixture(root: Path, *, mode: str = "VALIDATION", official: bool = False) -> Path:
     artifacts = root / "artifacts"
     snapshot = {
         "price_provider": "TWELVE_DATA", "price_snapshot_id": "snap",
@@ -80,7 +83,7 @@ def _fixture(root: Path) -> Path:
         ],
     })
     _write_json(artifacts / "weekly_orchestrator.json", {
-        "mode": "VALIDATION", "official_benchmark_observation": False,
+        "mode": mode, "official_benchmark_observation": official,
         "analytical_commit": GIT_SHA, "target_market_session": "2026-10-09",
     })
     _write_json(artifacts / "price_snapshot_restore.json", {
@@ -142,6 +145,25 @@ def test_collector_reconstructs_memberships_setup_freshness_cost_and_provenance(
     assert result.total_api_cost_usd == "0.21"
     assert by_ticker["AAA"].universe_version == "usa_issuer_registry_v1.fixture"
     assert all(item.analytical_commit_sha == GIT_SHA for item in result.selections)
+    assert result.eligibility == SMOKE_ONLY
+    assert all(item.eligibility == SMOKE_ONLY for item in result.selections)
+
+
+def test_explicit_run_eligibility_contract_and_synthetic_official_fixture(tmp_path):
+    assert classify_run_eligibility("VALIDATION", False) == SMOKE_ONLY
+    assert classify_run_eligibility("OFFICIAL", True) == OFFICIAL_ELIGIBLE
+    for mode, official in (("VALIDATION", True), ("OFFICIAL", False)):
+        with pytest.raises(ValidationContractError, match="incoherent"):
+            classify_run_eligibility(mode, official)
+    result = collect_run(_fixture(tmp_path / "official", mode="OFFICIAL", official=True))
+    assert result.eligibility == OFFICIAL_ELIGIBLE
+    assert all(item.eligibility == OFFICIAL_ELIGIBLE for item in result.selections)
+
+
+@pytest.mark.parametrize("mode,official", [("VALIDATION", True), ("OFFICIAL", False)])
+def test_collector_rejects_incoherent_run_eligibility(tmp_path, mode, official):
+    with pytest.raises(CollectionError, match="incoherent"):
+        collect_run(_fixture(tmp_path / "run", mode=mode, official=official))
 
 
 def test_collector_has_no_network_dependency(monkeypatch, tmp_path):

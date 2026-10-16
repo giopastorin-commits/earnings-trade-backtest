@@ -16,13 +16,29 @@ class BenchmarkSeries:
 
     symbol: str
     return_kind: str
+    provider: str
+    adjustment: str
+    interval: str
     snapshot_id: str
     snapshot_sha256: str
+    coverage_start_session: str
+    coverage_end_session: str
     bars: tuple[Mapping[str, object], ...]
 
     def __post_init__(self) -> None:
-        if self.symbol != "SPY" or self.return_kind != "TOTAL_RETURN":
-            raise ValidationContractError("V1 benchmark must be SPY total return")
+        if self.symbol != "SPY" or self.return_kind != "PRICE_RETURN":
+            raise ValidationContractError("V1 benchmark must be SPY price return")
+        if self.provider != "TWELVE_DATA" or self.adjustment != "none" or self.interval != "1day":
+            raise ValidationContractError("V1 benchmark source contract is invalid")
+        if not self.bars:
+            raise ValidationContractError("benchmark session coverage is empty")
+        sessions = tuple(str(row.get("date") or "") for row in self.bars)
+        if (
+            sessions[0] != self.coverage_start_session
+            or sessions[-1] != self.coverage_end_session
+            or not self.coverage_start_session
+        ):
+            raise ValidationContractError("benchmark session coverage does not match bars")
         if len(self.snapshot_sha256) != 64 or any(
             char not in "0123456789abcdef" for char in self.snapshot_sha256
         ):
@@ -64,6 +80,7 @@ def calculate_selection_outcome(
     horizon_sessions: int, stock_bars: Sequence[Mapping[str, object]],
     benchmark: BenchmarkSeries | None,
     source_snapshot_id: str, source_snapshot_sha256: str,
+    eligibility: str,
 ) -> OutcomeObservation:
     """Calculate one horizon without acquiring data or using a pre-decision fill."""
 
@@ -75,25 +92,34 @@ def calculate_selection_outcome(
                   if bar["tradable_at"] > decision), None)
     if start is None:
         return OutcomeObservation(
-            run_id, ticker, cohort, horizon_sessions, None, None, None, None, None, None,
-            "PENDING", source_snapshot_id, source_snapshot_sha256,
+            run_id=run_id, ticker=ticker, cohort=cohort, horizon_sessions=horizon_sessions,
+            first_tradable_session=None, first_tradable_price=None, future_session=None,
+            stock_return_pct=None, benchmark_return_pct=None, active_return_pct=None,
+            maturity_status="PENDING", source_snapshot_id=source_snapshot_id,
+            source_snapshot_sha256=source_snapshot_sha256, eligibility=eligibility,
             quality_flags=("FIRST_TRADABLE_PRICE_PENDING",),
         )
     first = stock[start]
     future_index = start + horizon_sessions - 1
     if future_index >= len(stock):
         return OutcomeObservation(
-            run_id, ticker, cohort, horizon_sessions, str(first["date"]), float(first["open"]),
-            None, None, None, None, "PENDING", source_snapshot_id, source_snapshot_sha256,
+            run_id=run_id, ticker=ticker, cohort=cohort, horizon_sessions=horizon_sessions,
+            first_tradable_session=str(first["date"]), first_tradable_price=float(first["open"]),
+            future_session=None, stock_return_pct=None, benchmark_return_pct=None,
+            active_return_pct=None, maturity_status="PENDING", source_snapshot_id=source_snapshot_id,
+            source_snapshot_sha256=source_snapshot_sha256, eligibility=eligibility,
             quality_flags=("HORIZON_NOT_MATURE",),
         )
     future = stock[future_index]
     stock_return = (float(future["close"]) / float(first["open"]) - 1.0) * 100.0
     if benchmark is None:
         return OutcomeObservation(
-            run_id, ticker, cohort, horizon_sessions, str(first["date"]), float(first["open"]),
-            str(future["date"]), stock_return, None, None, "DATA_QUALITY_FAILURE",
-            source_snapshot_id, source_snapshot_sha256,
+            run_id=run_id, ticker=ticker, cohort=cohort, horizon_sessions=horizon_sessions,
+            first_tradable_session=str(first["date"]), first_tradable_price=float(first["open"]),
+            future_session=str(future["date"]), stock_return_pct=stock_return,
+            benchmark_return_pct=None, active_return_pct=None,
+            maturity_status="DATA_QUALITY_FAILURE", source_snapshot_id=source_snapshot_id,
+            source_snapshot_sha256=source_snapshot_sha256, eligibility=eligibility,
             quality_flags=("BENCHMARK_SERIES_MISSING",),
         )
     benchmark_rows = _bars(benchmark.bars, "benchmark")
@@ -102,20 +128,28 @@ def calculate_selection_outcome(
     benchmark_future = benchmark_by_date.get(str(future["date"]))
     if benchmark_first is None or benchmark_future is None:
         return OutcomeObservation(
-            run_id, ticker, cohort, horizon_sessions, str(first["date"]), float(first["open"]),
-            str(future["date"]), stock_return, None, None, "DATA_QUALITY_FAILURE",
-            source_snapshot_id, source_snapshot_sha256,
-            benchmark.snapshot_id, benchmark.snapshot_sha256,
-            ("BENCHMARK_SESSION_MISSING",),
+            run_id=run_id, ticker=ticker, cohort=cohort, horizon_sessions=horizon_sessions,
+            first_tradable_session=str(first["date"]), first_tradable_price=float(first["open"]),
+            future_session=str(future["date"]), stock_return_pct=stock_return,
+            benchmark_return_pct=None, active_return_pct=None,
+            maturity_status="DATA_QUALITY_FAILURE", source_snapshot_id=source_snapshot_id,
+            source_snapshot_sha256=source_snapshot_sha256, eligibility=eligibility,
+            benchmark_snapshot_id=benchmark.snapshot_id,
+            benchmark_snapshot_sha256=benchmark.snapshot_sha256,
+            quality_flags=("BENCHMARK_SESSION_MISSING",),
         )
     benchmark_return = (
         float(benchmark_future["close"]) / float(benchmark_first["open"]) - 1.0
     ) * 100.0
     return OutcomeObservation(
-        run_id, ticker, cohort, horizon_sessions, str(first["date"]), float(first["open"]),
-        str(future["date"]), stock_return, benchmark_return, stock_return - benchmark_return,
-        "COMPLETE", source_snapshot_id, source_snapshot_sha256,
-        benchmark.snapshot_id, benchmark.snapshot_sha256,
+        run_id=run_id, ticker=ticker, cohort=cohort, horizon_sessions=horizon_sessions,
+        first_tradable_session=str(first["date"]), first_tradable_price=float(first["open"]),
+        future_session=str(future["date"]), stock_return_pct=stock_return,
+        benchmark_return_pct=benchmark_return, active_return_pct=stock_return - benchmark_return,
+        maturity_status="COMPLETE", source_snapshot_id=source_snapshot_id,
+        source_snapshot_sha256=source_snapshot_sha256, eligibility=eligibility,
+        benchmark_snapshot_id=benchmark.snapshot_id,
+        benchmark_snapshot_sha256=benchmark.snapshot_sha256,
     )
 
 
