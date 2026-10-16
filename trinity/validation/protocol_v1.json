@@ -1,0 +1,28 @@
+{
+  "protocol_id": "TRINITY_LIVE_VALIDATION_V1",
+  "protocol_epoch": 1,
+  "primary_horizon_sessions": 20,
+  "secondary_horizons_sessions": [5, 60],
+  "benchmark": "SPY_TOTAL_RETURN",
+  "statistical_unit": "WEEKLY_RUN",
+  "basket_weighting": "EQUAL_WEIGHT",
+  "primary_endpoint": "AR20_SOL_MINUS_SCANNER",
+  "secondary_endpoints": [
+    "AR20_LUNA_MINUS_SCANNER",
+    "AR20_SOL_MINUS_LUNA"
+  ],
+  "return_start": "FIRST_TRADABLE_PRICE_STRICTLY_AFTER_DECISION",
+  "empty_sol_sleeve": "SPY_ACTIVE_RETURN_ZERO",
+  "ambiguous_ohlc_policy": "STOP_FIRST",
+  "trading_cost_bps_per_side": 10,
+  "trading_cost_sensitivity_bps_per_side": [0, 25],
+  "confidence_interval": 0.95,
+  "bootstrap_replicates": 10000,
+  "bootstrap_mean_block_weeks": {"5": 1, "20": 4, "60": 12},
+  "review_months": [3, 6, 12, 24],
+  "full_pipeline_mve_percentage_points_20d": 0.50,
+  "stage_mve_percentage_points_20d": 0.25,
+  "formal_inference_minimum_weeks": 52,
+  "missed_winner_threshold_active_return_pct_20d": 10.0,
+  "missed_winner_metric_class": "DIAGNOSTIC"
+}
