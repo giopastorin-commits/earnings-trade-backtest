@@ -4,7 +4,9 @@ import pytest
 
 from trinity.validation.baskets import equal_weight_return, freeze_memberships
 from trinity.validation.contracts import OFFICIAL_ELIGIBLE, SMOKE_ONLY, SelectionObservation, ValidationContractError
-from trinity.validation.scorecard import build_scorecard, missed_winner_rate_20d
+from trinity.validation.scorecard import (
+    build_scorecard, missed_winner_rate_20d, official_complete_outcomes,
+)
 
 
 SHA = "a" * 64
@@ -105,3 +107,14 @@ def test_smoke_or_mixed_rows_fail_closed_for_official_analytics():
         build_scorecard([_week(), smoke])
     with pytest.raises(ValidationContractError, match="non-OFFICIAL_ELIGIBLE"):
         missed_winner_rate_20d([smoke])
+
+
+def test_official_outcomes_use_only_complete_finals_and_never_zero_fill_dqf():
+    complete = {"run_id": "r", "eligibility": OFFICIAL_ELIGIBLE, "status": "COMPLETE"}
+    dqf = {"run_id": "r", "eligibility": OFFICIAL_ELIGIBLE,
+           "status": "DATA_QUALITY_FAILURE", "active_return_pct": None}
+    assert official_complete_outcomes([complete, dqf]) == (complete,)
+    with pytest.raises(ValidationContractError, match="final outcome"):
+        official_complete_outcomes([
+            {"run_id": "r", "eligibility": OFFICIAL_ELIGIBLE, "status": "PENDING"}
+        ])

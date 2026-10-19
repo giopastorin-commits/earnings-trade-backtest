@@ -28,9 +28,9 @@ class Scorecard:
 def missed_winner_rate_20d(rows: Iterable[Mapping[str, object]]) -> dict[str, object]:
     """DIAGNOSTIC only: trace Scanner winners through the frozen funnel."""
 
-    values = tuple(rows)
-    _require_official(values)
-    winners = [row for row in values if row.get("maturity_status") == "COMPLETE"
+    values = official_complete_outcomes(rows)
+    winners = [row for row in values
+               if row.get("horizon_sessions", 20) == 20
                and float(row.get("active_return_20d") or float("-inf")) >= 10.0]
     denominator = len(winners)
     return {
@@ -44,6 +44,23 @@ def missed_winner_rate_20d(rows: Iterable[Mapping[str, object]]) -> dict[str, ob
         "missed_by_sol_rate": None if denominator == 0 else
             1.0 - sum(bool(row.get("sol_promoted")) for row in winners) / denominator,
     }
+
+
+def official_complete_outcomes(
+    rows: Iterable[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    """Select only immutable COMPLETE finals; DQF is never coerced to zero."""
+
+    values = tuple(rows)
+    _require_official(values)
+    complete: list[Mapping[str, object]] = []
+    for row in values:
+        status = row.get("status", row.get("maturity_status"))
+        if status == "COMPLETE":
+            complete.append(row)
+        elif status != "DATA_QUALITY_FAILURE":
+            raise ValidationContractError("official outcome analytics require final outcome records")
+    return tuple(complete)
 
 
 def _require_official(rows: tuple[Mapping[str, object], ...]) -> None:

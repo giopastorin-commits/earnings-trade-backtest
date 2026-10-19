@@ -67,6 +67,14 @@ class ValidationStore:
         ).fetchall()
         return [json.loads(bytes(row[0])) for row in rows]
 
+    def record_items(self, record_kind: str) -> list[tuple[str, dict[str, Any]]]:
+        rows = self.connection.execute(
+            "SELECT record_key, payload_json FROM validation_record "
+            "WHERE record_kind=? ORDER BY record_key",
+            (record_kind,),
+        ).fetchall()
+        return [(str(row[0]), json.loads(bytes(row[1]))) for row in rows]
+
     def integrity(self) -> tuple[str, int]:
         integrity = str(self.connection.execute("PRAGMA integrity_check").fetchone()[0])
         foreign_keys = len(self.connection.execute("PRAGMA foreign_key_check").fetchall())

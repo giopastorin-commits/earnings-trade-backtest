@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .collector import collect_run
+from .maturity import append_outcome_expectations, catalog_from_json, mature_outcomes
 from .protocol_v1 import PROTOCOL_EPOCH, PROTOCOL_HASH, PROTOCOL_ID, protocol_dict
 from .storage import ValidationStore
 
@@ -42,12 +43,26 @@ def _collect(args: argparse.Namespace) -> int:
             store.append("SETUP", f"{key_prefix}:{item.ticker}", item.to_dict())
         for item in collected.executions:
             store.append("EXECUTION", f"{key_prefix}:{item.ticker}:{item.freshness_timestamp}", item.to_dict())
+        expectations = append_outcome_expectations(store, collected)
         integrity, foreign_keys = store.integrity()
     print(json.dumps({
         "run_id": collected.run_id, "scanner": len(collected.selections),
         "setups": len(collected.setups), "execution": len(collected.executions),
         "eligibility": collected.eligibility,
+        "outcome_expectations_appended": expectations,
         "protocol_hash": PROTOCOL_HASH, "integrity_check": integrity,
+        "foreign_key_violations": foreign_keys,
+    }, sort_keys=True))
+    return 0
+
+
+def _mature(args: argparse.Namespace) -> int:
+    catalog = catalog_from_json(args.catalog)
+    with ValidationStore(args.store) as store:
+        summary = mature_outcomes(store, catalog)
+        integrity, foreign_keys = store.integrity()
+    print(json.dumps({
+        **summary.__dict__, "integrity_check": integrity,
         "foreign_key_violations": foreign_keys,
     }, sort_keys=True))
     return 0
@@ -71,6 +86,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     acquire.add_argument("--run-id", required=True)
     acquire.add_argument("--output-root", type=Path, required=True)
     acquire.set_defaults(handler=_acquire_spy)
+    mature = sub.add_parser(
+        "mature-outcomes", help="mature expectations from explicit immutable local snapshots",
+    )
+    mature.add_argument("--store", type=Path, required=True)
+    mature.add_argument("--catalog", type=Path, required=True)
+    mature.set_defaults(handler=_mature)
     args = parser.parse_args(argv)
     return int(args.handler(args))
 

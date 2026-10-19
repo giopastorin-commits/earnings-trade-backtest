@@ -101,7 +101,7 @@ def test_identity_contract_snapshot_id_and_loader(tmp_path):
     assert manifest["interval"] == "1day" and manifest["adjustment"] == "none"
     assert manifest["benchmark_snapshot_id"] == \
         "SPY_TWELVEDATA_2026-10-09_RUN_OFFICIAL_2026-10-12_A1"
-    series = load_spy_benchmark_snapshot(root, trinity_target_session=TARGET)
+    series = load_spy_benchmark_snapshot(root, expected_observation_target_session=TARGET)
     assert series.symbol == "SPY" and series.return_kind == "PRICE_RETURN"
     assert series.provider == "TWELVE_DATA" and series.adjustment == "none"
     assert series.interval == "1day" and series.bars[-1]["date"] == TARGET.isoformat()
@@ -187,17 +187,17 @@ def test_unordered_normalized_sessions_fail_even_with_rehashed_envelope(tmp_path
 def test_loader_rejects_contract_and_target_session_mismatch(tmp_path):
     root = tmp_path / "contract"; _acquire(root)
     with pytest.raises(BenchmarkSnapshotError, match="target sessions differ"):
-        load_spy_benchmark_snapshot(root, trinity_target_session="2026-10-08")
+        load_spy_benchmark_snapshot(root, expected_observation_target_session="2026-10-08")
     manifest = json.loads((root / "benchmark_manifest.json").read_bytes())
     manifest["return_kind"] = "TOTAL_RETURN"
     _rewrite_manifest_and_ready(root, manifest)
     with pytest.raises(BenchmarkSnapshotError, match="contract mismatch"):
-        load_spy_benchmark_snapshot(root, trinity_target_session=TARGET)
+        load_spy_benchmark_snapshot(root, expected_observation_target_session=TARGET)
 
 
 def test_mature_outcome_with_verified_spy_is_complete(tmp_path):
     root = tmp_path / "outcome"; _acquire(root)
-    spy = load_spy_benchmark_snapshot(root, trinity_target_session=TARGET)
+    spy = load_spy_benchmark_snapshot(root, expected_observation_target_session=TARGET)
     stock = [dict(bar, open=float(bar["open"]) * 2, close=float(bar["close"]) * 2)
              for bar in spy.bars]
     decision = "2026-09-04T20:00:00Z"

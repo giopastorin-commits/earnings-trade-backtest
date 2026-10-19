@@ -4,13 +4,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 import hashlib
-import importlib.metadata
 import json
 from pathlib import Path
 import re
 from typing import Any, Callable, Mapping, Protocol
-
-import exchange_calendars
 
 from trinity.twelvedata_prices import (
     ADJUSTMENT, INTERVAL, PRICE_PROVIDER, PriceSnapshotError, ProviderCapture, TwelveDataClient,
@@ -18,6 +15,7 @@ from trinity.twelvedata_prices import (
 )
 
 from .outcomes import BenchmarkSeries
+from .market_calendar import CALENDAR_NAME, CALENDAR_VERSION, add_tradable_at
 
 
 SCHEMA_NAME = "trinity.validation.spy-benchmark-snapshot"
@@ -26,7 +24,6 @@ SOURCE_METHOD_VERSION = "TRINITY_SPY_BENCHMARK_ACQUISITION_V1"
 SYMBOL = "SPY"
 RETURN_KIND = "PRICE_RETURN"
 UNIVERSE_ROLE = "BENCHMARK_ONLY"
-CALENDAR_NAME = "XNYS"
 HISTORY_CALENDAR_DAYS = 450
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _SENSITIVE_KEYS = frozenset({"apikey", "api_key", "authorization", "token", "password"})
@@ -89,33 +86,16 @@ def _assert_no_sensitive_provider_payload(raw: bytes, secret: str | None) -> Non
     visit(value)
 
 
-def _xnys_opens(sessions: list[str]) -> dict[str, str]:
-    if not sessions:
-        raise BenchmarkSnapshotError("benchmark contains no sessions")
-    parsed = [date.fromisoformat(item) for item in sessions]
-    calendar = exchange_calendars.get_calendar(
-        CALENDAR_NAME, start=min(parsed) - timedelta(days=1), end=max(parsed) + timedelta(days=1),
-    )
-    result: dict[str, str] = {}
-    for session in parsed:
-        try:
-            row = calendar.schedule.loc[session.isoformat()]
-        except KeyError as exc:
-            raise BenchmarkSnapshotError(f"SPY bar is not an XNYS session: {session}") from exc
-        opened = row["open"].to_pydatetime().astimezone(timezone.utc)
-        result[session.isoformat()] = utc_timestamp(opened)
-    return result
-
-
 def _normalized_bars(raw: bytes, target_session: date) -> list[dict[str, Any]]:
     capture = normalize_response(SYMBOL, raw, target_session=target_session)
     if capture.classification != "ACTIVE_COMPLETE":
         raise BenchmarkSnapshotError(
             f"benchmark target session missing: {capture.classification}"
         )
-    bars = [dict(item) for item in capture.bars]
-    opens = _xnys_opens([str(item["date"]) for item in bars])
-    return [{**item, "tradable_at": opens[str(item["date"])]} for item in bars]
+    try:
+        return [dict(item) for item in add_tradable_at([dict(item) for item in capture.bars])]
+    except ValidationContractError as exc:
+        raise BenchmarkSnapshotError(str(exc)) from exc
 
 
 def acquire_spy_benchmark(
@@ -178,7 +158,7 @@ def acquire_spy_benchmark(
         "source_run_id": run_id,
         "source_method_version": SOURCE_METHOD_VERSION,
         "session_calendar": CALENDAR_NAME,
-        "session_calendar_version": importlib.metadata.version("exchange-calendars"),
+        "session_calendar_version": CALENDAR_VERSION,
         "provider_attempts": [dict(item) for item in capture.attempts],
     }
     manifest["benchmark_snapshot_sha256"] = _snapshot_hash(manifest)
@@ -298,10 +278,11 @@ def verify_spy_benchmark_snapshot(
 
 
 def load_spy_benchmark_snapshot(
-    root: str | Path, *, trinity_target_session: date | str,
+    root: str | Path, *, expected_observation_target_session: date | str,
 ) -> BenchmarkSeries:
+    """Load SPY for a future observation snapshot, not the decision session."""
     manifest = verify_spy_benchmark_snapshot(
-        root, expected_target_session=trinity_target_session,
+        root, expected_target_session=expected_observation_target_session,
     )
     bars = json.loads((Path(root) / "normalized" / "SPY.json").read_bytes())
     return BenchmarkSeries(
