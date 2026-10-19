@@ -16,6 +16,10 @@ class ValidationStorageConflict(RuntimeError):
     pass
 
 
+class ValidationStorageIntegrityError(RuntimeError):
+    pass
+
+
 class ValidationStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -60,12 +64,38 @@ class ValidationStore:
         )
         return True
 
-    def records(self, record_kind: str) -> list[dict[str, Any]]:
+    @staticmethod
+    def _decode_payload(payload_json: object, payload_sha256: object) -> Any:
+        try:
+            raw = bytes(payload_json)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValidationStorageIntegrityError("stored validation payload is not bytes") from exc
+        digest = hashlib.sha256(raw).hexdigest()
+        if not isinstance(payload_sha256, str) or digest != payload_sha256:
+            raise ValidationStorageIntegrityError("stored validation payload hash mismatch")
+        try:
+            return json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValidationStorageIntegrityError("stored validation payload is not JSON") from exc
+
+    def records(self, record_kind: str) -> list[Any]:
         rows = self.connection.execute(
-            "SELECT payload_json FROM validation_record WHERE record_kind=? ORDER BY record_key",
+            "SELECT payload_json, payload_sha256 FROM validation_record "
+            "WHERE record_kind=? ORDER BY record_key",
             (record_kind,),
         ).fetchall()
-        return [json.loads(bytes(row[0])) for row in rows]
+        return [self._decode_payload(row[0], row[1]) for row in rows]
+
+    def record_items(self, record_kind: str) -> list[tuple[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT record_key, payload_json, payload_sha256 FROM validation_record "
+            "WHERE record_kind=? ORDER BY record_key",
+            (record_kind,),
+        ).fetchall()
+        return [
+            (str(row[0]), self._decode_payload(row[1], row[2]))
+            for row in rows
+        ]
 
     def integrity(self) -> tuple[str, int]:
         integrity = str(self.connection.execute("PRAGMA integrity_check").fetchone()[0])
