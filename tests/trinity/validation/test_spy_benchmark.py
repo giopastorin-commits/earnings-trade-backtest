@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -15,7 +15,8 @@ from trinity.validation.contracts import OFFICIAL_ELIGIBLE
 from trinity.validation.outcomes import calculate_selection_outcome
 from trinity.validation.protocol_v1 import PROTOCOL_EPOCH, PROTOCOL_HASH
 from trinity.validation.spy_benchmark import (
-    BenchmarkSnapshotError, _snapshot_hash, acquire_spy_benchmark,
+    BENCHMARK_FINALITY_GRACE_MINUTES, BenchmarkSnapshotError, _snapshot_hash,
+    acquire_spy_benchmark,
     benchmark_snapshot_id, load_spy_benchmark_snapshot,
     verify_spy_benchmark_snapshot,
 )
@@ -26,14 +27,17 @@ TARGET = date(2026, 10, 9)
 RUN_ID = "OFFICIAL_2026-10-12_A1"
 
 
-def _sessions(count: int = 25) -> list[str]:
-    calendar = exchange_calendars.get_calendar("XNYS", start="2026-08-01", end=TARGET)
+def _sessions(count: int = 25, *, target: date = TARGET) -> list[str]:
+    calendar = exchange_calendars.get_calendar(
+        "XNYS", start=target - timedelta(days=120), end=target,
+    )
     return [item.date().isoformat() for item in calendar.sessions[-count:]]
 
 
 def _provider_payload(*, sessions: list[str] | None = None, offset: float = 0.0,
-                      extra: dict[str, object] | None = None) -> bytes:
-    days = sessions or _sessions()
+                      extra: dict[str, object] | None = None,
+                      target: date = TARGET) -> bytes:
+    days = sessions or _sessions(target=target)
     values = []
     for index, session in enumerate(days):
         opened = 100.0 + offset + index
@@ -54,30 +58,44 @@ def _provider_payload(*, sessions: list[str] | None = None, offset: float = 0.0,
 class FakeProvider:
     api_key = "fixture-secret"
 
-    def __init__(self, raw: bytes) -> None:
+    def __init__(self, raw: bytes, *, attempts: tuple[dict[str, object], ...] | None = None) -> None:
         self.raw = raw
+        self.attempts = attempts or ({"attempt": 1, "http_status": 200},)
         self.calls: list[tuple[object, ...]] = []
 
     def fetch(self, symbol, *, start_date, target_session, remaining_tickers=None):
         self.calls.append((symbol, start_date, target_session, remaining_tickers))
-        return ProviderCapture(self.raw, ({"attempt": 1, "http_status": 200},))
+        return ProviderCapture(self.raw, self.attempts)
 
 
-def _clock():
+def _clock(started_at: datetime | None = None):
+    start = started_at or datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
     values = iter((
-        datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc),
-        datetime(2026, 10, 12, 10, 0, 1, tzinfo=timezone.utc),
+        start, start + timedelta(seconds=1),
     ))
     return lambda: next(values)
 
 
-def _acquire(root: Path, *, raw: bytes | None = None):
-    provider = FakeProvider(raw or _provider_payload())
+def _acquire(root: Path, *, raw: bytes | None = None, target: date = TARGET,
+             started_at: datetime | None = None,
+             attempts: tuple[dict[str, object], ...] | None = None):
+    provider = FakeProvider(raw or _provider_payload(target=target), attempts=attempts)
     manifest = acquire_spy_benchmark(
-        target_session=TARGET, run_id=RUN_ID, output_root=root,
-        client=provider, now=_clock(),
+        target_session=target, run_id=RUN_ID, output_root=root,
+        client=provider, now=_clock(started_at),
     )
     return manifest, provider
+
+
+def _session_times(target: date) -> tuple[datetime, datetime]:
+    calendar = exchange_calendars.get_calendar(
+        "XNYS", start=target - timedelta(days=1), end=target + timedelta(days=1),
+    )
+    row = calendar.schedule.loc[target.isoformat()]
+    return (
+        row["open"].to_pydatetime().astimezone(timezone.utc),
+        row["close"].to_pydatetime().astimezone(timezone.utc),
+    )
 
 
 def _rewrite_manifest_and_ready(root: Path, manifest: dict[str, object]) -> None:
@@ -107,6 +125,113 @@ def test_identity_contract_snapshot_id_and_loader(tmp_path):
     assert series.interval == "1day" and series.bars[-1]["date"] == TARGET.isoformat()
     # October 2026 is EDT: XNYS open is 13:30Z, derived from the calendar.
     assert series.bars[-1]["tradable_at"] == "2026-10-09T13:30:00.000000Z"
+
+
+@pytest.mark.parametrize(
+    "mutation,match",
+    [
+        (lambda payload: payload.pop("meta"), "metadata"),
+        (lambda payload: payload.__setitem__("meta", "SPY"), "metadata"),
+        (lambda payload: payload["meta"].pop("symbol"), "symbol"),
+        (lambda payload: payload["meta"].__setitem__("symbol", "QQQ"), "symbol"),
+        (lambda payload: payload["meta"].pop("interval"), "interval"),
+        (lambda payload: payload["meta"].__setitem__("interval", "5min"), "interval"),
+    ],
+    ids=("no-meta", "invalid-meta", "no-symbol", "wrong-symbol", "no-interval", "wrong-interval"),
+)
+def test_provider_metadata_is_mandatory_and_fail_closed(tmp_path, mutation, match):
+    payload = json.loads(_provider_payload())
+    mutation(payload)
+    root = tmp_path / match
+    with pytest.raises(BenchmarkSnapshotError, match=match):
+        _acquire(root, raw=canonical_bytes(payload))
+    assert not (root / "READY").exists()
+
+
+def test_exact_xnys_coverage_accepts_complete_calendar(tmp_path):
+    manifest, _provider = _acquire(tmp_path / "complete")
+    assert manifest["bar_count"] == len(_sessions())
+    assert manifest["first_session"] == _sessions()[0]
+    assert manifest["last_session"] == TARGET.isoformat()
+
+
+def test_intermediate_xnys_gap_fails_closed(tmp_path):
+    sessions = _sessions()
+    missing = sessions[len(sessions) // 2]
+    root = tmp_path / "gap"
+    with pytest.raises(BenchmarkSnapshotError, match="coverage mismatch"):
+        _acquire(root, raw=_provider_payload(sessions=[item for item in sessions if item != missing]))
+    assert not (root / "READY").exists()
+
+
+def test_non_xnys_session_fails_closed(tmp_path):
+    sessions = _sessions()
+    root = tmp_path / "non-xnys"
+    with pytest.raises(BenchmarkSnapshotError, match="coverage mismatch"):
+        _acquire(root, raw=_provider_payload(sessions=sessions[:-1] + ["2026-10-03", sessions[-1]]))
+    assert not (root / "READY").exists()
+
+
+@pytest.mark.parametrize(
+    "offset,ready",
+    [
+        (timedelta(seconds=-1), False),
+        (timedelta(minutes=19, seconds=59), False),
+        (timedelta(minutes=20), True),
+        (timedelta(minutes=21), True),
+    ],
+    ids=("before-close", "close-plus-19m59s", "exactly-close-plus-20m", "after-grace"),
+)
+def test_target_bar_finality_uses_acquisition_start(tmp_path, offset, ready):
+    _opened, closed = _session_times(TARGET)
+    root = tmp_path / str(ready) / str(offset.total_seconds())
+    if ready:
+        manifest, provider = _acquire(root, started_at=closed + offset)
+        assert provider.calls
+        assert manifest["finality_grace_minutes"] == BENCHMARK_FINALITY_GRACE_MINUTES
+    else:
+        provider = FakeProvider(_provider_payload())
+        with pytest.raises(BenchmarkSnapshotError, match="not final"):
+            acquire_spy_benchmark(
+                target_session=TARGET, run_id=RUN_ID, output_root=root,
+                client=provider, now=_clock(closed + offset),
+            )
+        assert provider.calls == []
+        assert not (root / "READY").exists()
+
+
+def test_future_target_fails_before_provider_request(tmp_path):
+    target = date(2026, 10, 13)
+    provider = FakeProvider(_provider_payload(target=target))
+    root = tmp_path / "future"
+    with pytest.raises(BenchmarkSnapshotError, match="not final"):
+        acquire_spy_benchmark(
+            target_session=target, run_id=RUN_ID, output_root=root,
+            client=provider, now=_clock(datetime(2026, 10, 12, 10, tzinfo=timezone.utc)),
+        )
+    assert provider.calls == [] and not (root / "READY").exists()
+
+
+@pytest.mark.parametrize(
+    "target,expected_open,expected_close",
+    [
+        (date(2026, 10, 9), "2026-10-09T13:30:00.000000Z", "2026-10-09T20:00:00.000000Z"),
+        (date(2026, 11, 9), "2026-11-09T14:30:00.000000Z", "2026-11-09T21:00:00.000000Z"),
+    ],
+    ids=("EDT", "EST"),
+)
+def test_finality_and_tradable_at_follow_xnys_dst(
+    tmp_path, target, expected_open, expected_close,
+):
+    _opened, closed = _session_times(target)
+    manifest, _provider = _acquire(
+        tmp_path / target.isoformat(), target=target,
+        started_at=closed + timedelta(minutes=BENCHMARK_FINALITY_GRACE_MINUTES),
+    )
+    assert manifest["target_session_open_utc"] == expected_open
+    assert manifest["target_session_close_utc"] == expected_close
+    bars = json.loads((tmp_path / target.isoformat() / "normalized" / "SPY.json").read_bytes())
+    assert bars[-1]["tradable_at"] == expected_open
 
 
 def test_output_directory_must_be_empty_and_snapshot_id_is_safe(tmp_path):
@@ -170,6 +295,13 @@ def test_raw_normalized_and_manifest_hash_mismatches_fail(tmp_path):
     (manifest_root / "benchmark_manifest.json").write_bytes(canonical_bytes(manifest))
     with pytest.raises(BenchmarkSnapshotError, match="READY marker or manifest hash"):
         verify_spy_benchmark_snapshot(manifest_root)
+
+    ready_root = tmp_path / "ready"; _acquire(ready_root)
+    marker = json.loads((ready_root / "READY").read_bytes())
+    marker["manifest_sha256"] = "0" * 64
+    (ready_root / "READY").write_bytes(canonical_bytes(marker))
+    with pytest.raises(BenchmarkSnapshotError, match="READY marker or manifest hash"):
+        verify_spy_benchmark_snapshot(ready_root)
 
 
 def test_unordered_normalized_sessions_fail_even_with_rehashed_envelope(tmp_path):
@@ -247,6 +379,53 @@ def test_no_network_and_no_secret_persistence(monkeypatch, tmp_path):
         _acquire(secret_root, raw=_provider_payload(extra={"note": "fixture-secret"}))
     assert all(b"fixture-secret" not in path.read_bytes()
                for path in secret_root.rglob("*") if path.is_file())
+
+
+@pytest.mark.parametrize("field", ["access_token", "client_secret", "Authorization", "Cookie"])
+def test_sensitive_raw_provider_fields_are_rejected(tmp_path, field):
+    root = tmp_path / field
+    with pytest.raises(BenchmarkSnapshotError, match="sensitive field"):
+        _acquire(root, raw=_provider_payload(extra={field: "do-not-persist"}))
+    assert not (root / "READY").exists()
+    assert all(b"do-not-persist" not in path.read_bytes()
+               for path in root.rglob("*") if path.is_file())
+
+
+@pytest.mark.parametrize(
+    "field", ["api_key", "access_token", "refresh_token", "client_secret", "headers", "url"],
+)
+def test_sensitive_provider_attempt_fields_are_rejected(tmp_path, field):
+    root = tmp_path / field
+    attempts = ({"attempt": 1, "http_status": 200, field: "do-not-persist"},)
+    with pytest.raises(BenchmarkSnapshotError, match="sensitive field"):
+        _acquire(root, attempts=attempts)
+    assert not (root / "READY").exists()
+    assert all(b"do-not-persist" not in path.read_bytes()
+               for path in root.rglob("*") if path.is_file())
+
+
+def test_configured_api_key_value_in_provider_attempt_is_rejected(tmp_path):
+    root = tmp_path / "attempt-api-key"
+    attempts = ({"attempt": 1, "provider_message": "fixture-secret"},)
+    with pytest.raises(BenchmarkSnapshotError, match="configured secret"):
+        _acquire(root, attempts=attempts)
+    assert not (root / "READY").exists()
+
+
+def test_provider_attempts_use_allowlist(tmp_path):
+    attempts = ({
+        "attempt": 1, "requested_at_utc": "2026-10-12T10:00:00.000000Z",
+        "http_status": 200, "elapsed_seconds": 0.25,
+        "api_credits_left": 999, "harmless_internal_detail": "not-persisted",
+    },)
+    manifest, _provider = _acquire(tmp_path / "allowlist", attempts=attempts)
+    assert manifest["provider_attempts"] == [{
+        "attempt": 1, "requested_at_utc": "2026-10-12T10:00:00.000000Z",
+        "http_status": 200, "elapsed_seconds": 0.25, "api_credits_left": 999,
+    }]
+    assert b"harmless_internal_detail" not in (
+        tmp_path / "allowlist" / "benchmark_manifest.json"
+    ).read_bytes()
 
 
 def test_canonical_normalized_hash_reproducibility_and_content_sensitivity(tmp_path):

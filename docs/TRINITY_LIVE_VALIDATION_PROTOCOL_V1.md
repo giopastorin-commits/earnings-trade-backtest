@@ -107,6 +107,19 @@ normalized hashes, canonical reproducibility, ordered unique XNYS sessions,
 valid OHLCV, and exact target-session coverage before constructing a
 `BenchmarkSeries`.
 
+The provider response must explicitly identify `meta.symbol=SPY` and
+`meta.interval=1day`; missing or divergent metadata fails closed. Coverage is
+the exact uninterrupted XNYS session sequence from the first normalized bar
+through the target session, with no filling, nearest-session substitution, or
+repair. Acquisition must start no earlier than 20 minutes after the
+calendar-derived XNYS close of the target session. Provider-attempt provenance
+is persisted through an allowlist and payloads containing credentials or
+sensitive fields are rejected before persistence.
+
+Snapshot identity is the pair `benchmark_snapshot_id` plus
+`benchmark_snapshot_sha256`. The snapshot ID alone is not sufficient to
+identify content.
+
 Each normalized bar contains `date`, `open`, `high`, `low`, `close`, `volume`,
 and `tradable_at`. The latter is the authoritative XNYS session open from the
 versioned `exchange-calendars` schedule; it is not a fixed UTC assumption, so

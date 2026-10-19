@@ -28,8 +28,21 @@ RETURN_KIND = "PRICE_RETURN"
 UNIVERSE_ROLE = "BENCHMARK_ONLY"
 CALENDAR_NAME = "XNYS"
 HISTORY_CALENDAR_DAYS = 450
+BENCHMARK_FINALITY_GRACE_MINUTES = 20
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
-_SENSITIVE_KEYS = frozenset({"apikey", "api_key", "authorization", "token", "password"})
+_SENSITIVE_KEYS = frozenset({
+    "apikey", "api_key", "authorization", "token", "access_token", "client_secret",
+    "password", "cookie", "set_cookie", "x_api_key", "headers", "url", "uri", "query",
+    "params",
+})
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)(?:api[_-]?key|authorization|access[_-]?token|client[_-]?secret|password|cookie)\s*[=:]"
+)
+_PROVIDER_ATTEMPT_FIELDS = (
+    "attempt", "requested_at_utc", "http_status", "elapsed_seconds", "provider_code",
+    "provider_message", "exception", "api_credits_used", "api_credits_left",
+    "api_credits_request",
+)
 
 
 class BenchmarkSnapshotError(RuntimeError):
@@ -68,7 +81,7 @@ def _atomic_write(path: Path, raw: bytes) -> None:
     temporary.replace(path)
 
 
-def _assert_no_sensitive_provider_payload(raw: bytes, secret: str | None) -> None:
+def _assert_no_sensitive_provider_payload(raw: bytes, secret: str | None) -> Any:
     if secret and secret.encode("utf-8") in raw:
         raise BenchmarkSnapshotError("provider payload contained configured secret")
     try:
@@ -79,23 +92,92 @@ def _assert_no_sensitive_provider_payload(raw: bytes, secret: str | None) -> Non
     def visit(item: object) -> None:
         if isinstance(item, dict):
             for key, child in item.items():
-                if str(key).lower() in _SENSITIVE_KEYS:
+                normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+                if normalized_key in _SENSITIVE_KEYS \
+                        or normalized_key.endswith(("_token", "_secret", "_password", "_cookie")) \
+                        or "authorization" in normalized_key:
                     raise BenchmarkSnapshotError("provider payload contains sensitive field")
                 visit(child)
         elif isinstance(item, list):
             for child in item:
                 visit(child)
+        elif isinstance(item, str) and _SENSITIVE_VALUE.search(item):
+            raise BenchmarkSnapshotError("provider payload contains sensitive value")
 
     visit(value)
+    return value
 
 
-def _xnys_opens(sessions: list[str]) -> dict[str, str]:
+def _sanitize_provider_attempts(
+    attempts: object, secret: str | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(attempts, (list, tuple)):
+        raise BenchmarkSnapshotError("provider attempts are malformed")
+    _assert_no_sensitive_provider_payload(
+        canonical_bytes({"attempts": attempts}), secret,
+    )
+    sanitized: list[dict[str, Any]] = []
+    for item in attempts:
+        if not isinstance(item, Mapping) or "attempt" not in item:
+            raise BenchmarkSnapshotError("provider attempt is malformed")
+        sanitized.append({key: item[key] for key in _PROVIDER_ATTEMPT_FIELDS if key in item})
+    return sanitized
+
+
+def _assert_provider_metadata(raw: bytes) -> None:
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BenchmarkSnapshotError("provider payload is not JSON") from exc
+    if not isinstance(payload, dict):
+        raise BenchmarkSnapshotError("provider payload is not an object")
+    meta = payload.get("meta")
+    if not isinstance(meta, dict):
+        raise BenchmarkSnapshotError("provider metadata is missing or invalid")
+    if meta.get("symbol") != SYMBOL:
+        raise BenchmarkSnapshotError("provider metadata symbol mismatch")
+    if meta.get("interval") != INTERVAL:
+        raise BenchmarkSnapshotError("provider metadata interval mismatch")
+
+
+def _xnys_session_times(session: date) -> tuple[datetime, datetime]:
+    calendar = exchange_calendars.get_calendar(
+        CALENDAR_NAME, start=session - timedelta(days=1), end=session + timedelta(days=1),
+    )
+    try:
+        row = calendar.schedule.loc[session.isoformat()]
+    except KeyError as exc:
+        raise BenchmarkSnapshotError(f"target is not an XNYS session: {session}") from exc
+    return (
+        row["open"].to_pydatetime().astimezone(timezone.utc),
+        row["close"].to_pydatetime().astimezone(timezone.utc),
+    )
+
+
+def _assert_target_finality(
+    target_session: date, acquisition_started_at: datetime,
+) -> tuple[datetime, datetime, datetime]:
+    if acquisition_started_at.tzinfo is None:
+        raise BenchmarkSnapshotError("acquisition start must be timezone-aware")
+    opened, closed = _xnys_session_times(target_session)
+    eligible_at = closed + timedelta(minutes=BENCHMARK_FINALITY_GRACE_MINUTES)
+    if acquisition_started_at.astimezone(timezone.utc) < eligible_at:
+        raise BenchmarkSnapshotError(
+            "benchmark target session is not final at acquisition start"
+        )
+    return opened, closed, eligible_at
+
+
+def _xnys_opens(sessions: list[str], target_session: date) -> dict[str, str]:
     if not sessions:
         raise BenchmarkSnapshotError("benchmark contains no sessions")
     parsed = [date.fromisoformat(item) for item in sessions]
     calendar = exchange_calendars.get_calendar(
-        CALENDAR_NAME, start=min(parsed) - timedelta(days=1), end=max(parsed) + timedelta(days=1),
+        CALENDAR_NAME, start=min(parsed), end=target_session,
     )
+    expected_sessions = [item.date().isoformat() for item in calendar.sessions]
+    if sessions != expected_sessions:
+        raise BenchmarkSnapshotError("benchmark XNYS session coverage mismatch")
     result: dict[str, str] = {}
     for session in parsed:
         try:
@@ -108,13 +190,14 @@ def _xnys_opens(sessions: list[str]) -> dict[str, str]:
 
 
 def _normalized_bars(raw: bytes, target_session: date) -> list[dict[str, Any]]:
+    _assert_provider_metadata(raw)
     capture = normalize_response(SYMBOL, raw, target_session=target_session)
     if capture.classification != "ACTIVE_COMPLETE":
         raise BenchmarkSnapshotError(
             f"benchmark target session missing: {capture.classification}"
         )
     bars = [dict(item) for item in capture.bars]
-    opens = _xnys_opens([str(item["date"]) for item in bars])
+    opens = _xnys_opens([str(item["date"]) for item in bars], target_session)
     return [{**item, "tradable_at": opens[str(item["date"])]} for item in bars]
 
 
@@ -131,6 +214,9 @@ def acquire_spy_benchmark(
     root.mkdir(parents=True, exist_ok=True)
     snapshot_id = benchmark_snapshot_id(target_session, run_id)
     started_at = now()
+    target_open, target_close, finality_eligible_at = _assert_target_finality(
+        target_session, started_at,
+    )
     provider = client or TwelveDataClient()
     history_start = target_session - timedelta(days=HISTORY_CALENDAR_DAYS)
     capture = provider.fetch(
@@ -138,9 +224,8 @@ def acquire_spy_benchmark(
     )
     secret = getattr(provider, "api_key", None)
     _assert_no_sensitive_provider_payload(capture.raw, secret if isinstance(secret, str) else None)
-    _assert_no_sensitive_provider_payload(
-        canonical_bytes({"attempts": capture.attempts}),
-        secret if isinstance(secret, str) else None,
+    provider_attempts = _sanitize_provider_attempts(
+        capture.attempts, secret if isinstance(secret, str) else None,
     )
     try:
         bars = _normalized_bars(capture.raw, target_session)
@@ -168,6 +253,10 @@ def acquire_spy_benchmark(
         "request_end_date_exclusive": exclusive_end_date(target_session).isoformat(),
         "acquisition_started_at_utc": utc_timestamp(started_at),
         "acquisition_completed_at_utc": utc_timestamp(completed_at),
+        "target_session_open_utc": utc_timestamp(target_open),
+        "target_session_close_utc": utc_timestamp(target_close),
+        "finality_grace_minutes": BENCHMARK_FINALITY_GRACE_MINUTES,
+        "finality_eligible_at_utc": utc_timestamp(finality_eligible_at),
         "raw_sha256": _sha(raw_bytes),
         "normalized_sha256": _sha(normalized_bytes),
         "first_session": bars[0]["date"] if bars else None,
@@ -179,7 +268,7 @@ def acquire_spy_benchmark(
         "source_method_version": SOURCE_METHOD_VERSION,
         "session_calendar": CALENDAR_NAME,
         "session_calendar_version": importlib.metadata.version("exchange-calendars"),
-        "provider_attempts": [dict(item) for item in capture.attempts],
+        "provider_attempts": provider_attempts,
     }
     manifest["benchmark_snapshot_sha256"] = _snapshot_hash(manifest)
     manifest_bytes = canonical_bytes(manifest)
@@ -246,10 +335,24 @@ def verify_spy_benchmark_snapshot(
         parsed_times.append(timestamp)
     if parsed_times[1] < parsed_times[0]:
         raise BenchmarkSnapshotError("benchmark acquisition timestamps are reversed")
+    target_open, target_close = _xnys_session_times(target_date)
+    finality_eligible_at = target_close + timedelta(minutes=BENCHMARK_FINALITY_GRACE_MINUTES)
+    if manifest.get("target_session_open_utc") != utc_timestamp(target_open) \
+            or manifest.get("target_session_close_utc") != utc_timestamp(target_close) \
+            or manifest.get("finality_grace_minutes") != BENCHMARK_FINALITY_GRACE_MINUTES \
+            or manifest.get("finality_eligible_at_utc") != utc_timestamp(finality_eligible_at) \
+            or parsed_times[0].astimezone(timezone.utc) < finality_eligible_at:
+        raise BenchmarkSnapshotError("benchmark target session finality mismatch")
     if not isinstance(manifest.get("session_calendar_version"), str) \
             or not manifest.get("session_calendar_version") \
             or not isinstance(manifest.get("provider_attempts"), list):
         raise BenchmarkSnapshotError("benchmark provenance is incomplete")
+    try:
+        sanitized_attempts = _sanitize_provider_attempts(manifest["provider_attempts"], None)
+    except (BenchmarkSnapshotError, TypeError, ValueError) as exc:
+        raise BenchmarkSnapshotError("benchmark provider provenance is invalid") from exc
+    if canonical_bytes(sanitized_attempts) != canonical_bytes(manifest["provider_attempts"]):
+        raise BenchmarkSnapshotError("benchmark provider provenance is not sanitized")
     expected_id = benchmark_snapshot_id(target_date, str(manifest.get("source_run_id") or ""))
     if manifest.get("benchmark_snapshot_id") != expected_id:
         raise BenchmarkSnapshotError("benchmark snapshot ID mismatch")
@@ -268,6 +371,7 @@ def verify_spy_benchmark_snapshot(
         raise BenchmarkSnapshotError("raw benchmark hash mismatch")
     if _sha(normalized) != manifest.get("normalized_sha256"):
         raise BenchmarkSnapshotError("normalized benchmark hash mismatch")
+    _assert_no_sensitive_provider_payload(raw, None)
     try:
         bars = json.loads(normalized)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
