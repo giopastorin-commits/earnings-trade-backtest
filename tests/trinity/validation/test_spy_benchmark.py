@@ -27,17 +27,18 @@ TARGET = date(2026, 10, 9)
 RUN_ID = "OFFICIAL_2026-10-12_A1"
 
 
-def _sessions(count: int = 25, *, target: date = TARGET) -> list[str]:
+def _sessions(count: int | None = None, *, target: date = TARGET) -> list[str]:
     calendar = exchange_calendars.get_calendar(
-        "XNYS", start=target - timedelta(days=120), end=target,
+        "XNYS", start=target - timedelta(days=450), end=target,
     )
-    return [item.date().isoformat() for item in calendar.sessions[-count:]]
+    sessions = [item.date().isoformat() for item in calendar.sessions]
+    return sessions if count is None else sessions[-count:]
 
 
 def _provider_payload(*, sessions: list[str] | None = None, offset: float = 0.0,
                       extra: dict[str, object] | None = None,
                       target: date = TARGET) -> bytes:
-    days = sessions or _sessions(target=target)
+    days = _sessions(target=target) if sessions is None else sessions
     values = []
     for index, session in enumerate(days):
         opened = 100.0 + offset + index
@@ -79,10 +80,18 @@ def _clock(started_at: datetime | None = None):
 def _acquire(root: Path, *, raw: bytes | None = None, target: date = TARGET,
              started_at: datetime | None = None,
              attempts: tuple[dict[str, object], ...] | None = None):
-    provider = FakeProvider(raw or _provider_payload(target=target), attempts=attempts)
+    start = started_at or datetime(2026, 10, 12, 10, 0, tzinfo=timezone.utc)
+    effective_attempts = attempts or ({
+        "attempt": 1,
+        "requested_at_utc": (start + timedelta(milliseconds=500)).isoformat(),
+        "http_status": 200,
+    },)
+    provider = FakeProvider(
+        raw or _provider_payload(target=target), attempts=effective_attempts,
+    )
     manifest = acquire_spy_benchmark(
         target_session=target, run_id=RUN_ID, output_root=root,
-        client=provider, now=_clock(started_at),
+        client=provider, now=_clock(start),
     )
     return manifest, provider
 
@@ -150,9 +159,39 @@ def test_provider_metadata_is_mandatory_and_fail_closed(tmp_path, mutation, matc
 
 def test_exact_xnys_coverage_accepts_complete_calendar(tmp_path):
     manifest, _provider = _acquire(tmp_path / "complete")
+    assert len(_sessions()) == 312
     assert manifest["bar_count"] == len(_sessions())
     assert manifest["first_session"] == _sessions()[0]
     assert manifest["last_session"] == TARGET.isoformat()
+    assert manifest["expected_first_session"] == "2025-07-16"
+    assert manifest["expected_last_session"] == TARGET.isoformat()
+    assert manifest["expected_session_count"] == manifest["actual_session_count"] == 312
+
+
+@pytest.mark.parametrize("count", [1, 2, 10, 25, 137])
+def test_contiguous_suffix_of_requested_window_fails_closed(tmp_path, count):
+    root = tmp_path / f"suffix-{count}"
+    with pytest.raises(BenchmarkSnapshotError, match="requested-window XNYS coverage mismatch"):
+        _acquire(root, raw=_provider_payload(sessions=_sessions(count)))
+    assert not (root / "READY").exists()
+
+
+def test_wrong_first_session_and_extra_session_fail_closed(tmp_path):
+    sessions = _sessions()
+    wrong_first_root = tmp_path / "wrong-first"
+    with pytest.raises(BenchmarkSnapshotError, match="requested-window XNYS coverage mismatch"):
+        _acquire(wrong_first_root, raw=_provider_payload(sessions=sessions[1:]))
+    assert not (wrong_first_root / "READY").exists()
+
+    extended_calendar = exchange_calendars.get_calendar(
+        "XNYS", start=TARGET - timedelta(days=470), end=TARGET,
+    )
+    prior = [item.date().isoformat() for item in extended_calendar.sessions
+             if item.date().isoformat() < sessions[0]][-1]
+    extra_root = tmp_path / "extra"
+    with pytest.raises(BenchmarkSnapshotError, match="requested-window XNYS coverage mismatch"):
+        _acquire(extra_root, raw=_provider_payload(sessions=[prior, *sessions]))
+    assert not (extra_root / "READY").exists()
 
 
 def test_intermediate_xnys_gap_fails_closed(tmp_path):
@@ -232,6 +271,18 @@ def test_finality_and_tradable_at_follow_xnys_dst(
     assert manifest["target_session_close_utc"] == expected_close
     bars = json.loads((tmp_path / target.isoformat() / "normalized" / "SPY.json").read_bytes())
     assert bars[-1]["tradable_at"] == expected_open
+
+
+def test_finality_uses_early_close_from_xnys_calendar(tmp_path):
+    target = date(2026, 11, 27)
+    _opened, closed = _session_times(target)
+    assert closed == datetime(2026, 11, 27, 18, 0, tzinfo=timezone.utc)
+    manifest, _provider = _acquire(
+        tmp_path / "early-close", target=target,
+        started_at=closed + timedelta(minutes=BENCHMARK_FINALITY_GRACE_MINUTES),
+    )
+    assert manifest["target_session_close_utc"] == "2026-11-27T18:00:00.000000Z"
+    assert manifest["finality_eligible_at_utc"] == "2026-11-27T18:20:00.000000Z"
 
 
 def test_output_directory_must_be_empty_and_snapshot_id_is_safe(tmp_path):
@@ -412,6 +463,47 @@ def test_configured_api_key_value_in_provider_attempt_is_rejected(tmp_path):
     assert not (root / "READY").exists()
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("provider_message", "token=abc"),
+        ("provider_message", "https://example.test/x?token=abc"),
+        ("provider_message", "Bearer abc.def.ghi"),
+        ("provider_message", "refresh_token=abc"),
+        ("exception", "request failed with token=abc"),
+    ],
+    ids=("token", "url-token", "bearer", "refresh-token", "exception-token"),
+)
+def test_sensitive_strings_in_allowlisted_attempt_fields_are_rejected(
+    tmp_path, field, value,
+):
+    root = tmp_path / field / str(abs(hash(value)))
+    attempts = ({
+        "attempt": 1,
+        "requested_at_utc": "2026-10-12T10:00:00.500000Z",
+        field: value,
+    },)
+    with pytest.raises(BenchmarkSnapshotError, match="sensitive value"):
+        _acquire(root, attempts=attempts)
+    assert not (root / "READY").exists()
+
+
+def test_harmless_provider_attempt_message_is_persisted(tmp_path):
+    attempts = ({
+        "attempt": 1,
+        "requested_at_utc": "2026-10-12T10:00:00.500000Z",
+        "http_status": 429,
+        "provider_message": "rate limit; retry scheduled",
+    }, {
+        "attempt": 2,
+        "requested_at_utc": "2026-10-12T10:00:00.750000Z",
+        "http_status": 200,
+    })
+    manifest, _provider = _acquire(tmp_path / "harmless-message", attempts=attempts)
+    assert manifest["provider_attempts"][0]["provider_message"] == \
+        "rate limit; retry scheduled"
+
+
 def test_provider_attempts_use_allowlist(tmp_path):
     attempts = ({
         "attempt": 1, "requested_at_utc": "2026-10-12T10:00:00.000000Z",
@@ -426,6 +518,68 @@ def test_provider_attempts_use_allowlist(tmp_path):
     assert b"harmless_internal_detail" not in (
         tmp_path / "allowlist" / "benchmark_manifest.json"
     ).read_bytes()
+
+
+@pytest.mark.parametrize(
+    "attempts,started_at",
+    [
+        (({"attempt": 1, "requested_at_utc": "garbage"},), None),
+        (({"attempt": 1, "requested_at_utc": "2026-10-12T09:59:59.000000Z"},), None),
+        (({"attempt": 1, "requested_at_utc": "2026-10-12T10:00:02.000000Z"},), None),
+        (({"attempt": 1, "requested_at_utc": "2026-10-09T20:19:59.000000Z"},),
+         datetime(2026, 10, 9, 20, 20, tzinfo=timezone.utc)),
+        (({"attempt": 1, "requested_at_utc": "2026-10-12T10:00:00.750000Z"},
+          {"attempt": 2, "requested_at_utc": "2026-10-12T10:00:00.250000Z"}), None),
+    ],
+    ids=("garbage", "before-start", "after-completed", "before-finality", "nonmonotonic"),
+)
+def test_invalid_provider_attempt_timestamps_fail_closed(
+    tmp_path, attempts, started_at,
+):
+    root = tmp_path / "invalid-attempt-time"
+    with pytest.raises(BenchmarkSnapshotError, match="requested_at_utc"):
+        _acquire(root, attempts=attempts, started_at=started_at)
+    assert not (root / "READY").exists()
+
+
+def test_missing_provider_attempt_timestamp_fails_closed(tmp_path):
+    root = tmp_path / "missing-attempt-time"
+    with pytest.raises(BenchmarkSnapshotError, match="attempt is malformed"):
+        _acquire(root, attempts=({"attempt": 1, "http_status": 200},))
+    assert not (root / "READY").exists()
+
+
+def test_multiple_ordered_provider_attempt_timestamps_are_valid(tmp_path):
+    attempts = ({
+        "attempt": 1, "requested_at_utc": "2026-10-12T10:00:00.250000Z",
+        "http_status": 429,
+    }, {
+        "attempt": 2, "requested_at_utc": "2026-10-12T10:00:00.750000Z",
+        "http_status": 200,
+    })
+    manifest, _provider = _acquire(tmp_path / "ordered-attempts", attempts=attempts)
+    assert [item["attempt"] for item in manifest["provider_attempts"]] == [1, 2]
+
+
+def test_rehashed_invalid_attempt_timestamp_is_rejected_by_loader(tmp_path):
+    root = tmp_path / "rehashed-attempt-time"
+    _acquire(root)
+    manifest = json.loads((root / "benchmark_manifest.json").read_bytes())
+    manifest["provider_attempts"][0]["requested_at_utc"] = "garbage"
+    _rewrite_manifest_and_ready(root, manifest)
+    with pytest.raises(BenchmarkSnapshotError, match="requested_at_utc"):
+        verify_spy_benchmark_snapshot(root)
+
+
+def test_rehashed_requested_window_provenance_is_rejected(tmp_path):
+    root = tmp_path / "rehashed-coverage"
+    _acquire(root)
+    manifest = json.loads((root / "benchmark_manifest.json").read_bytes())
+    manifest["expected_first_session"] = "2026-09-01"
+    manifest["expected_session_count"] = 25
+    _rewrite_manifest_and_ready(root, manifest)
+    with pytest.raises(BenchmarkSnapshotError, match="coverage provenance mismatch"):
+        verify_spy_benchmark_snapshot(root)
 
 
 def test_canonical_normalized_hash_reproducibility_and_content_sensitivity(tmp_path):

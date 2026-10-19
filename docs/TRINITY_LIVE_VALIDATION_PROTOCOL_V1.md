@@ -109,12 +109,21 @@ valid OHLCV, and exact target-session coverage before constructing a
 
 The provider response must explicitly identify `meta.symbol=SPY` and
 `meta.interval=1day`; missing or divergent metadata fails closed. Coverage is
-the exact uninterrupted XNYS session sequence from the first normalized bar
-through the target session, with no filling, nearest-session substitution, or
-repair. Acquisition must start no earlier than 20 minutes after the
-calendar-derived XNYS close of the target session. Provider-attempt provenance
-is persisted through an allowlist and payloads containing credentials or
-sensitive fields are rejected before persistence.
+the exact uninterrupted XNYS session sequence from the first XNYS session on
+or after the requested start date (`target_market_session - 450` calendar
+days) through the target session, with no truncated suffix, filling,
+nearest-session substitution, or repair. The manifest records the expected
+coverage endpoints and expected/actual counts; the verifier recomputes them
+from the requested window and XNYS calendar.
+
+Acquisition must start no earlier than 20 minutes after the calendar-derived
+XNYS close of the target session. Every persisted provider attempt must carry
+a timezone-aware `requested_at_utc` within the interval from acquisition start
+through acquisition completion, at or after the finality cutoff, and attempt
+timestamps must be nondecreasing. Provider-attempt provenance is persisted
+through an allowlist. Payloads and allowlisted strings containing credentials,
+token assignments, credential-bearing URLs, or bearer tokens are rejected
+before READY can be created.
 
 Snapshot identity is the pair `benchmark_snapshot_id` plus
 `benchmark_snapshot_sha256`. The snapshot ID alone is not sufficient to
