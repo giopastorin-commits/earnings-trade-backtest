@@ -8,7 +8,9 @@ import socket
 import pytest
 
 import trinity.validation.outcome_expectations as expectation_module
-from trinity.validation.contracts import CollectedRun, SMOKE_ONLY, SelectionObservation
+from trinity.validation.contracts import (
+    CollectedRun, SMOKE_ONLY, SelectionObservation, ValidationContractError,
+)
 from trinity.validation.market_calendar import CALENDAR_VERSION, schedule_evidence_sha256
 from trinity.validation.outcome_expectations import (
     OUTCOME_EXPECTATION,
@@ -65,7 +67,11 @@ def _collected(*selections: SelectionObservation) -> CollectedRun:
     values = selections or (_selection(),)
     return CollectedRun(
         run_id="RUN_A", source_root="C:/immutable/run-a",
-        source_manifest_sha256=MANIFEST_SHA, selections=tuple(values),
+        source_manifest_sha256=MANIFEST_SHA,
+        decision_target_session="2026-10-09", run_timestamp_utc=DECISION,
+        analytical_commit_sha=GIT_SHA, snapshot_id="TWELVEDATA_DECISION_RUN_A",
+        snapshot_sha256=SHA, universe_version="usa_issuer_registry_v1.fixture",
+        universe_sha256=SHA, selections=tuple(values),
         setups=(), executions=(), total_api_cost_usd="0.03", eligibility=SMOKE_ONLY,
     )
 
@@ -243,8 +249,8 @@ def test_collected_run_consistency_and_duplicate_ticker_are_rejected():
         build_outcome_expectations(_collected(selection, selection))
     with pytest.raises(OutcomeExpectationError, match="identity mismatch"):
         build_outcome_expectations(replace(_collected(selection), run_id="OTHER"))
-    with pytest.raises(OutcomeExpectationError, match="source_run_manifest_sha256"):
-        build_outcome_expectations(replace(_collected(selection), source_manifest_sha256="bad"))
+    with pytest.raises(ValidationContractError, match="source_manifest_sha256"):
+        replace(_collected(selection), source_manifest_sha256="bad")
 
 
 def test_append_is_idempotent_and_divergent_same_identity_conflicts(tmp_path):

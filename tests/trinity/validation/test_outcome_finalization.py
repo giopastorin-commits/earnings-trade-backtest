@@ -587,4 +587,4 @@ def test_source_paths_are_runtime_only_and_no_external_dependencies(
 def test_protocol_identity_and_finalization_hash_are_frozen():
     assert PROTOCOL_ID == "TRINITY_LIVE_VALIDATION_V1"
     assert PROTOCOL_EPOCH == 1
-    assert PROTOCOL_HASH == "0a2e4add27ba15507235f04d4a307c21a70c93920f5a7c02cd9e97803a469035"
+    assert PROTOCOL_HASH == "c04e4009962e2d93265b725e0c3213000151202e8ecd3dd45e60cf9f92ed59d3"

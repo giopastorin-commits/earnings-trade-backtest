@@ -127,9 +127,12 @@ def test_divergent_payload_for_same_cycle_id_conflicts(tmp_path, artifacts):
 
 
 def test_registration_preserves_all_verified_lineage(registrations, artifacts):
-    registration = registrations[0]
     manifest_raw = (artifacts["cycle"] / MANIFEST_NAME).read_bytes()
     manifest = json.loads(manifest_raw)
+    registration = next(
+        item for item in registrations
+        if item.observation_cycle_id == manifest["observation_cycle_id"]
+    )
     assert registration.observation_cycle_id == manifest["observation_cycle_id"]
     assert registration.observation_cycle_sha256 == manifest["observation_cycle_sha256"]
     assert registration.cycle_manifest_sha256 == hashlib.sha256(manifest_raw).hexdigest()

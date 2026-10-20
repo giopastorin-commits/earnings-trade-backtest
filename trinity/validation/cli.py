@@ -10,6 +10,7 @@ from typing import Sequence
 
 from .collector import collect_run
 from .protocol_v1 import PROTOCOL_EPOCH, PROTOCOL_HASH, PROTOCOL_ID, protocol_dict
+from .run_observation import append_run_observation
 from .storage import ValidationStore
 
 
@@ -36,6 +37,7 @@ def _collect(args: argparse.Namespace) -> int:
         store.append("PROTOCOL", f"{protocol_dict()['protocol_id']}:1", {
             **protocol_dict(), "protocol_hash": PROTOCOL_HASH,
         })
+        run_observation_appended = append_run_observation(store, collected)
         for item in collected.selections:
             store.append("SELECTION", f"{key_prefix}:{item.ticker}", item.to_dict())
         for item in collected.setups:
@@ -45,6 +47,7 @@ def _collect(args: argparse.Namespace) -> int:
         integrity, foreign_keys = store.integrity()
     print(json.dumps({
         "run_id": collected.run_id, "scanner": len(collected.selections),
+        "run_observation_appended": run_observation_appended,
         "setups": len(collected.setups), "execution": len(collected.executions),
         "eligibility": collected.eligibility,
         "protocol_hash": PROTOCOL_HASH, "integrity_check": integrity,

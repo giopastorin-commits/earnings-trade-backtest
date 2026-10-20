@@ -2,7 +2,7 @@
 
 Status: frozen prospective protocol
 
-Freeze note: `PRE-LIVE HARDENING BEFORE FIRST OFFICIAL OBSERVATION`
+Freeze note: `FROZEN FOR FIRST OFFICIAL OBSERVATION`
 
 Protocol ID: `TRINITY_LIVE_VALIDATION_V1`
 Protocol epoch: `1`
@@ -21,11 +21,13 @@ and the pre-slot-governance hash
 `38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a`
 and the pre-finalization-policy hash
 `134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8`
+and the pre-weekly-analytics hash
+`0a2e4add27ba15507235f04d4a307c21a70c93920f5a7c02cd9e97803a469035`
 are retired for future official observations. Existing smoke/test identities
 remain under their original hashes and are never upgraded retroactively. The
 current hash, computed from the machine-readable contract after freezing the
-outcome-finalization policy, is
-`0a2e4add27ba15507235f04d4a307c21a70c93920f5a7c02cd9e97803a469035`.
+weekly analytics policy, is
+`c04e4009962e2d93265b725e0c3213000151202e8ecd3dd45e60cf9f92ed59d3`.
 
 ## Run eligibility
 
@@ -76,8 +78,42 @@ All other measurements are `DIAGNOSTIC` or `EXPLORATORY`. In particular,
 mature 20-session active return of at least +10%, then reports how many were
 promoted by Luna, evaluated by Sol, and promoted by Sol.
 
-An empty Sol sleeve is retained for the week and earns the SPY return, making
-its active return zero.
+Every immutable official weekly run is retained as a statistical unit through
+an append-only `RUN_OBSERVATION`, including runs with no Scanner candidates.
+Its frozen membership is derived from run lineage: Luna is the completed
+`ESCALATE` subset of Scanner, and Sol is the `PROMOTED`/`INVESTIGATE` subset
+of Luna. A run with an empty Scanner sleeve has empty Luna and Sol sleeves but
+does not disappear from the denominator.
+
+An empty Scanner, Luna, or Sol sleeve is retained for the week as a benchmark
+sleeve and therefore has active return zero. A nonempty stage is available
+only when every member has a COMPLETE final outcome. If any member is pending,
+the stage is `PENDING` with no return. If any member has
+`DATA_QUALITY_FAILURE`, the stage is `UNAVAILABLE_DQF` with no return: members
+are never dropped, remaining members are never reweighted, and DQF is never
+imputed as zero. Member, complete, pending, and DQF counts remain explicit.
+
+The fixed denominator `n_total_official_weeks` counts every immutable official
+weekly run. At D20, `n_primary_usable_weeks` counts only weeks whose Scanner
+and Sol stages are both available; pending and DQF-unavailable primary weeks
+are reported separately. The primary mean and circular block bootstrap use
+only primary-usable weeks, while all fixed-denominator counts and rates remain
+visible. Formal inference begins only at 52 primary-usable weeks, not merely
+52 calendar weeks or runs. The frozen bootstrap uses 10,000 replicates, a
+four-week D20 block, and a 95% interval.
+
+The primary endpoint is gross active-return delta. Trading costs are
+sensitivity-only at 0, 10, and 25 bps per side. A nonempty stock sleeve pays
+the round-trip cost `2 * bps_per_side / 100` percentage points; an empty
+benchmark sleeve remains at zero active return and bears zero cost. Selection
+quality flags fail closed for official analytics until a future protocol
+explicitly classifies any benign flag, so
+`SOL_CRITIC_LINEAGE_NOT_COMMITTED` cannot silently enter the Sol endpoint.
+
+The existing `baskets.py` and `scorecard.py` remain legacy relative to the
+append-only `OUTCOME_FINAL` pipeline. They do not implement this frozen weekly
+policy and are not evidence of its correctness; replacement is a separate
+task.
 
 ## Weekly observation slots
 
@@ -235,7 +271,7 @@ the conservative `STOP_FIRST` primary policy. PULLBACK semantics are unchanged.
 - Base shadow trading cost: 10 bps per side.
 - Sensitivities: 0 and 25 bps per side.
 - Confidence interval: 95%.
-- Stationary/block bootstrap: 10,000 replicates.
+- Circular block bootstrap: 10,000 replicates.
 - Mean blocks: 1 week (5d), 4 weeks (20d), 12 weeks (60d).
 - Full-pipeline governance MVE: +0.50 percentage points per 20 sessions.
 - Stage governance MVE: +0.25 percentage points per 20 sessions.

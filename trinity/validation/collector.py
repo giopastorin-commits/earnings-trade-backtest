@@ -321,6 +321,10 @@ def collect_run(root: str | Path) -> CollectedRun:
             ))
     return CollectedRun(
         run_id=run_id, source_root=str(base), source_manifest_sha256=manifest_sha,
+        decision_target_session=session, run_timestamp_utc=run_timestamp,
+        analytical_commit_sha=commit, snapshot_id=snapshot_id,
+        snapshot_sha256=snapshot_sha, universe_version=universe_version,
+        universe_sha256=universe_hash,
         selections=tuple(selections), setups=tuple(setup_observations),
         executions=tuple(executions), total_api_cost_usd=str(usage.get("total_cost_usd") or "0"),
         eligibility=eligibility,

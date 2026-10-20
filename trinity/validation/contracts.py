@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date, datetime
 from typing import Any
 
 from .protocol_v1 import HORIZONS, PROTOCOL_EPOCH, PROTOCOL_ID
@@ -201,17 +202,53 @@ class CollectedRun:
     run_id: str
     source_root: str
     source_manifest_sha256: str
+    decision_target_session: str
+    run_timestamp_utc: str
+    analytical_commit_sha: str
+    snapshot_id: str
+    snapshot_sha256: str
+    universe_version: str
+    universe_sha256: str
     selections: tuple[SelectionObservation, ...]
     setups: tuple[SetupObservation, ...]
     executions: tuple[ExecutionObservation, ...]
     total_api_cost_usd: str
     eligibility: str
 
+    def __post_init__(self) -> None:
+        if not self.run_id or self.eligibility not in {SMOKE_ONLY, OFFICIAL_ELIGIBLE}:
+            raise ValidationContractError("collected run identity or eligibility is invalid")
+        _sha(self.source_manifest_sha256, "source_manifest_sha256")
+        try:
+            date.fromisoformat(self.decision_target_session)
+        except (TypeError, ValueError) as exc:
+            raise ValidationContractError("decision_target_session must be an ISO date") from exc
+        try:
+            timestamp = datetime.fromisoformat(self.run_timestamp_utc.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValidationContractError("run_timestamp_utc must be ISO-8601") from exc
+        if timestamp.tzinfo is None:
+            raise ValidationContractError("run_timestamp_utc must be timezone-aware")
+        _git_oid(self.analytical_commit_sha, "analytical_commit_sha")
+        if not self.snapshot_id:
+            raise ValidationContractError("snapshot_id is required")
+        _sha(self.snapshot_sha256, "snapshot_sha256")
+        if not self.universe_version:
+            raise ValidationContractError("universe_version is required")
+        _sha(self.universe_sha256, "universe_sha256")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "source_root": self.source_root,
             "source_manifest_sha256": self.source_manifest_sha256,
+            "decision_target_session": self.decision_target_session,
+            "run_timestamp_utc": self.run_timestamp_utc,
+            "analytical_commit_sha": self.analytical_commit_sha,
+            "snapshot_id": self.snapshot_id,
+            "snapshot_sha256": self.snapshot_sha256,
+            "universe_version": self.universe_version,
+            "universe_sha256": self.universe_sha256,
             "total_api_cost_usd": self.total_api_cost_usd,
             "eligibility": self.eligibility,
             "selections": [item.to_dict() for item in self.selections],

@@ -23,7 +23,10 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
 
 
-def _fixture(root: Path, *, mode: str = "VALIDATION", official: bool = False) -> Path:
+def _fixture(
+    root: Path, *, mode: str = "VALIDATION", official: bool = False,
+    scanner_tickers: tuple[str, ...] = ("AAA", "BBB", "CCC", "DDD"),
+) -> Path:
     artifacts = root / "artifacts"
     snapshot = {
         "price_provider": "TWELVE_DATA", "price_snapshot_id": "snap",
@@ -34,53 +37,59 @@ def _fixture(root: Path, *, mode: str = "VALIDATION", official: bool = False) ->
     scanner = [
         {"ticker": ticker, "screening_state": "READY_TECHNICALLY",
          "primary_reason": "ready", "latest_session": "2026-10-09"}
-        for ticker in ("AAA", "BBB", "CCC", "DDD")
+        for ticker in scanner_tickers
     ]
     _write_json(artifacts / "pre_research_funnel.json", {
-        "counts": {"universe": 4, "ready_technically": 4}, "survivors": scanner,
+        "counts": {"universe": 4, "ready_technically": len(scanner_tickers)}, "survivors": scanner,
         "universe_source": "/frozen/trinity/usa_issuer_registry_v1.fixture",
         "inputs": {ticker: {} for ticker in ("AAA", "BBB", "CCC", "DDD")},
         "price_snapshot": funnel_snapshot,
     })
     setups = []
-    for ticker in ("AAA", "BBB", "CCC", "DDD"):
+    for ticker in scanner_tickers:
         setups.append({
             "ticker": ticker, "as_of": "2026-10-09", "setup_type": "PULLBACK",
             "entry_condition": "BUY ON PULLBACK 99-100", "entry_level": 100,
             "stop_level": 95, "tp1": 110, "tp2": 115, "rr_tp1": 2, "rr_tp2": 3,
         })
     _write_json(artifacts / "setups.json", setups)
-    _write_json(artifacts / "luna_results.json", {"results": [
+    luna_rows = [
         {"ticker": "AAA", "status": "SUCCESS", "decision": "WATCH", "model": "luna",
          "prompt_version": "v1", "input_sha256": SHA, "raw_response_sha256": SHA},
         {"ticker": "BBB", "status": "SUCCESS", "decision": "ESCALATE", "model": "luna",
          "prompt_version": "v1", "input_sha256": SHA, "raw_response_sha256": SHA},
         {"ticker": "CCC", "status": "FAILED", "model": "luna", "prompt_version": "v1",
          "input_sha256": SHA},
-    ]})
+    ]
+    _write_json(artifacts / "luna_results.json", {
+        "results": [row for row in luna_rows if row["ticker"] in scanner_tickers],
+    })
     execution = {
         "setup_id": "setup-b", "setup_sha256": SHA, "price_retrieved_at": "2026-10-15T10:00:00Z",
         "current_price": "100", "price_as_of": "2026-10-09", "price_provider": "TWELVE_DATA",
         "execution_status": "VALID", "current_rr1": "2", "current_rr2": "3",
         "reason_codes": ["OK"], "policy_version": "ENTRY_FRESHNESS_V1",
     }
-    _write_json(artifacts / "sol_results.json", [{
+    sol_rows = [{
         "ticker": "BBB", "run_status": "SUCCESS", "research_status": "INVESTIGATE",
         "cost_usd": "0.2", "setup_id": "setup-b", "execution_status": execution,
-    }])
+    }]
+    _write_json(artifacts / "sol_results.json", [
+        row for row in sol_rows if row["ticker"] in scanner_tickers
+    ])
     _write_json(artifacts / "final_report.json", {
         "run_id": "SHADOW_TEST", "git_commit": GIT_SHA, "price_snapshot": snapshot,
         "research_cutoff": {"research_cutoff_utc": "2026-10-12T10:00:00Z"},
     })
     _write_json(artifacts / "api_usage.json", {
-        "total_cost_usd": "0.21", "calls": [
+        "total_cost_usd": "0.21" if scanner_tickers else "0", "calls": [row for row in [
             {"ticker": "AAA", "role": "LUNA_TRIAGE", "calculated_cost_usd": "0.01"},
             {"ticker": "BBB", "role": "LUNA_TRIAGE", "calculated_cost_usd": "0.01",
              "model": "luna"},
             {"ticker": "BBB", "role": "SOL_CRITIC", "calculated_cost_usd": "0.2",
              "model": "sol"},
             {"ticker": "CCC", "role": "LUNA_TRIAGE", "calculated_cost_usd": "0.01"},
-        ],
+        ] if row["ticker"] in scanner_tickers],
     })
     _write_json(artifacts / "weekly_orchestrator.json", {
         "mode": mode, "official_benchmark_observation": official,
@@ -104,18 +113,20 @@ def _fixture(root: Path, *, mode: str = "VALIDATION", official: bool = False) ->
             interaction_role TEXT NOT NULL, ordinal INTEGER NOT NULL
         );
     """)
-    ledger.execute("INSERT INTO attempt VALUES (?, ?)", ("attempt-b", "forward-pilot:bbb"))
-    ledger.execute(
-        "INSERT INTO llm_interaction VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("critic-b", "attempt-b", "sol", "responses-api:sol", "sha256:" + "b" * 64,
-         "sha256:" + "c" * 64, "SUCCEEDED"),
-    )
-    ledger.execute(
-        "INSERT INTO research_llm_interaction VALUES (?, ?, ?, ?)",
-        ("research-b", "critic-b", "CRITIQUE", 1),
-    )
+    if "BBB" in scanner_tickers:
+        ledger.execute("INSERT INTO attempt VALUES (?, ?)", ("attempt-b", "forward-pilot:bbb"))
+        ledger.execute(
+            "INSERT INTO llm_interaction VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("critic-b", "attempt-b", "sol", "responses-api:sol", "sha256:" + "b" * 64,
+             "sha256:" + "c" * 64, "SUCCEEDED"),
+        )
+        ledger.execute(
+            "INSERT INTO research_llm_interaction VALUES (?, ?, ?, ?)",
+            ("research-b", "critic-b", "CRITIQUE", 1),
+        )
     ledger.commit(); ledger.close()
-    _write_json(root / "model_responses" / "10002_BBB_critic.json", {"status": "completed"})
+    if "BBB" in scanner_tickers:
+        _write_json(root / "model_responses" / "10002_BBB_critic.json", {"status": "completed"})
     files = []
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         relative = path.relative_to(root).as_posix()
@@ -147,6 +158,21 @@ def test_collector_reconstructs_memberships_setup_freshness_cost_and_provenance(
     assert all(item.analytical_commit_sha == GIT_SHA for item in result.selections)
     assert result.eligibility == SMOKE_ONLY
     assert all(item.eligibility == SMOKE_ONLY for item in result.selections)
+    assert result.decision_target_session == "2026-10-09"
+    assert result.run_timestamp_utc == "2026-10-12T10:00:00Z"
+    assert result.analytical_commit_sha == GIT_SHA
+    assert (result.snapshot_id, result.snapshot_sha256) == ("snap", SHA)
+    assert result.universe_version == "usa_issuer_registry_v1.fixture"
+    assert result.universe_sha256 == by_ticker["AAA"].universe_sha256
+
+
+def test_collector_preserves_run_level_provenance_with_zero_scanner_survivors(tmp_path):
+    result = collect_run(_fixture(tmp_path / "empty", scanner_tickers=()))
+    assert result.selections == result.setups == result.executions == ()
+    assert result.decision_target_session == "2026-10-09"
+    assert result.run_timestamp_utc == "2026-10-12T10:00:00Z"
+    assert result.snapshot_id == "snap"
+    assert result.universe_version == "usa_issuer_registry_v1.fixture"
 
 
 def test_explicit_run_eligibility_contract_and_synthetic_official_fixture(tmp_path):

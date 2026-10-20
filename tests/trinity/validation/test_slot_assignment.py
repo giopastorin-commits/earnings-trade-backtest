@@ -449,4 +449,4 @@ def test_no_registry_universe_network_future_prices_or_outcome_state_logic():
 def test_current_protocol_identity_is_unchanged():
     assert PROTOCOL_ID == "TRINITY_LIVE_VALIDATION_V1"
     assert PROTOCOL_EPOCH == 1
-    assert PROTOCOL_HASH == "0a2e4add27ba15507235f04d4a307c21a70c93920f5a7c02cd9e97803a469035"
+    assert PROTOCOL_HASH == "c04e4009962e2d93265b725e0c3213000151202e8ecd3dd45e60cf9f92ed59d3"
