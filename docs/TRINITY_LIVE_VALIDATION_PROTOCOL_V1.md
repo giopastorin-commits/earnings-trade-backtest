@@ -17,8 +17,13 @@ closed.
 No `OFFICIAL_ELIGIBLE` observation existed when this hardening was frozen.
 The earlier protocol hash
 `074ced65bbdef589ff94ce31a5214982ffd482f830c508f15143638cc7bf30f5`
-is retired for future official observations. Existing smoke data remains
-non-official and is never upgraded retroactively.
+and the pre-slot-governance hash
+`38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a`
+are retired for future official observations. Existing smoke/test identities
+remain under their original hashes and are never upgraded retroactively. The
+current hash, computed from the machine-readable contract after freezing
+weekly observation slots, is
+`134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8`.
 
 ## Run eligibility
 
@@ -71,6 +76,39 @@ promoted by Luna, evaluated by Sol, and promoted by Sol.
 
 An empty Sol sleeve is retained for the week and earns the SPY return, making
 its active return zero.
+
+## Weekly observation slots
+
+Official observation cadence is weekly and weeks use the ISO-week definition.
+The deterministic target is the first actual XNYS trading session in that ISO
+week. This is normally Monday, but when Monday is not an XNYS session the
+target is the next session in the same ISO week, such as Tuesday after a
+Monday market holiday. Weekday names and UTC close times are never hardcoded.
+
+A target becomes eligible for acquisition only at its calendar-derived XNYS
+close plus 20 minutes, matching the stock-observation and SPY finality gates.
+For an immutable outcome expectation whose maturity session is DN, the first
+eligible observation slot is the first weekly target session on or after DN.
+Monday maturity therefore uses that Monday slot when it is the target;
+Tuesday-through-Friday maturity after a normal Monday target moves to the next
+week. A Tuesday maturity after a Monday holiday uses Tuesday when Tuesday is
+that week's first XNYS session. Slots affect acquisition timing only: D1, DN,
+and the D1-open-to-DN-close return definition remain unchanged.
+
+A slot with no `CLOSED_VERIFIED` cycle is an operational observation missing,
+not `DATA_QUALITY_FAILURE`. The expectation remains pending and eligible for a
+later weekly slot; no zero return, DQF, removal, horizon change, or
+complete-case dropping is allowed. Future slot-closure infrastructure must
+make such misses auditable.
+
+For each official slot, the future assignment layer must derive the exact set
+of all V1 expectations mature by the slot target and not previously assigned.
+A generic cycle containing an arbitrary subset may remain in the generic
+cycle registry, but it cannot serve as the authoritative official slot cycle.
+If multiple candidate cycles claim the same exact slot set, registration order,
+cycle ID, and observed result cannot choose a winner: the future assignment
+layer must report an ambiguous operational error. The generic cycle registry
+is an inventory and is not proof of authoritative assignment or completeness.
 
 ## Point-in-time outcomes
 

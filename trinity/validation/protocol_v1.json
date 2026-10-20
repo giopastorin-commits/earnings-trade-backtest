@@ -13,6 +13,18 @@
     "adjustment": "none",
     "universe_role": "BENCHMARK_ONLY"
   },
+  "observation_policy": {
+    "cadence": "WEEKLY",
+    "week_definition": "ISO_WEEK",
+    "slot_target": "FIRST_XNYS_SESSION_OF_ISO_WEEK",
+    "finality_grace_minutes": 20,
+    "first_eligible_slot": "FIRST_SLOT_TARGET_ON_OR_AFTER_MATURITY_SESSION",
+    "slot_expected_set": "ALL_MATURE_UNASSIGNED_V1_EXPECTATIONS",
+    "missing_slot": "REMAIN_PENDING",
+    "partial_cycle_official": false,
+    "missing_slot_is_dqf": false,
+    "multiple_candidate_cycles": "AMBIGUOUS_OPERATIONAL_ERROR"
+  },
   "statistical_unit": "WEEKLY_RUN",
   "basket_weighting": "EQUAL_WEIGHT",
   "primary_endpoint": "AR20_SOL_MINUS_SCANNER",

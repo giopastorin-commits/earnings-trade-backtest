@@ -22,7 +22,8 @@ from trinity.validation.spy_benchmark import (
 )
 
 
-PROTOCOL_HASH_V1 = "38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a"
+PRE_SLOT_POLICY_PROTOCOL_HASH = \
+    "38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a"
 TARGET = date(2026, 10, 9)
 RUN_ID = "OFFICIAL_2026-10-12_A1"
 
@@ -590,6 +591,6 @@ def test_canonical_normalized_hash_reproducibility_and_content_sensitivity(tmp_p
     assert changed["normalized_sha256"] != first["normalized_sha256"]
 
 
-def test_protocol_identity_is_unchanged():
-    assert PROTOCOL_HASH == PROTOCOL_HASH_V1
+def test_protocol_epoch_is_unchanged_and_pre_slot_hash_is_retired():
+    assert PROTOCOL_HASH != PRE_SLOT_POLICY_PROTOCOL_HASH
     assert PROTOCOL_EPOCH == 1

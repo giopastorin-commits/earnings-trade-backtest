@@ -20,10 +20,23 @@ def test_protocol_identity_and_frozen_parameters():
     }
     assert PROTOCOL["horizon_definition"] == \
         "FIRST_TRADABLE_OPEN_TO_NTH_TRADABLE_SESSION_CLOSE_INCLUSIVE"
+    assert dict(PROTOCOL["observation_policy"]) == {
+        "cadence": "WEEKLY",
+        "week_definition": "ISO_WEEK",
+        "slot_target": "FIRST_XNYS_SESSION_OF_ISO_WEEK",
+        "finality_grace_minutes": 20,
+        "first_eligible_slot": "FIRST_SLOT_TARGET_ON_OR_AFTER_MATURITY_SESSION",
+        "slot_expected_set": "ALL_MATURE_UNASSIGNED_V1_EXPECTATIONS",
+        "missing_slot": "REMAIN_PENDING",
+        "partial_cycle_official": False,
+        "missing_slot_is_dqf": False,
+        "multiple_candidate_cycles": "AMBIGUOUS_OPERATIONAL_ERROR",
+    }
     assert PROTOCOL["trading_cost_bps_per_side"] == 10
     assert tuple(PROTOCOL["trading_cost_sensitivity_bps_per_side"]) == (0, 25)
     assert len(PROTOCOL_HASH) == 64
     assert PROTOCOL_HASH != "074ced65bbdef589ff94ce31a5214982ffd482f830c508f15143638cc7bf30f5"
+    assert PROTOCOL_HASH != "38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a"
     with pytest.raises(TypeError):
         PROTOCOL["protocol_epoch"] = 2
 
