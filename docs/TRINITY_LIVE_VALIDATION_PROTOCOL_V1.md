@@ -19,11 +19,13 @@ The earlier protocol hash
 `074ced65bbdef589ff94ce31a5214982ffd482f830c508f15143638cc7bf30f5`
 and the pre-slot-governance hash
 `38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a`
+and the pre-finalization-policy hash
+`134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8`
 are retired for future official observations. Existing smoke/test identities
 remain under their original hashes and are never upgraded retroactively. The
-current hash, computed from the machine-readable contract after freezing
-weekly observation slots, is
-`134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8`.
+current hash, computed from the machine-readable contract after freezing the
+outcome-finalization policy, is
+`0a2e4add27ba15507235f04d4a307c21a70c93920f5a7c02cd9e97803a469035`.
 
 ## Run eligibility
 
@@ -112,16 +114,53 @@ is an inventory and is not proof of authoritative assignment or completeness.
 
 ## Point-in-time outcomes
 
-The return begins at the first supplied, verifiable tradable price whose
-timestamp is strictly later than the decision timestamp. The close that
-created the signal is never treated as an executable fill. A horizon remains
-`PENDING` until all required sessions exist. A mature stock outcome without a
-valid matching SPY series is `DATA_QUALITY_FAILURE`; no benchmark is invented.
+The return begins at D1, the first XNYS session whose open is strictly later
+than the decision timestamp. D1 and inclusive DN are frozen in the immutable
+`OUTCOME_EXPECTATION`; future bars never rederive or shift those endpoints.
+The close that created the signal is never treated as an executable fill.
 
 An N-session outcome is measured from the open of the first actually tradable
 session after the decision to the close of the Nth tradable session,
 inclusively. Thus 5, 20, and 60 sessions use D1 open to D5, D20, and D60 close,
 respectively; D21 is never used for the 20-session endpoint.
+
+### Outcome finalization
+
+`PENDING` is derived runtime state and is never persisted as `OUTCOME_FINAL`.
+An unassigned expectation remains `PENDING_UNASSIGNED`. An assigned expectation
+whose authoritative cycle artifacts have not been supplied locally remains
+`PENDING_SOURCE_NOT_AVAILABLE`. A supplied but corrupt, unverifiable, or
+lineage-inconsistent artifact is an operational contract error: finalization
+fails closed and writes no final record. A missed or ambiguous observation
+slot therefore remains pending rather than becoming a zero return or a data
+quality failure.
+
+Finalization verifies the complete immutable chain from expectation through
+exact-set assignment, terminal slot closure, cycle registration, the full
+`CLOSED_VERIFIED` cycle, stock observation, and SPY observation. Runtime source
+locators contain local paths only for retrieval; paths never enter identities
+or persisted final records. The complete cycle expectation set is reloaded
+and verified, rather than verifying only the ticker currently being finalized.
+
+A `COMPLETE` outcome uses exactly stock D1 OPEN to DN CLOSE and SPY D1 OPEN to
+DN CLOSE. Stock and benchmark returns are gross percentage price returns, and
+active return is stock return minus benchmark return. There is no forward
+fill, nearest-session substitution, observation-day return, trading-cost
+adjustment, or horizon rediscovery.
+
+`DATA_QUALITY_FAILURE` requires positive verified evidence: an authoritative
+assignment and fully verified sources whose stock classification is explicitly
+`CORPORATE_ACTION_NO_LONGER_TRADING`, with D1 or DN absent from the real bars.
+The deterministic flags are `TERMINAL_STOCK_D1_UNAVAILABLE` and
+`TERMINAL_STOCK_DN_UNAVAILABLE`. A terminal ticker with both endpoints is
+calculated normally. Missing endpoints for `ACTIVE_COMPLETE`, or missing SPY
+endpoints, are contract errors and produce no final record. Artifact corruption
+or a local restore gap is never converted into DQF.
+
+`OUTCOME_FINAL` contains only `COMPLETE` or `DATA_QUALITY_FAILURE`, is keyed by
+the immutable expectation identity, preserves the full cycle/snapshot lineage,
+and is append-only. Identical replay is idempotent; divergent content conflicts.
+Neither COMPLETE nor DQF may be restated using a later cycle.
 
 The current canonical 518-name snapshot does not contain SPY. V1 therefore
 defines the benchmark interface but makes no data request. A future, separately

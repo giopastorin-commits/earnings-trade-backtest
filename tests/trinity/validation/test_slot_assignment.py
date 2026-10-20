@@ -40,7 +40,7 @@ from trinity.validation.slot_assignment import (
 from trinity.validation.storage import ValidationStore
 
 
-OLD_HASH = "38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a"
+OLD_HASH = "134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8"
 TARGET = date(2026, 10, 12)
 ISO_YEAR, ISO_WEEK, _ = TARGET.isocalendar()
 CLOSED_AT = "2026-10-12T20:20:00Z"
@@ -449,4 +449,4 @@ def test_no_registry_universe_network_future_prices_or_outcome_state_logic():
 def test_current_protocol_identity_is_unchanged():
     assert PROTOCOL_ID == "TRINITY_LIVE_VALIDATION_V1"
     assert PROTOCOL_EPOCH == 1
-    assert PROTOCOL_HASH == "134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8"
+    assert PROTOCOL_HASH == "0a2e4add27ba15507235f04d4a307c21a70c93920f5a7c02cd9e97803a469035"

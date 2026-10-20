@@ -32,11 +32,30 @@ def test_protocol_identity_and_frozen_parameters():
         "missing_slot_is_dqf": False,
         "multiple_candidate_cycles": "AMBIGUOUS_OPERATIONAL_ERROR",
     }
+    assert dict(PROTOCOL["outcome_finalization_policy"]) == {
+        "pending_is_terminal": False,
+        "pending_persisted_as_outcome_final": False,
+        "unassigned_expectation": "PENDING",
+        "assigned_source_not_available": "PENDING",
+        "supplied_source_verification_failure": "OPERATIONAL_ERROR_NO_FINAL",
+        "dqf_requires_authoritative_assignment": True,
+        "dqf_requires_positive_verified_evidence": True,
+        "terminal_stock_missing_required_session": "DATA_QUALITY_FAILURE",
+        "active_stock_missing_required_session": "CONTRACT_ERROR_NO_FINAL",
+        "benchmark_missing_required_session": "CONTRACT_ERROR_NO_FINAL",
+        "forward_fill_missing_session": False,
+        "complete_return": "D1_OPEN_TO_DN_CLOSE",
+        "benchmark_return": "D1_OPEN_TO_DN_CLOSE",
+        "active_return": "STOCK_RETURN_MINUS_BENCHMARK_RETURN",
+        "outcome_final_is_terminal": True,
+        "outcome_restatement": False,
+    }
     assert PROTOCOL["trading_cost_bps_per_side"] == 10
     assert tuple(PROTOCOL["trading_cost_sensitivity_bps_per_side"]) == (0, 25)
     assert len(PROTOCOL_HASH) == 64
     assert PROTOCOL_HASH != "074ced65bbdef589ff94ce31a5214982ffd482f830c508f15143638cc7bf30f5"
     assert PROTOCOL_HASH != "38980fc7bdc0ab8912f23cbc8ce67325f0d0ffe896a8d29838fe81ed1d094a1a"
+    assert PROTOCOL_HASH != "134d9d6a3751c27952a3848baeff4d12642bfcccebada68b6984e95c2c8449a8"
     with pytest.raises(TypeError):
         PROTOCOL["protocol_epoch"] = 2
 
