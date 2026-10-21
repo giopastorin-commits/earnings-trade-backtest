@@ -1,0 +1,53 @@
+{
+  "baseline_id": "TRINITY_SIMPLE_QUANT_BASELINE_V1",
+  "baseline_version": 1,
+  "freeze_status": "FROZEN_BEFORE_FIRST_OFFICIAL_OBSERVATION",
+  "upstream_protocol_id": "TRINITY_LIVE_VALIDATION_V1",
+  "upstream_protocol_hash": "c04e4009962e2d93265b725e0c3213000151202e8ecd3dd45e60cf9f92ed59d3",
+  "information_set": {
+    "membership": "RUN_OBSERVATION_SCANNER",
+    "ranking_inputs": ["SETUP_ORIGINAL_RR1", "SETUP_ORIGINAL_RR2", "TICKER"],
+    "capacity": "RUN_OBSERVATION_SOL_COUNT_ONLY",
+    "forbidden_inputs": [
+      "LUNA_DECISIONS",
+      "SOL_TICKER_IDENTITIES",
+      "NEWS",
+      "LLM_OUTPUTS",
+      "FUTURE_PRICES",
+      "FUTURE_PERFORMANCE",
+      "ENTRY_FRESHNESS",
+      "POST_DECISION_INFORMATION"
+    ]
+  },
+  "eligible_universe": "SCANNER_TICKERS_WITH_OPERATIONAL_SETUP",
+  "ineligible_setup_type": "NO_SETUP",
+  "setup_membership": "EXACTLY_ONE_SETUP_PER_SCANNER_TICKER",
+  "ranking": [
+    "ORIGINAL_RR1_DESC",
+    "ORIGINAL_RR2_DESC",
+    "TICKER_ASC"
+  ],
+  "selection_count": "SOL_COUNT",
+  "capacity_overflow": "CONTRACT_ERROR",
+  "outcome_source": "SCANNER_D20_OUTCOME_FINAL_ACTIVE_RETURN_PCT",
+  "basket_weighting": "EQUAL_WEIGHT",
+  "states": ["EMPTY_BENCHMARK", "AVAILABLE", "PENDING", "UNAVAILABLE_DQF"],
+  "state_precedence": ["UNAVAILABLE_DQF", "PENDING", "AVAILABLE"],
+  "empty_benchmark_active_return_pct": 0.0,
+  "dqf_partial_average": false,
+  "dqf_zero_imputation": false,
+  "comparator": "SOL_MINUS_SIMPLE_QUANT_AR20",
+  "statistical_unit": "WEEKLY_RUN",
+  "formal_inference": {
+    "metric_class": "AUXILIARY_COMPARATOR",
+    "minimum_usable_weeks": 52,
+    "method": "CIRCULAR_BLOCK_BOOTSTRAP",
+    "replicates": 10000,
+    "block_length_weeks": 4,
+    "confidence_interval": 0.95,
+    "seed_label": "SOL_MINUS_SIMPLE_QUANT_AR20"
+  },
+  "cost_sensitivity_bps_per_side": [0, 10, 25],
+  "cost_application": "ROUND_TRIP_COST_TO_NONEMPTY_STOCK_SLEEVE",
+  "empty_benchmark_sleeve_cost": 0
+}
