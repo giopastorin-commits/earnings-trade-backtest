@@ -273,6 +273,230 @@ def restore_price_snapshot(
         raise R2Error(f"restored price snapshot verification failed: {exc}") from exc
 
 
+def stock_observation_prefix(
+    protocol_hash: str, session: str, snapshot_id: str,
+) -> str:
+    values = (protocol_hash, session, snapshot_id)
+    if any(not value or "/" in value or "\\" in value for value in values) \
+            or len(protocol_hash) != 64 \
+            or any(char not in "0123456789abcdef" for char in protocol_hash) \
+            or "latest" in snapshot_id.lower():
+        raise R2Error("invalid stock observation namespace identity")
+    return (
+        f"observations/stocks/protocol={protocol_hash}/"
+        f"session={session}/snapshot_id={snapshot_id}/"
+    )
+
+
+def _remote_inventory(client: Any, bucket: str, prefix: str) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    token = None
+    while True:
+        args = {"Bucket": bucket, "Prefix": prefix}
+        if token:
+            args["ContinuationToken"] = token
+        page = client.list_objects_v2(**args)
+        result.update({item["Key"]: item for item in page.get("Contents", [])})
+        if not page.get("IsTruncated"):
+            return result
+        token = page["NextContinuationToken"]
+
+
+def _stock_observation_files(root: Path, manifest: dict[str, Any]) -> tuple[Path, ...]:
+    entries = manifest.get("tickers")
+    if not isinstance(entries, list):
+        raise R2Error("stock observation manifest lacks tickers")
+    paths = [root / "snapshot_manifest.json"]
+    guard = manifest.get("credit_guard")
+    if isinstance(guard, dict):
+        if guard.get("telemetry_file") != "provider_credit_telemetry.json":
+            raise R2Error("stock observation telemetry path mismatch")
+        paths.append(root / "provider_credit_telemetry.json")
+    for item in entries:
+        ticker = str(item.get("canonical_ticker") or "") if isinstance(item, dict) else ""
+        if not ticker or "/" in ticker or "\\" in ticker:
+            raise R2Error("unsafe stock observation ticker")
+        paths.extend((root / "raw" / f"{ticker}.json", root / "normalized" / f"{ticker}.json"))
+    if any(not path.is_file() for path in paths):
+        raise R2Error("stock observation authoritative file is missing")
+    return tuple(paths)
+
+
+def archive_stock_observation_snapshot(
+    client: Any, bucket: str, snapshot_root: str | Path,
+) -> dict[str, Any]:
+    """Archive an authoritative READY stock subset under its immutable identity."""
+
+    from trinity.validation.stock_observation import (
+        load_stock_observation_snapshot, normalize_expected_tickers,
+        verify_stock_observation_manifest_identity,
+    )
+    from trinity.twelvedata_prices import verify_snapshot
+
+    root = Path(snapshot_root)
+    try:
+        manifest = verify_snapshot(root, require_ready=True, require_raw=True)
+        identity = verify_stock_observation_manifest_identity(manifest)
+        snapshot = load_stock_observation_snapshot(
+            root, expected_tickers=identity["expected_tickers"],
+            expected_observation_target_session=str(manifest["target_market_session"]),
+        )
+    except Exception as exc:
+        raise R2Error(f"invalid local stock observation snapshot: {exc}") from exc
+    tickers = normalize_expected_tickers(identity["expected_tickers"])
+    if snapshot.expected_tickers != tickers:
+        raise R2Error("local stock observation membership mismatch")
+    prefix = stock_observation_prefix(
+        str(manifest["protocol_hash"]), str(manifest["target_market_session"]),
+        str(manifest["snapshot_id"]),
+    )
+    files = _stock_observation_files(root, manifest)
+    objects = tuple(
+        (prefix + path.relative_to(root).as_posix(), path, hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in files
+    )
+    existing = _remote_inventory(client, bucket, prefix)
+    expected_keys = {key for key, _path, _digest in objects}
+    if set(existing) - expected_keys:
+        raise R2Error("immutable stock observation prefix contains unexpected objects")
+    for key, path, digest in objects:
+        if key in existing:
+            head = client.head_object(Bucket=bucket, Key=key)
+            if int(head["ContentLength"]) != path.stat().st_size \
+                    or head.get("Metadata", {}).get("sha256") != digest:
+                raise R2Error(f"immutable stock observation collision: {key}")
+            continue
+        client.upload_file(
+            str(path), bucket, key,
+            ExtraArgs={"Metadata": {"sha256": digest}, "ContentType": _content_type(path)},
+        )
+    if set(_remote_inventory(client, bucket, prefix)) != expected_keys:
+        raise R2Error("remote stock observation object closure changed during upload")
+    total = 0
+    for key, path, digest in objects:
+        head = client.head_object(Bucket=bucket, Key=key)
+        if int(head["ContentLength"]) != path.stat().st_size \
+                or head.get("Metadata", {}).get("sha256") != digest:
+            raise R2Error(f"remote stock observation verification failed: {key}")
+        total += path.stat().st_size
+    return {
+        "prefix": prefix, "object_count": len(objects), "total_bytes": total,
+        "snapshot_id": manifest["snapshot_id"],
+        "snapshot_sha256": manifest["snapshot_sha256"],
+    }
+
+
+def _write_restored(path: Path, raw: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_bytes(raw)
+    temporary.replace(path)
+
+
+def restore_stock_observation_snapshot(
+    client: Any, bucket: str, prefix: str, destination: str | Path, *,
+    expected_snapshot_id: str, expected_snapshot_sha256: str,
+    expected_target_session: str, expected_tickers: Any,
+    expected_expectation_set_sha256: str,
+) -> dict[str, Any]:
+    """Restore raw and normalized evidence, then prove it with the frozen loader."""
+
+    from trinity.validation.stock_observation import (
+        load_stock_observation_snapshot, verify_stock_observation_manifest_identity,
+    )
+    from trinity.twelvedata_prices import snapshot_hash
+
+    normalized = prefix.strip("/") + "/"
+    if not normalized.startswith("observations/stocks/protocol=") \
+            or "/session=" not in normalized or "/snapshot_id=" not in normalized \
+            or "latest" in normalized.lower():
+        raise R2Error("stock observation prefix must be immutable")
+    if not expected_snapshot_id or not expected_snapshot_sha256:
+        raise R2Error("expected stock observation identity is required")
+    manifest_key = normalized + "snapshot_manifest.json"
+    try:
+        manifest_raw = client.get_object(Bucket=bucket, Key=manifest_key)["Body"].read()
+        manifest = json.loads(manifest_raw)
+    except Exception as exc:
+        raise R2Error("invalid or missing remote stock observation manifest") from exc
+    if not isinstance(manifest, dict):
+        raise R2Error("remote stock observation manifest is not an object")
+    try:
+        verify_stock_observation_manifest_identity(
+            manifest, expected_tickers=expected_tickers,
+            expected_expectation_set_sha256=expected_expectation_set_sha256,
+        )
+    except Exception as exc:
+        raise R2Error(f"remote stock observation identity mismatch: {exc}") from exc
+    if manifest.get("snapshot_id") != expected_snapshot_id \
+            or manifest.get("snapshot_sha256") != expected_snapshot_sha256 \
+            or snapshot_hash(manifest) != expected_snapshot_sha256 \
+            or manifest.get("target_market_session") != expected_target_session:
+        raise R2Error("remote stock observation requested identity mismatch")
+    expected_prefix = stock_observation_prefix(
+        str(manifest["protocol_hash"]), expected_target_session, expected_snapshot_id,
+    )
+    if normalized != expected_prefix:
+        raise R2Error("remote stock observation namespace identity mismatch")
+    root = Path(destination)
+    if root.exists() and (not root.is_dir() or any(root.iterdir())):
+        raise R2Error("stock observation restore destination must be new or empty")
+
+    entries = manifest.get("tickers")
+    if not isinstance(entries, list):
+        raise R2Error("remote stock observation manifest lacks tickers")
+    expected: dict[str, tuple[str, int | None]] = {
+        "snapshot_manifest.json": (hashlib.sha256(manifest_raw).hexdigest(), len(manifest_raw)),
+    }
+    guard = manifest.get("credit_guard")
+    if isinstance(guard, dict):
+        expected["provider_credit_telemetry.json"] = (
+            str(guard.get("telemetry_sha256") or ""), None,
+        )
+    for item in entries:
+        ticker = str(item.get("canonical_ticker") or "") if isinstance(item, dict) else ""
+        if not ticker or "/" in ticker or "\\" in ticker:
+            raise R2Error("unsafe remote stock observation ticker")
+        expected[f"raw/{ticker}.json"] = (str(item.get("raw_sha256") or ""), None)
+        expected[f"normalized/{ticker}.json"] = (str(item.get("content_sha256") or ""), None)
+    remote = _remote_inventory(client, bucket, normalized)
+    expected_keys = {normalized + relative for relative in expected}
+    if set(remote) != expected_keys:
+        raise R2Error("remote stock observation object closure mismatch")
+    root.mkdir(parents=True, exist_ok=True)
+    for relative, (digest, known_size) in expected.items():
+        key = normalized + relative
+        try:
+            body = manifest_raw if relative == "snapshot_manifest.json" else client.get_object(
+                Bucket=bucket, Key=key,
+            )["Body"].read()
+            head = client.head_object(Bucket=bucket, Key=key)
+        except Exception as exc:
+            raise R2Error(f"missing remote stock observation object: {relative}") from exc
+        actual_digest = hashlib.sha256(body).hexdigest()
+        if actual_digest != digest \
+                or int(head["ContentLength"]) != len(body) \
+                or head.get("Metadata", {}).get("sha256") != digest \
+                or (known_size is not None and len(body) != known_size):
+            raise R2Error(f"remote stock observation integrity mismatch: {relative}")
+        _write_restored(root / Path(PurePosixPath(relative)), body)
+    try:
+        snapshot = load_stock_observation_snapshot(
+            root, expected_tickers=expected_tickers,
+            expected_observation_target_session=expected_target_session,
+        )
+    except Exception as exc:
+        raise R2Error(f"restored stock observation verification failed: {exc}") from exc
+    if snapshot.source_snapshot_id != expected_snapshot_id \
+            or snapshot.source_snapshot_sha256 != expected_snapshot_sha256:
+        raise R2Error("restored stock observation source identity mismatch")
+    return {
+        **manifest,
+        "restored_prefix": normalized,
+        "restored_object_count": len(expected),
+    }
+
+
 def _content_type(path: Path) -> str:
     return {".json": "application/json", ".txt": "text/plain", ".sqlite3": "application/vnd.sqlite3"}.get(
         path.suffix, "application/octet-stream"

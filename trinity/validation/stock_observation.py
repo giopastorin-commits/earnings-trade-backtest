@@ -26,6 +26,7 @@ from trinity.twelvedata_prices import (
 
 from .contracts import ValidationContractError
 from .market_calendar import CALENDAR_NAME, CALENDAR_VERSION, add_tradable_at, session_times
+from .protocol_v1 import PROTOCOL_HASH
 
 
 STOCK_OBSERVATION_FINALITY_GRACE_MINUTES = 20
@@ -63,14 +64,19 @@ class StockObservationSnapshot:
     tickers: tuple[StockObservationSeries, ...]
 
     def series(self, ticker: str) -> StockObservationSeries:
-        normalized = _normalize_expected_tickers((ticker,))[0]
+        normalized = normalize_expected_tickers((ticker,))[0]
         for item in self.tickers:
             if item.ticker == normalized:
                 return item
         raise StockObservationError(f"ticker absent from stock observation: {normalized}")
 
 
-def _normalize_expected_tickers(expected_tickers: Iterable[str]) -> tuple[str, ...]:
+STOCK_OBSERVATION_SCOPE = "STOCK_OBSERVATION_SUBSET"
+STOCK_OBSERVATION_IDENTITY_SCHEMA = "TRINITY_STOCK_OBSERVATION_V1"
+
+
+def normalize_expected_tickers(expected_tickers: Iterable[str]) -> tuple[str, ...]:
+    """Canonicalize the frozen subset without consulting the current registry."""
     if isinstance(expected_tickers, (str, bytes)):
         raise StockObservationError("expected ticker set must be an iterable of tickers")
     normalized: list[str] = []
@@ -95,8 +101,65 @@ def _normalize_expected_tickers(expected_tickers: Iterable[str]) -> tuple[str, .
 def expected_ticker_set_sha256(expected_tickers: Iterable[str]) -> str:
     """Return the stable identity of a normalized, sorted expected ticker set."""
 
-    normalized = _normalize_expected_tickers(expected_tickers)
+    normalized = normalize_expected_tickers(expected_tickers)
     return hashlib.sha256(canonical_bytes(list(normalized))).hexdigest()
+
+
+def verify_stock_observation_manifest_identity(
+    manifest: Mapping[str, Any], *, expected_tickers: Iterable[str] | None = None,
+    expected_expectation_set_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Verify additive subset identity fields independently of local paths."""
+
+    if manifest.get("snapshot_scope") != STOCK_OBSERVATION_SCOPE:
+        raise StockObservationError("stock observation snapshot scope mismatch")
+    if manifest.get("protocol_hash") != PROTOCOL_HASH:
+        raise StockObservationError("stock observation protocol hash mismatch")
+    expectation_sha = manifest.get("expectation_set_sha256")
+    if not isinstance(expectation_sha, str) or len(expectation_sha) != 64 \
+            or any(char not in "0123456789abcdef" for char in expectation_sha):
+        raise StockObservationError("expectation_set_sha256 must be a lowercase SHA-256")
+    if expected_expectation_set_sha256 is not None \
+            and expectation_sha != expected_expectation_set_sha256:
+        raise StockObservationError("stock observation expectation-set mismatch")
+    entries = manifest.get("tickers")
+    if not isinstance(entries, list):
+        raise StockObservationError("stock observation ticker metadata is malformed")
+    manifest_tickers = tuple(sorted(str(item.get("canonical_ticker") or "") for item in entries))
+    normalized = normalize_expected_tickers(
+        manifest_tickers if expected_tickers is None else expected_tickers
+    )
+    if manifest_tickers != normalized or manifest.get("expected_ticker_count") != len(normalized):
+        raise StockObservationError("stock observation expected ticker membership mismatch")
+    ticker_sha = expected_ticker_set_sha256(normalized)
+    if manifest.get("expected_ticker_set_sha256") != ticker_sha:
+        raise StockObservationError("stock observation expected ticker-set SHA mismatch")
+    attempt = manifest.get("acquisition_attempt")
+    if type(attempt) is not int or attempt < 1:
+        raise StockObservationError("stock observation acquisition attempt is invalid")
+    target = manifest.get("target_market_session")
+    core = {
+        "schema": STOCK_OBSERVATION_IDENTITY_SCHEMA,
+        "protocol_hash": PROTOCOL_HASH,
+        "observation_target_session": target,
+        "expectation_set_sha256": expectation_sha,
+        "expected_ticker_set_sha256": ticker_sha,
+        "acquisition_attempt": attempt,
+    }
+    identity_sha = hashlib.sha256(canonical_bytes(core)).hexdigest()
+    snapshot_id = f"{STOCK_OBSERVATION_IDENTITY_SCHEMA}_{identity_sha}"
+    if manifest.get("identity_core") != core \
+            or manifest.get("identity_sha256") != identity_sha \
+            or manifest.get("snapshot_id") != snapshot_id:
+        raise StockObservationError("stock observation deterministic identity mismatch")
+    return {
+        "expected_tickers": normalized,
+        "expected_ticker_set_sha256": ticker_sha,
+        "expectation_set_sha256": expectation_sha,
+        "identity_core": core,
+        "identity_sha256": identity_sha,
+        "snapshot_id": snapshot_id,
+    }
 
 
 def _aware(value: object, field: str) -> datetime:
@@ -232,13 +295,17 @@ def load_stock_observation_snapshot(
 ) -> StockObservationSnapshot:
     """Verify and adapt an immutable stock snapshot for the frozen ticker set."""
 
-    normalized_expected = _normalize_expected_tickers(expected_tickers)
+    normalized_expected = normalize_expected_tickers(expected_tickers)
     expected_sha = expected_ticker_set_sha256(normalized_expected)
     base = Path(root).resolve()
     try:
         manifest = verify_snapshot(base, require_ready=True, require_raw=True)
     except PriceSnapshotError as exc:
         raise StockObservationError(f"invalid stock observation source snapshot: {exc}") from exc
+    if manifest.get("snapshot_scope") is not None:
+        verify_stock_observation_manifest_identity(
+            manifest, expected_tickers=normalized_expected,
+        )
     if manifest.get("provider") != PRICE_PROVIDER \
             or manifest.get("interval") != INTERVAL \
             or manifest.get("adjust") != ADJUSTMENT:
