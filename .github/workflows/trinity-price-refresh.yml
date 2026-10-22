@@ -17,11 +17,7 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: "1"
-  TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-  TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
-  TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
-  TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
-  TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
+  TRINITY_ANALYTICAL_REF: trinity-live-validation-v1
 
 jobs:
   refresh:
@@ -37,6 +33,9 @@ jobs:
       - name: Check out price acquisition implementation
         # actions/checkout v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.TRINITY_ANALYTICAL_REF }}
+          persist-credentials: false
 
       - name: Set up exact Python 3.13.15
         # actions/setup-python v5.4.0
@@ -55,6 +54,8 @@ jobs:
           assert len(REGISTRY.records) == 518 and len(REGISTRY.supported) == 518 and not REGISTRY.unsupported"
 
       - name: Acquire and hard-gate canonical Twelve Data OHLCV
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: >-
           python -m trinity.shadow.price_refresh acquire
           --target-session "${{ inputs.target_session }}"
@@ -62,6 +63,11 @@ jobs:
           --run-id "$GITHUB_RUN_ID-A$GITHUB_RUN_ATTEMPT"
 
       - name: Upload immutable snapshot and verify R2 bytes and hashes
+        env:
+          TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
+          TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
+          TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
+          TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
         run: >-
           python -m trinity.shadow.price_refresh archive
           --output-root "$PRICE_SNAPSHOT_ROOT"

@@ -187,8 +187,9 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
     weekly = (workflows / "trinity-weekly-production.yml").read_text(encoding="utf-8")
     price = (workflows / "trinity-price-refresh.yml").read_text(encoding="utf-8")
     shadow = (workflows / "trinity-shadow-manual.yml").read_text(encoding="utf-8")
-    assert weekly.count('cron: "0 10 * * 1"') == 1
-    assert weekly.count('cron: "0 11 * * 1"') == 1
+    assert "\n  schedule:\n" not in weekly
+    assert "cron:" not in weekly
+    assert "          - OFFICIAL" not in weekly
     assert "concurrency:\n  group: trinity-weekly-production-v1" in weekly
     assert "schedule:" not in price and "schedule:" not in shadow
     gate = weekly.split("  schedule-gate:", 1)[1].split("  cycle-guard:", 1)[0]
@@ -202,7 +203,13 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
     assert analytical.index("validate-handoff") < analytical.index("cli restore-prices") < analytical.index("cli run")
     assert analytical.index("cli archive") < analytical.index("weekly_cycle complete") < analytical.index("notifications.telegram")
     assert "continue-on-error: true" in analytical
-    assert "ref: ${{ env.TRINITY_ANALYTICAL_REF }}" in weekly
+    assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" in weekly
+    assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" in price
+    checkout_action = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
+    assert weekly.count(checkout_action) == weekly.count("persist-credentials: false") == 4
+    assert price.count(checkout_action) == price.count("persist-credentials: false") == 1
+    assert weekly.count("ref: ${{ env.TRINITY_ANALYTICAL_REF }}") == 4
+    assert price.count("ref: ${{ env.TRINITY_ANALYTICAL_REF }}") == 1
     assert "TRINITY_WORKFLOW_GIT_SHA: ${{ github.sha }}" in weekly
     assert "needs.price-snapshot.outputs.price_snapshot_r2_prefix" in analytical
     assert "needs.price-snapshot.outputs.price_snapshot_sha256" in analytical
