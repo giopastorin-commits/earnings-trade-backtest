@@ -192,7 +192,7 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
     assert "          - OFFICIAL" not in weekly
     assert "concurrency:\n  group: trinity-weekly-production-v1" in weekly
     assert "schedule:" not in price and "schedule:" not in shadow
-    gate = weekly.split("  schedule-gate:", 1)[1].split("  cycle-guard:", 1)[0]
+    gate = weekly.split("  schedule-gate:", 1)[1].split("  infrastructure-preflight:", 1)[0]
     assert not any(secret in gate for secret in ("TWELVEDATA_API_KEY", "EODHD_API_KEY", "OPENAI_API_KEY"))
     price_job = weekly.split("  price-snapshot:", 1)[1].split("  analytical-production:", 1)[0]
     assert "TWELVEDATA_API_KEY" in price_job
@@ -203,12 +203,14 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
     assert analytical.index("validate-handoff") < analytical.index("cli restore-prices") < analytical.index("cli run")
     assert analytical.index("cli archive") < analytical.index("weekly_cycle complete") < analytical.index("notifications.telegram")
     assert "continue-on-error: true" in analytical
-    assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" in weekly
-    assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" in price
+    analytical_sha = "3ac9f94c260c7a348f533431bf3561967950075e"
+    assert f"TRINITY_ANALYTICAL_REF: {analytical_sha}" in weekly
+    assert f"TRINITY_ANALYTICAL_REF: {analytical_sha}" in price
+    assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" not in weekly + price
     checkout_action = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"
-    assert weekly.count(checkout_action) == weekly.count("persist-credentials: false") == 4
+    assert weekly.count(checkout_action) == weekly.count("persist-credentials: false") == 5
     assert price.count(checkout_action) == price.count("persist-credentials: false") == 1
-    assert weekly.count("ref: ${{ env.TRINITY_ANALYTICAL_REF }}") == 4
+    assert weekly.count("ref: ${{ env.TRINITY_ANALYTICAL_REF }}") == 5
     assert price.count("ref: ${{ env.TRINITY_ANALYTICAL_REF }}") == 1
     assert "TRINITY_WORKFLOW_GIT_SHA: ${{ github.sha }}" in weekly
     assert "needs.price-snapshot.outputs.price_snapshot_r2_prefix" in analytical
@@ -218,6 +220,55 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
                    "price_snapshot_r2_prefix"):
         assert f"{output}: ${{{{ steps.snapshot.outputs.{output} }}}}" in weekly
     assert "broker_execution\": False" in (root / "trinity" / "shadow" / "cli.py").read_text(encoding="utf-8")
+
+
+def test_workflow_live_preflight_is_default_and_blocks_full_smoke():
+    root = Path(__file__).resolve().parents[2]
+    weekly = (root / ".github" / "workflows" / "trinity-weekly-production.yml").read_text(
+        encoding="utf-8"
+    )
+    dispatch = weekly.split("jobs:", 1)[0]
+    assert "execution_scope:" in dispatch
+    assert "default: PREFLIGHT_ONLY" in dispatch
+    assert dispatch.count("- PREFLIGHT_ONLY") == 1
+    assert dispatch.count("- FULL_SMOKE") == 1
+    assert "- OFFICIAL" not in dispatch
+    assert "schedule:" not in dispatch and "cron:" not in dispatch
+
+    preflight = weekly.split("  infrastructure-preflight:", 1)[1].split("  cycle-guard:", 1)[0]
+    for name in (
+        "TRINITY_R2_ENDPOINT", "TRINITY_R2_ACCESS_KEY_ID",
+        "TRINITY_R2_SECRET_ACCESS_KEY", "TRINITY_BASELINE_PREFIX",
+        "TWELVEDATA_API_KEY", "OPENAI_API_KEY", "EODHD_API_KEY",
+    ):
+        assert name in preflight
+    assert preflight.index("pip install") < preflight.index("TWELVEDATA_API_KEY")
+    for output in (
+        "config_ready", "r2_ready", "baseline_ready", "twelvedata_quota_ready",
+        "required_daily_credits", "available_daily_credits", "analytical_sha",
+    ):
+        assert f"{output}: ${{{{ steps.preflight.outputs.{output} }}}}" in preflight
+
+    cycle = weekly.split("  cycle-guard:", 1)[1].split("  price-snapshot:", 1)[0]
+    price = weekly.split("  price-snapshot:", 1)[1].split("  analytical-production:", 1)[0]
+    assert "inputs.execution_scope == 'FULL_SMOKE'" in cycle
+    assert "needs.infrastructure-preflight.result == 'success'" in cycle
+    assert "inputs.execution_scope == 'FULL_SMOKE'" in price
+    assert "needs.infrastructure-preflight.outputs.config_ready == 'true'" in price
+    assert "needs.infrastructure-preflight.outputs.r2_ready == 'true'" in price
+    assert "needs.infrastructure-preflight.outputs.baseline_ready == 'true'" in price
+    assert "needs.infrastructure-preflight.outputs.twelvedata_quota_ready == 'true'" in price
+    assert (
+        "needs.infrastructure-preflight.outputs.analytical_sha == "
+        "'3ac9f94c260c7a348f533431bf3561967950075e'"
+    ) in price
+
+    analytical = weekly.split("  analytical-production:", 1)[1]
+    telegram = analytical.split(
+        "- name: Deliver committed post-archive Telegram notifications", 1
+    )[1].split("- name: Preserve analytical diagnostics", 1)[0]
+    assert "if: needs.schedule-gate.outputs.mode == 'OFFICIAL'" in telegram
+    assert "- OFFICIAL" not in dispatch
 
 
 def test_price_credit_or_archive_failure_cannot_start_analytics():

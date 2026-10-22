@@ -17,7 +17,7 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: "1"
-  TRINITY_ANALYTICAL_REF: trinity-live-validation-v1
+  TRINITY_ANALYTICAL_REF: 3ac9f94c260c7a348f533431bf3561967950075e
 
 jobs:
   refresh:
