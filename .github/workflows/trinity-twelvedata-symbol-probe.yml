@@ -1,0 +1,293 @@
+name: TRINITY Twelve Data Symbol Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_session:
+        description: Completed market session to inspect (YYYY-MM-DD)
+        required: true
+        default: "2026-10-22"
+        type: string
+      current_symbol:
+        description: Current security symbol
+        required: true
+        default: SKYD
+        type: string
+      legacy_symbol:
+        description: Historical security symbol used only if continuity requires it
+        required: true
+        default: PSKY
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trinity-twelvedata-symbol-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe one current symbol and optional historical alias
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the registered diagnostic definition
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up exact Python 3.13.15
+        # actions/setup-python v5.4.0
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.13.15"
+
+      - name: Probe Twelve Data without exposing credentials
+        id: probe
+        shell: bash
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          PROBE_TARGET_SESSION: ${{ inputs.target_session }}
+          PROBE_CURRENT_SYMBOL: ${{ inputs.current_symbol }}
+          PROBE_LEGACY_SYMBOL: ${{ inputs.legacy_symbol }}
+          PROBE_OUTPUT: ${{ runner.temp }}/twelvedata-symbol-probe.json
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          from datetime import date, datetime, timedelta, timezone
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import re
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          ENDPOINT = "https://api.twelvedata.com/time_series"
+          EFFECTIVE_DATE = date(2026, 10, 6)
+          LEGACY_LAST_DATE = date(2026, 10, 5)
+          HISTORY_CALENDAR_DAYS = 450
+          MINIMUM_SETUP_BARS = 201
+          SYMBOL = re.compile(r"^[A-Z][A-Z0-9.-]{0,14}$")
+
+          class ProbeError(RuntimeError):
+              pass
+
+          def required_env(name: str) -> str:
+              value = os.environ.get(name, "").strip()
+              if not value:
+                  raise ProbeError(f"required configuration is missing: {name}")
+              return value
+
+          def symbol_input(name: str) -> str:
+              value = required_env(name).upper()
+              if not SYMBOL.fullmatch(value):
+                  raise ProbeError(f"invalid symbol input: {name}")
+              return value
+
+          def number(value: object, field: str, symbol: str, day: str) -> float:
+              if value is None or isinstance(value, bool):
+                  raise ProbeError(f"{symbol}: invalid {field} on {day}")
+              try:
+                  parsed = float(value)
+              except (TypeError, ValueError) as exc:
+                  raise ProbeError(f"{symbol}: invalid {field} on {day}") from exc
+              if not math.isfinite(parsed):
+                  raise ProbeError(f"{symbol}: non-finite {field} on {day}")
+              return parsed
+
+          api_key = required_env("TWELVEDATA_API_KEY")
+          current_symbol = symbol_input("PROBE_CURRENT_SYMBOL")
+          legacy_symbol = symbol_input("PROBE_LEGACY_SYMBOL")
+          if current_symbol == legacy_symbol:
+              raise ProbeError("current and legacy symbols must differ")
+          try:
+              target_session = date.fromisoformat(required_env("PROBE_TARGET_SESSION"))
+          except ValueError as exc:
+              raise ProbeError("target_session must be an ISO date") from exc
+          history_start = target_session - timedelta(days=HISTORY_CALENDAR_DAYS)
+          request_end = target_session + timedelta(days=1)
+          external_calls = 0
+
+          def fetch(symbol: str) -> tuple[dict[str, object], tuple[date, ...]]:
+              global external_calls
+              if external_calls >= 2:
+                  raise ProbeError("provider call limit exceeded")
+              params = {
+                  "symbol": symbol,
+                  "interval": "1day",
+                  "adjust": "none",
+                  "start_date": history_start.isoformat(),
+                  "end_date": request_end.isoformat(),
+                  "outputsize": "5000",
+                  "apikey": api_key,
+              }
+              request = Request(
+                  ENDPOINT + "?" + urlencode(params),
+                  headers={"Accept": "application/json", "User-Agent": "TRINITY-symbol-probe/1"},
+              )
+              external_calls += 1
+              try:
+                  with urlopen(request, timeout=45) as response:
+                      status = int(response.status)
+                      raw = response.read()
+              except HTTPError as exc:
+                  raise ProbeError(f"{symbol}: provider HTTP failure status={exc.code}") from None
+              except URLError as exc:
+                  raise ProbeError(f"{symbol}: provider transport failure type={type(exc.reason).__name__}") from None
+              if status < 200 or status >= 300:
+                  raise ProbeError(f"{symbol}: provider HTTP failure status={status}")
+              try:
+                  payload = json.loads(raw)
+              except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                  raise ProbeError(f"{symbol}: provider response is not valid JSON") from exc
+              if not isinstance(payload, dict):
+                  raise ProbeError(f"{symbol}: provider response is not an object")
+              if payload.get("status") == "error":
+                  raise ProbeError(f"{symbol}: provider returned error code={payload.get('code')}")
+              meta = payload.get("meta")
+              values = payload.get("values")
+              if not isinstance(meta, dict) or not isinstance(values, list) or not values:
+                  raise ProbeError(f"{symbol}: provider response lacks metadata or bars")
+              returned_symbol = str(meta.get("symbol") or "").strip().upper()
+              if returned_symbol != symbol:
+                  raise ProbeError(
+                      f"{symbol}: returned identity mismatch ({returned_symbol or '<missing>'})"
+                  )
+              dates: list[date] = []
+              seen: set[date] = set()
+              for row in values:
+                  if not isinstance(row, dict):
+                      raise ProbeError(f"{symbol}: non-object OHLCV row")
+                  day_text = str(row.get("datetime") or row.get("date") or "")
+                  try:
+                      day = date.fromisoformat(day_text)
+                  except ValueError as exc:
+                      raise ProbeError(f"{symbol}: invalid bar date") from exc
+                  if day < history_start or day > target_session or day in seen:
+                      raise ProbeError(f"{symbol}: invalid or duplicate bar date {day_text}")
+                  seen.add(day)
+                  open_value = number(row.get("open"), "open", symbol, day_text)
+                  high = number(row.get("high"), "high", symbol, day_text)
+                  low = number(row.get("low"), "low", symbol, day_text)
+                  close = number(row.get("close"), "close", symbol, day_text)
+                  volume = number(row.get("volume"), "volume", symbol, day_text)
+                  if min(open_value, high, low, close) <= 0 or volume < 0:
+                      raise ProbeError(f"{symbol}: non-positive OHLC or negative volume on {day_text}")
+                  if high < max(open_value, low, close) or low > min(open_value, high, close):
+                      raise ProbeError(f"{symbol}: inconsistent OHLC range on {day_text}")
+                  dates.append(day)
+              dates.sort()
+              result: dict[str, object] = {
+                  "requested_symbol": symbol,
+                  "returned_symbol": returned_symbol,
+                  "exchange": str(meta.get("exchange")).strip() if meta.get("exchange") else None,
+                  "mic_code": str(meta.get("mic_code")).strip() if meta.get("mic_code") else None,
+                  "currency": str(meta.get("currency")).strip() if meta.get("currency") else None,
+                  "first_valid_date": dates[0].isoformat(),
+                  "last_valid_date": dates[-1].isoformat(),
+                  "valid_bar_count": len(dates),
+                  "has_target_session": target_session in seen,
+                  "has_at_least_201_bars": len(dates) >= MINIMUM_SETUP_BARS,
+              }
+              return result, tuple(dates)
+
+          current_result, current_dates = fetch(current_symbol)
+          current_sufficient = (
+              current_result["has_target_session"] is True
+              and current_result["has_at_least_201_bars"] is True
+              and current_dates[0] < EFFECTIVE_DATE
+          )
+          legacy_result: dict[str, object] | None = None
+          stitched_bar_count: int | None = None
+          if current_sufficient:
+              history_strategy = "SINGLE_SKYD_SERIES"
+          else:
+              legacy_result, legacy_dates = fetch(legacy_symbol)
+              legacy_segment = tuple(day for day in legacy_dates if day <= LEGACY_LAST_DATE)
+              current_segment = tuple(day for day in current_dates if day >= EFFECTIVE_DATE)
+              if set(legacy_segment).intersection(current_segment):
+                  raise ProbeError("legacy/current history segments overlap")
+              stitched = legacy_segment + current_segment
+              if tuple(sorted(stitched)) != stitched or len(set(stitched)) != len(stitched):
+                  raise ProbeError("stitched history is not unique and deterministic")
+              stitched_bar_count = len(stitched)
+              history_strategy = (
+                  "STITCH_PSKY_SKYD"
+                  if len(stitched) >= MINIMUM_SETUP_BARS and target_session in current_segment
+                  else "INSUFFICIENT_PROVIDER_HISTORY"
+              )
+
+          result = {
+              "schema_name": "trinity.twelvedata-symbol-probe",
+              "schema_version": "1",
+              "target_session": target_session.isoformat(),
+              "request_start_date": history_start.isoformat(),
+              "request_end_date_exclusive": request_end.isoformat(),
+              "current_symbol": current_symbol,
+              "legacy_symbol": legacy_symbol,
+              "current_result": current_result,
+              "legacy_result": legacy_result,
+              "stitched_valid_bar_count": stitched_bar_count,
+              "history_strategy": history_strategy,
+              "external_calls_count": external_calls,
+              "probe_completed_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+          serialized = json.dumps(
+              result, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+          ).encode("utf-8")
+          lowered = serialized.lower()
+          if api_key.encode("utf-8") in serialized or any(
+              marker in lowered
+              for marker in (b"apikey", b"authorization", b"http://", b"https://")
+          ):
+              raise ProbeError("sanitized artifact contains forbidden credential or transport material")
+          output_path = Path(required_env("PROBE_OUTPUT"))
+          output_path.write_bytes(serialized + b"\n")
+          print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"history_strategy={history_strategy}\n")
+              output.write(f"external_calls_count={external_calls}\n")
+          PY
+
+      - name: Verify sanitized artifact schema
+        shell: bash
+        env:
+          PROBE_OUTPUT: ${{ runner.temp }}/twelvedata-symbol-probe.json
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PROBE_OUTPUT"])
+          payload = json.loads(path.read_bytes())
+          expected = {
+              "schema_name", "schema_version", "target_session", "request_start_date",
+              "request_end_date_exclusive", "current_symbol", "legacy_symbol",
+              "current_result", "legacy_result", "stitched_valid_bar_count",
+              "history_strategy", "external_calls_count", "probe_completed_at_utc",
+          }
+          if set(payload) != expected:
+              raise SystemExit("unexpected sanitized artifact schema")
+          forbidden = ("apikey", "authorization", "http://", "https://")
+          text = path.read_text(encoding="utf-8").lower()
+          if any(item in text for item in forbidden):
+              raise SystemExit("forbidden credential or transport material in artifact")
+          print("SANITIZED_ARTIFACT=VERIFIED")
+          PY
+
+      - name: Upload sanitized symbol-probe evidence
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: trinity-twelvedata-symbol-probe-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/twelvedata-symbol-probe.json
+          if-no-files-found: error
+          retention-days: 30
