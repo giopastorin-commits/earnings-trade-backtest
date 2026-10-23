@@ -32,7 +32,7 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: "1"
-  TRINITY_ANALYTICAL_REF: 3ac9f94c260c7a348f533431bf3561967950075e
+  TRINITY_ANALYTICAL_REF: f2922598321a72fc1c3f500f14570ed54e04f433
   TRINITY_ORCHESTRATOR_METHOD: TRINITY_WEEKLY_ORCHESTRATOR_V1
 
 jobs:
@@ -47,6 +47,7 @@ jobs:
       target_market_session: ${{ steps.gate.outputs.target_market_session }}
       target_session_open_utc: ${{ steps.gate.outputs.target_session_open_utc }}
       target_session_close_utc: ${{ steps.gate.outputs.target_session_close_utc }}
+      target_session_resolution: ${{ steps.gate.outputs.target_session_resolution }}
       session_calendar: ${{ steps.gate.outputs.session_calendar }}
       session_calendar_version: ${{ steps.gate.outputs.session_calendar_version }}
     steps:
@@ -71,11 +72,13 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_SCHEDULE: ${{ github.event.schedule }}
           REQUESTED_MODE: ${{ inputs.mode }}
+          EXECUTION_SCOPE: ${{ inputs.execution_scope }}
           MANUAL_MONDAY: ${{ inputs.intended_monday }}
         run: |
           args=(--event-name "$EVENT_NAME" --run-started-at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')")
           [[ -n "$EVENT_SCHEDULE" ]] && args+=(--event-schedule "$EVENT_SCHEDULE")
           [[ -n "$REQUESTED_MODE" ]] && args+=(--mode "$REQUESTED_MODE")
+          [[ -n "$EXECUTION_SCOPE" ]] && args+=(--execution-scope "$EXECUTION_SCOPE")
           [[ -n "$MANUAL_MONDAY" ]] && args+=(--manual-monday "$MANUAL_MONDAY")
           python -m trinity.shadow.weekly_schedule "${args[@]}"
 
@@ -174,7 +177,7 @@ jobs:
       needs.infrastructure-preflight.outputs.r2_ready == 'true' &&
       needs.infrastructure-preflight.outputs.baseline_ready == 'true' &&
       needs.infrastructure-preflight.outputs.twelvedata_quota_ready == 'true' &&
-      needs.infrastructure-preflight.outputs.analytical_sha == '3ac9f94c260c7a348f533431bf3561967950075e' &&
+      needs.infrastructure-preflight.outputs.analytical_sha == 'f2922598321a72fc1c3f500f14570ed54e04f433' &&
       needs.cycle-guard.outputs.eligible == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 140
@@ -269,6 +272,7 @@ jobs:
       TRINITY_TARGET_MARKET_SESSION: ${{ needs.price-snapshot.outputs.target_market_session }}
       TRINITY_TARGET_SESSION_OPEN_UTC: ${{ needs.schedule-gate.outputs.target_session_open_utc }}
       TRINITY_TARGET_SESSION_CLOSE_UTC: ${{ needs.schedule-gate.outputs.target_session_close_utc }}
+      TRINITY_TARGET_SESSION_RESOLUTION: ${{ needs.schedule-gate.outputs.target_session_resolution }}
       TRINITY_SESSION_CALENDAR: ${{ needs.schedule-gate.outputs.session_calendar }}
       TRINITY_SESSION_CALENDAR_VERSION: ${{ needs.schedule-gate.outputs.session_calendar_version }}
       TRINITY_ANALYTICAL_GIT_SHA: ${{ needs.price-snapshot.outputs.analytical_commit }}
