@@ -32,7 +32,7 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: "1"
-  TRINITY_ANALYTICAL_REF: f2922598321a72fc1c3f500f14570ed54e04f433
+  TRINITY_ANALYTICAL_REF: ef4572960a2f22c1c0bf0fd5445de922c1474a35
   TRINITY_ORCHESTRATOR_METHOD: TRINITY_WEEKLY_ORCHESTRATOR_V1
 
 jobs:
@@ -101,6 +101,7 @@ jobs:
       required_daily_credits: ${{ steps.preflight.outputs.required_daily_credits }}
       available_daily_credits: ${{ steps.preflight.outputs.available_daily_credits }}
       analytical_sha: ${{ steps.preflight.outputs.analytical_sha }}
+      sec_compact_status: ${{ steps.preflight.outputs.sec_compact_status }}
     steps:
       - name: Check out immutable analytical preflight implementation
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -177,7 +178,7 @@ jobs:
       needs.infrastructure-preflight.outputs.r2_ready == 'true' &&
       needs.infrastructure-preflight.outputs.baseline_ready == 'true' &&
       needs.infrastructure-preflight.outputs.twelvedata_quota_ready == 'true' &&
-      needs.infrastructure-preflight.outputs.analytical_sha == 'f2922598321a72fc1c3f500f14570ed54e04f433' &&
+      needs.infrastructure-preflight.outputs.analytical_sha == 'ef4572960a2f22c1c0bf0fd5445de922c1474a35' &&
       needs.cycle-guard.outputs.eligible == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 140
