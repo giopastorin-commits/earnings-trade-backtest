@@ -11,6 +11,9 @@ import pytest
 from trinity.shadow.live_preflight import (
     LivePreflightError,
     PROBE_BYTES,
+    SEC_COMPACT_ABSENT_OPTIONAL,
+    SEC_COMPACT_EMPTY_OPTIONAL,
+    SEC_COMPACT_PRESENT_VALID,
     run_live_preflight,
 )
 from trinity.twelvedata_prices import required_daily_credits
@@ -126,6 +129,8 @@ def test_success_verifies_r2_baseline_sec_and_full_universe_quota(tmp_path):
     assert result.required_daily_credits == required_daily_credits(518) == 550
     assert result.available_daily_credits == 550
     assert result.analytical_sha == ANALYTICAL_SHA
+    assert result.sec_compact_status == SEC_COMPACT_PRESENT_VALID
+    assert result.outputs()["sec_compact_status"] == SEC_COMPACT_PRESENT_VALID
     key = "preflight/github_run_id=12345/attempt=2/probe.bin"
     assert client.deleted == [key] and key not in client.objects
     assert hashlib.sha256(PROBE_BYTES).hexdigest()
@@ -161,22 +166,74 @@ def test_baseline_restore_failure_blocks_before_quota(tmp_path):
     assert not td_called
 
 
-def test_missing_or_unusable_sec_compact_blocks(tmp_path):
+def test_absent_optional_sec_compact_does_not_block_live_preflight(tmp_path):
+    quota_calls = []
+
     def missing(_client, _bucket, _prefix, destination):
         Path(destination).mkdir(parents=True)
         return {}
 
-    with pytest.raises(LivePreflightError, match="lacks sec_compact directory"):
-        _run(tmp_path / "missing", restore=missing)
+    class TD:
+        def __init__(self, *, api_key):
+            assert api_key == "td-secret"
 
-    def unusable(_client, _bucket, _prefix, destination):
-        path = Path(destination) / "sec_compact" / "AAA" / "sec" / "manifest.json"
-        path.parent.mkdir(parents=True)
-        path.write_text('{"companies":{"BBB":{}}}')
+        def fetch_api_usage(self):
+            quota_calls.append("api_usage")
+            return SimpleNamespace(daily_remaining=550)
+
+    client = _R2()
+    result = run_live_preflight(
+        tmp_path / "missing" / "preflight",
+        environ=_env(),
+        r2_factory=lambda: (client, "trinity-raw"),
+        baseline_restorer=missing,
+        twelvedata_factory=TD,
+    )
+    assert result.sec_compact_status == SEC_COMPACT_ABSENT_OPTIONAL
+    assert result.r2_ready and result.baseline_ready and result.twelvedata_quota_ready
+    assert quota_calls == ["api_usage"]
+    assert client.deleted == ["preflight/github_run_id=12345/attempt=2/probe.bin"]
+
+
+def test_empty_optional_sec_compact_does_not_block_live_preflight(tmp_path):
+    def empty(_client, _bucket, _prefix, destination):
+        (Path(destination) / "sec_compact").mkdir(parents=True)
         return {}
 
-    with pytest.raises(LivePreflightError, match="invalid sec_compact evidence"):
-        _run(tmp_path / "unusable", restore=unusable)
+    result, client = _run(tmp_path, restore=empty)
+    assert result.sec_compact_status == SEC_COMPACT_EMPTY_OPTIONAL
+    assert result.r2_ready and result.baseline_ready and result.twelvedata_quota_ready
+    assert client.deleted
+
+
+def test_sec_compact_files_without_ticker_manifest_fail_closed(tmp_path):
+    def orphaned(_client, _bucket, _prefix, destination):
+        path = Path(destination) / "sec_compact" / "AAA" / "sec" / "orphan.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{}", encoding="utf-8")
+        return {}
+
+    with pytest.raises(LivePreflightError, match="files but no ticker manifests"):
+        _run(tmp_path, restore=orphaned)
+
+
+@pytest.mark.parametrize(("payload", "pattern"), [
+    ("{", "invalid sec_compact evidence"),
+    (json.dumps({}), "invalid sec_compact companies"),
+    (json.dumps({"companies": {"BBB": {}}}), "invalid sec_compact company"),
+    (json.dumps({"companies": {"AAA": []}}), "invalid sec_compact company"),
+    (json.dumps({"companies": {"AAA": {"company": "   "}}}), "invalid sec_compact company name"),
+    (json.dumps({"companies": {"AAA": {"documents": {}}}}), "invalid sec_compact documents"),
+])
+def test_present_malformed_sec_compact_fails_closed(tmp_path, payload, pattern):
+    def malformed(_client, _bucket, _prefix, destination):
+        path = Path(destination) / "sec_compact" / "AAA" / "sec" / "manifest.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(payload, encoding="utf-8")
+        return {}
+
+    with pytest.raises(LivePreflightError, match=pattern):
+        _run(tmp_path, restore=malformed)
 
 
 def test_credit_below_threshold_blocks_and_equal_threshold_passes(tmp_path):

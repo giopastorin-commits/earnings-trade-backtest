@@ -33,6 +33,9 @@ REQUIRED_CONFIGURATION = (
 DEFAULT_R2_BUCKET = "trinity-raw"
 PROBE_BYTES = b"TRINITY_P1_LIVE_READINESS_PROBE_V1\n"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SEC_COMPACT_ABSENT_OPTIONAL = "ABSENT_OPTIONAL"
+SEC_COMPACT_EMPTY_OPTIONAL = "EMPTY_OPTIONAL"
+SEC_COMPACT_PRESENT_VALID = "PRESENT_VALID"
 
 
 class LivePreflightError(RuntimeError):
@@ -48,6 +51,7 @@ class LivePreflightResult:
     required_daily_credits: int
     available_daily_credits: int
     analytical_sha: str
+    sec_compact_status: str
 
     def outputs(self) -> dict[str, str]:
         return {
@@ -58,6 +62,7 @@ class LivePreflightResult:
             "required_daily_credits": str(self.required_daily_credits),
             "available_daily_credits": str(self.available_daily_credits),
             "analytical_sha": self.analytical_sha,
+            "sec_compact_status": self.sec_compact_status,
         }
 
 
@@ -112,26 +117,37 @@ def _verify_r2_probe(client: Any, bucket: str, key: str) -> None:
         ) from primary_error
 
 
-def _verify_sec_compact(root: Path) -> None:
+def _verify_sec_compact(root: Path) -> str:
+    """Validate an optional cached SEC tree without making it a dependency."""
+
     sec_root = root / "sec_compact"
+    if not sec_root.exists():
+        return SEC_COMPACT_ABSENT_OPTIONAL
     if not sec_root.is_dir():
-        raise LivePreflightError("restored baseline lacks sec_compact directory")
+        raise LivePreflightError("present sec_compact path is not a directory")
     manifests = sorted(sec_root.glob("*/sec/manifest.json"))
     if not manifests:
-        raise LivePreflightError("restored baseline lacks sec_compact evidence")
-    usable = 0
+        if any(path.is_file() for path in sec_root.rglob("*")):
+            raise LivePreflightError("present sec_compact contains files but no ticker manifests")
+        return SEC_COMPACT_EMPTY_OPTIONAL
     for path in manifests:
         ticker = path.parents[1].name
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-            company = value["companies"][ticker]
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise LivePreflightError(f"invalid sec_compact evidence for {ticker}") from exc
-        if not isinstance(company, dict) or not str(company.get("company") or "").strip():
-            raise LivePreflightError(f"unusable sec_compact evidence for {ticker}")
-        usable += 1
-    if usable == 0:
-        raise LivePreflightError("restored baseline has no usable sec_compact evidence")
+        if not isinstance(value, dict) or not isinstance(value.get("companies"), dict):
+            raise LivePreflightError(f"invalid sec_compact companies for {ticker}")
+        company = value["companies"].get(ticker)
+        if not isinstance(company, dict):
+            raise LivePreflightError(f"invalid sec_compact company for {ticker}")
+        if "company" in company and (
+            not isinstance(company["company"], str) or not company["company"].strip()
+        ):
+            raise LivePreflightError(f"invalid sec_compact company name for {ticker}")
+        if "documents" in company and not isinstance(company["documents"], list):
+            raise LivePreflightError(f"invalid sec_compact documents for {ticker}")
+    return SEC_COMPACT_PRESENT_VALID
 
 
 def run_live_preflight(
@@ -162,7 +178,7 @@ def run_live_preflight(
         raise LivePreflightError("R2 client bucket does not match configured bucket")
     baseline_root = root / "baseline"
     baseline_restorer(client, bucket, prefix, baseline_root)
-    _verify_sec_compact(baseline_root)
+    sec_compact_status = _verify_sec_compact(baseline_root)
     _verify_r2_probe(client, bucket, _probe_key(env))
 
     ticker_count = len(REGISTRY.supported)
@@ -181,6 +197,7 @@ def run_live_preflight(
         required_daily_credits=required,
         available_daily_credits=available,
         analytical_sha=analytical_sha,
+        sec_compact_status=sec_compact_status,
     )
 
 
@@ -199,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in REQUIRED_CONFIGURATION:
         print(f"{name}=CONFIGURED" if os.getenv(name, "").strip() else f"{name}=MISSING")
     result = run_live_preflight(args.output_root)
+    print(f"SEC_COMPACT={result.sec_compact_status}")
     print(
         "TWELVEDATA_QUOTA="
         f"available={result.available_daily_credits} "

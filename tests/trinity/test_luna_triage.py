@@ -18,7 +18,12 @@ from trinity.pilots.luna_triage import (
     run_triage,
     validate_reply,
     FreshTriageSources,
+    compact_sec,
 )
+
+
+def test_compact_sec_missing_optional_cache_returns_no_evidence(tmp_path):
+    assert compact_sec("AAA", tmp_path / "missing-sec-cache") == (None, [])
 
 
 def test_live_news_uses_monday_research_cutoff_not_friday_price_session(tmp_path):
