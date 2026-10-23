@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-DEFAULT_REGISTRY = Path(__file__).with_name("usa_issuer_registry_v1.fixture")
+DEFAULT_REGISTRY = Path(__file__).with_name("usa_issuer_registry_v2.fixture")
 REGISTRY_SCHEMA = "trinity.usa-issuer-registry"
 REGISTRY_VERSION = "1"
 

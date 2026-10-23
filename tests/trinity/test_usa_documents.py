@@ -1,20 +1,59 @@
 """Deterministic document coverage tests for TRINITY USA V2."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from trinity.usa_documents import (
-    DEFAULT_CACHE, ORIGINAL_SEC_TICKERS, SEC_COMPANIES, SECAcquisitionError, _selected_filings,
-    _submission_documents, extract_xbrl_facts, load_document_coverage,
+    DEFAULT_CACHE, ORIGINAL_SEC_TICKERS, SEC_COMPANIES, SECAcquisitionError,
+    _selected_filings, _submission_documents, acquire_sec_documents,
+    extract_xbrl_facts, load_document_coverage,
 )
 from trinity.usa_v2 import AS_OF, load_company
 
 
 class USADocumentCoverageTests(unittest.TestCase):
+    def test_skyd_sec_acquisition_uses_continuing_paramount_cik(self):
+        submissions = json.dumps({
+            "name": "Paramount Skydance Corp",
+            "filings": {"recent": {"filingDate": []}},
+        }).encode()
+        companyfacts = json.dumps({"facts": {}}).encode()
+
+        class Response:
+            def __init__(self, content):
+                self.content = content
+
+            def raise_for_status(self):
+                return None
+
+        class Session:
+            def __init__(self):
+                self.headers = {}
+                self.urls = []
+
+            def get(self, url, timeout):
+                self.urls.append((url, timeout))
+                return Response(companyfacts if "companyfacts" in url else submissions)
+
+        with tempfile.TemporaryDirectory() as directory:
+            session = Session()
+            with patch("trinity.usa_documents.time.sleep", return_value=None):
+                manifest_path = acquire_sec_documents(
+                    "2026-10-22", cache_dir=directory, session=session, tickers=("SKYD",),
+                    now=datetime(2026, 10, 23, tzinfo=timezone.utc),
+                )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(SEC_COMPANIES["SKYD"][0], "0002041610")
+        self.assertNotIn("PSKY", SEC_COMPANIES)
+        self.assertEqual(manifest["companies"]["SKYD"]["cik"], "0002041610")
+        self.assertEqual(len(session.urls), 2)
+        self.assertTrue(all("CIK0002041610" in url for url, _timeout in session.urls))
+
     def test_selects_periodic_two_earnings_and_material_filing(self):
         rows = [
             {"form": "8-K", "filingDate": "2026-08-20", "items": "8.01"},

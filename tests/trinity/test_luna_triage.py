@@ -20,10 +20,17 @@ from trinity.pilots.luna_triage import (
     FreshTriageSources,
     compact_sec,
 )
+from trinity.pilots.pre_research import load_canonical_universe
 
 
 def test_compact_sec_missing_optional_cache_returns_no_evidence(tmp_path):
     assert compact_sec("AAA", tmp_path / "missing-sec-cache") == (None, [])
+
+
+def test_live_skyd_luna_mapping_uses_eodhd_provider_symbol():
+    mapping = {member.ticker: member.provider_ticker for member in load_canonical_universe()}
+    assert mapping["SKYD"] == "SKYD.US"
+    assert "PSKY" not in mapping
 
 
 def test_live_news_uses_monday_research_cutoff_not_friday_price_session(tmp_path):

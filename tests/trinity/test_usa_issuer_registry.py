@@ -1,9 +1,13 @@
 import json
+import hashlib
+from pathlib import Path
 
 import pytest
 
+from trinity.pilots.pre_research import load_canonical_universe
 from trinity.usa_documents import SEC_COMPANIES
 from trinity.usa_issuer_registry import (
+    DEFAULT_REGISTRY,
     IssuerRegistryError,
     REGISTRY,
     get_issuer,
@@ -59,6 +63,49 @@ def test_canonical_registry_has_exact_518_supported_tickers():
     assert not REGISTRY.unsupported
     assert len(COMPANIES) == 518
     assert len(SEC_COMPANIES) == 518
+
+
+def test_default_live_registry_promotes_skyd_with_auditable_psky_lineage():
+    assert DEFAULT_REGISTRY.name == "usa_issuer_registry_v2.fixture"
+    assert REGISTRY.get("PSKY") is None
+    issuer = get_issuer("SKYD")
+    assert issuer.provider_symbol == "SKYD.US"
+    assert issuer.sec_cik == "0002041610"
+    assert issuer.sec_ticker == "PSKY"
+    assert issuer.provenance == {
+        "canonical_mapping_sha256": "2e9d0e0ec05d16d1ba523a8d74483a912767c2a4a4911fe3fe3126a56d02faa5",
+        "constituent_identity_sha256": "8a5d2dfb3d291e39c4065007c3b10b41ae7957abf5e5be668f04e9c50a20b587",
+        "sec_ticker_source_sha256": "2b428c1502b616046f17d0d035d33ace052de5fc31e6a2c2cdcdd8c2fc32287a",
+        "sec_cik_source": "SEC company_tickers_exchange.json",
+        "sec_submissions_sha256": "63316a7f86afa9246818cb390f0fbf6b035c5b3a255ea673e61291333fcd64dd",
+        "sec_submissions_url": "https://data.sec.gov/submissions/CIK0002041610.json",
+        "previous_canonical_ticker": "PSKY",
+        "identity_change": "PSKY->SKYD",
+        "identity_effective_date": "2026-10-06",
+        "identity_probe_run_id": "39970559903",
+        "identity_probe_exchange": "NYSE",
+        "identity_probe_mic": "XNYS",
+        "identity_probe_first_valid_date": "2025-07-29",
+        "identity_probe_last_valid_date": "2026-10-22",
+        "sec_ticker_identity_status": "HISTORICAL_SOURCE_VALUE_PRESERVED",
+    }
+
+
+def test_live_universe_maps_skyd_to_eodhd_identity_and_excludes_psky():
+    mapping = {member.ticker: member.provider_ticker for member in load_canonical_universe()}
+    assert len(mapping) == 518
+    assert mapping["SKYD"] == "SKYD.US"
+    assert "PSKY" not in mapping
+
+
+def test_historical_v1_registry_remains_byte_identical_and_retains_psky():
+    historical = Path(__file__).parents[2] / "trinity" / "usa_issuer_registry_v1.fixture"
+    assert hashlib.sha256(historical.read_bytes()).hexdigest() == (
+        "ccadc756df22a3e868e62b20aeef22dd3ad6a872dd5611f0a4846dc2c1a147c8"
+    )
+    registry = load_registry(historical)
+    assert registry.require_supported("PSKY").provider_symbol == "PSKY.US"
+    assert registry.get("SKYD") is None
 
 
 @pytest.mark.parametrize("ticker,cik,name", [

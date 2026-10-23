@@ -120,6 +120,20 @@ def test_response_normalization_is_ascending_raw_ohlcv_only():
     assert set(capture.bars[0]) == {"date", "open", "high", "low", "close", "volume"}
 
 
+def test_live_skyd_payload_is_active_complete_and_stale_active_data_still_blocks():
+    target = date(2026, 10, 22)
+    complete = normalize_response(
+        "SKYD", _payload("SKYD", [_row("2026-10-22"), _row("2026-10-21")]),
+        target_session=target,
+    )
+    stale = normalize_response(
+        "SKYD", _payload("SKYD", [_row("2026-10-16")]), target_session=target,
+    )
+    assert complete.provider_symbol == "SKYD"
+    assert complete.classification == "ACTIVE_COMPLETE"
+    assert stale.classification == "ACTIVE_MISSING_LATEST"
+
+
 def test_adjust_none_and_exclusive_end_are_enforced_for_bf_and_brk():
     client, session = _client([_Response(_payload("BF.B")), _Response(_payload("BRK.B"))])
     for ticker in ("BF.B", "BRK.B"):
@@ -427,6 +441,9 @@ def test_mocked_518_credit_successful_path_remains_ready(tmp_path):
         credit_events = []
         daily_remaining = 799
 
+        def __init__(self):
+            self.requested_symbols = []
+
         def fetch_api_usage(self):
             return ApiUsageCapture(
                 usage={
@@ -439,6 +456,7 @@ def test_mocked_518_credit_successful_path_remains_ready(tmp_path):
             )
 
         def fetch(self, symbol, **_kwargs):
+            self.requested_symbols.append(symbol)
             self.daily_remaining -= 1
             if symbol == "WBD":
                 stale = {
@@ -450,11 +468,15 @@ def test_mocked_518_credit_successful_path_remains_ready(tmp_path):
                 raw = _payload(symbol)
             return ProviderCapture(raw, ({"attempt": 1, "http_status": 200},))
 
+    client = FullClient()
     manifest = acquire_snapshot(
         target_session=TARGET, output_root=tmp_path / "full", run_id="full-mock",
-        client=FullClient(), now=lambda: datetime(2026, 10, 9, tzinfo=timezone.utc),
+        client=client, now=lambda: datetime(2026, 10, 9, tzinfo=timezone.utc),
     )
     assert manifest["canonical_ticker_count"] == 518
     assert manifest["active_complete_count"] == 517
     assert manifest["explicit_exception_count"] == 1
     assert manifest["coverage_gate"]["ready"] is True
+    assert len(client.requested_symbols) == 518
+    assert "SKYD" in client.requested_symbols
+    assert "PSKY" not in client.requested_symbols
