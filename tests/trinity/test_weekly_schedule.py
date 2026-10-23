@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -12,7 +12,9 @@ from trinity.shadow.weekly_cycle import (
     validate_snapshot_handoff, write_official_completion_marker,
 )
 from trinity.shadow.weekly_schedule import (
-    CONTRACT_VERSION, decide_weekly_schedule, resolve_completed_xnys_session,
+    CONTRACT_VERSION, FINALITY_GRACE, SMOKE_TARGET_RESOLUTION,
+    WEEKLY_TARGET_RESOLUTION, decide_weekly_schedule, resolve_completed_xnys_session,
+    resolve_latest_final_xnys_session,
 )
 
 
@@ -86,6 +88,94 @@ def test_europe_us_dst_transition_difference_is_calendar_safe():
     assert result.expected_schedule == "0 11 * * 1"  # Rome is CET; New York still EDT.
     assert result.target_market_session == "2026-10-23"
     assert result.target_session_close_utc.endswith("20:00:00Z")
+    assert result.target_session_resolution == WEEKLY_TARGET_RESOLUTION
+
+
+def test_validation_full_smoke_uses_latest_final_session_not_intended_week():
+    result = decide_weekly_schedule(
+        event_name="workflow_dispatch", event_schedule=None,
+        run_started_at=datetime(2026, 10, 23, 7, 42, tzinfo=timezone.utc),
+        manual_monday=date(2026, 10, 19), requested_mode="VALIDATION",
+        execution_scope="FULL_SMOKE",
+    )
+    assert result.intended_monday == "2026-10-19"
+    assert result.target_market_session == "2026-10-22"
+    assert result.target_session_open_utc == "2026-10-22T13:30:00Z"
+    assert result.target_session_close_utc == "2026-10-22T20:00:00Z"
+    assert result.target_session_resolution == SMOKE_TARGET_RESOLUTION
+    assert result.execution_scope == "FULL_SMOKE"
+
+
+def test_latest_final_session_obeys_exact_close_plus_twenty_boundary():
+    before = resolve_latest_final_xnys_session(
+        datetime(2026, 10, 23, 20, 19, 59, tzinfo=timezone.utc)
+    )
+    exact = resolve_latest_final_xnys_session(
+        datetime(2026, 10, 23, 20, 20, tzinfo=timezone.utc)
+    )
+    after = resolve_latest_final_xnys_session(
+        datetime(2026, 10, 23, 20, 20, 1, tzinfo=timezone.utc)
+    )
+    assert before["target_market_session"] == "2026-10-22"
+    assert exact["target_market_session"] == "2026-10-23"
+    assert after["target_market_session"] == "2026-10-23"
+    assert FINALITY_GRACE == timedelta(minutes=20)
+
+
+@pytest.mark.parametrize(("started", "expected", "close"), [
+    (datetime(2026, 10, 25, 12, tzinfo=timezone.utc), "2026-10-23", "20:00:00Z"),
+    (datetime(2026, 11, 26, 20, tzinfo=timezone.utc), "2026-11-25", "21:00:00Z"),
+    (datetime(2026, 11, 27, 18, 19, 59, tzinfo=timezone.utc), "2026-11-25", "21:00:00Z"),
+    (datetime(2026, 11, 27, 18, 20, tzinfo=timezone.utc), "2026-11-27", "18:00:00Z"),
+    (datetime(2026, 10, 30, 20, 20, tzinfo=timezone.utc), "2026-10-30", "20:00:00Z"),
+    (datetime(2026, 11, 2, 21, 20, tzinfo=timezone.utc), "2026-11-02", "21:00:00Z"),
+    (datetime(2027, 1, 1, 12, tzinfo=timezone.utc), "2026-12-31", "21:00:00Z"),
+])
+def test_latest_final_session_calendar_edges(started, expected, close):
+    result = resolve_latest_final_xnys_session(started)
+    assert result["target_market_session"] == expected
+    assert result["target_session_close_utc"].endswith(close)
+
+
+def test_execution_scope_preserves_weekly_paths_and_rejects_unsafe_combinations():
+    preflight = decide_weekly_schedule(
+        event_name="workflow_dispatch", event_schedule=None,
+        run_started_at=datetime(2026, 10, 23, 7, 42, tzinfo=timezone.utc),
+        manual_monday=date(2026, 10, 19), requested_mode="VALIDATION",
+        execution_scope="PREFLIGHT_ONLY",
+    )
+    official = decide_weekly_schedule(
+        event_name="workflow_dispatch", event_schedule=None,
+        run_started_at=datetime(2026, 10, 23, 7, 42, tzinfo=timezone.utc),
+        manual_monday=date(2026, 10, 19), requested_mode="OFFICIAL",
+        execution_scope="PREFLIGHT_ONLY",
+    )
+    scheduled = decide_weekly_schedule(
+        event_name="schedule", event_schedule="0 10 * * 1",
+        run_started_at=datetime(2026, 10, 19, 10, tzinfo=timezone.utc),
+        manual_monday=date(2026, 10, 19), requested_mode="OFFICIAL",
+    )
+    assert preflight.target_market_session == "2026-10-16"
+    assert official.target_market_session == "2026-10-16"
+    assert scheduled.target_market_session == "2026-10-16"
+    assert {
+        preflight.target_session_resolution, official.target_session_resolution,
+        scheduled.target_session_resolution,
+    } == {WEEKLY_TARGET_RESOLUTION}
+    with pytest.raises(ValueError, match="restricted to VALIDATION"):
+        decide_weekly_schedule(
+            event_name="workflow_dispatch", event_schedule=None,
+            run_started_at=datetime(2026, 10, 23, 7, 42, tzinfo=timezone.utc),
+            manual_monday=date(2026, 10, 19), requested_mode="OFFICIAL",
+            execution_scope="FULL_SMOKE",
+        )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        decide_weekly_schedule(
+            event_name="workflow_dispatch", event_schedule=None,
+            run_started_at=datetime(2026, 10, 23, 7, 42),
+            manual_monday=date(2026, 10, 19), requested_mode="VALIDATION",
+            execution_scope="FULL_SMOKE",
+        )
 
 
 def test_manual_modes_and_monday_validation():
@@ -164,6 +254,7 @@ def test_validation_never_creates_official_marker_or_benchmark_observation(monke
         "TRINITY_TARGET_MARKET_SESSION": "2026-10-09",
         "TRINITY_TARGET_SESSION_OPEN_UTC": "2026-10-09T13:30:00Z",
         "TRINITY_TARGET_SESSION_CLOSE_UTC": "2026-10-09T20:00:00Z",
+        "TRINITY_TARGET_SESSION_RESOLUTION": WEEKLY_TARGET_RESOLUTION,
         "TRINITY_SESSION_CALENDAR": "XNYS",
         "TRINITY_SESSION_CALENDAR_VERSION": "4.13.2",
         "TRINITY_ANALYTICAL_GIT_SHA": "a" * 40,
@@ -172,6 +263,7 @@ def test_validation_never_creates_official_marker_or_benchmark_observation(monke
     for key, value in values.items(): monkeypatch.setenv(key, value)
     provenance = shadow_cli._weekly_orchestrator_provenance()
     assert provenance["official_benchmark_observation"] is False
+    assert provenance["target_session_resolution"] == WEEKLY_TARGET_RESOLUTION
     assert provenance["analytical_commit"] != provenance["workflow_registration_commit"]
 
 

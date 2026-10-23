@@ -340,6 +340,7 @@ def _weekly_orchestrator_provenance() -> dict[str, object] | None:
         "target_market_session": os.environ.get("TRINITY_TARGET_MARKET_SESSION", ""),
         "target_session_open_utc": os.environ.get("TRINITY_TARGET_SESSION_OPEN_UTC", ""),
         "target_session_close_utc": os.environ.get("TRINITY_TARGET_SESSION_CLOSE_UTC", ""),
+        "target_session_resolution": os.environ.get("TRINITY_TARGET_SESSION_RESOLUTION", ""),
         "session_calendar": os.environ.get("TRINITY_SESSION_CALENDAR", ""),
         "session_calendar_version": os.environ.get("TRINITY_SESSION_CALENDAR_VERSION", ""),
         "analytical_commit": os.environ.get("TRINITY_ANALYTICAL_GIT_SHA", ""),
