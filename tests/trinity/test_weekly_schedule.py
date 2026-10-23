@@ -295,7 +295,7 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
     assert analytical.index("validate-handoff") < analytical.index("cli restore-prices") < analytical.index("cli run")
     assert analytical.index("cli archive") < analytical.index("weekly_cycle complete") < analytical.index("notifications.telegram")
     assert "continue-on-error: true" in analytical
-    analytical_sha = "f2922598321a72fc1c3f500f14570ed54e04f433"
+    analytical_sha = "ef4572960a2f22c1c0bf0fd5445de922c1474a35"
     assert f"TRINITY_ANALYTICAL_REF: {analytical_sha}" in weekly
     assert f"TRINITY_ANALYTICAL_REF: {analytical_sha}" in price
     assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" not in weekly + price
@@ -355,8 +355,9 @@ def test_workflow_live_preflight_is_default_and_blocks_full_smoke():
     assert "needs.infrastructure-preflight.outputs.twelvedata_quota_ready == 'true'" in price
     assert (
         "needs.infrastructure-preflight.outputs.analytical_sha == "
-        "'f2922598321a72fc1c3f500f14570ed54e04f433'"
+        "'ef4572960a2f22c1c0bf0fd5445de922c1474a35'"
     ) in price
+    assert "sec_compact_status: ${{ steps.preflight.outputs.sec_compact_status }}" in weekly
 
     analytical = weekly.split("  analytical-production:", 1)[1]
     telegram = analytical.split(
