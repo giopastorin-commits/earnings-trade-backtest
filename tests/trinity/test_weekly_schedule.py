@@ -295,7 +295,7 @@ def test_workflow_contract_is_fail_closed_and_secret_scoped():
     assert analytical.index("validate-handoff") < analytical.index("cli restore-prices") < analytical.index("cli run")
     assert analytical.index("cli archive") < analytical.index("weekly_cycle complete") < analytical.index("notifications.telegram")
     assert "continue-on-error: true" in analytical
-    analytical_sha = "ef4572960a2f22c1c0bf0fd5445de922c1474a35"
+    analytical_sha = "eb15c45b041b8890194d2f98b025aa98ed7fa527"
     assert f"TRINITY_ANALYTICAL_REF: {analytical_sha}" in weekly
     assert f"TRINITY_ANALYTICAL_REF: {analytical_sha}" in price
     assert "TRINITY_ANALYTICAL_REF: trinity-live-validation-v1" not in weekly + price
