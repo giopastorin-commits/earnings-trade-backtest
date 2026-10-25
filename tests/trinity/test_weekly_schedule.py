@@ -353,10 +353,7 @@ def test_workflow_live_preflight_is_default_and_blocks_full_smoke():
     assert "needs.infrastructure-preflight.outputs.r2_ready == 'true'" in price
     assert "needs.infrastructure-preflight.outputs.baseline_ready == 'true'" in price
     assert "needs.infrastructure-preflight.outputs.twelvedata_quota_ready == 'true'" in price
-    assert (
-        "needs.infrastructure-preflight.outputs.analytical_sha == "
-        "'ef4572960a2f22c1c0bf0fd5445de922c1474a35'"
-    ) in price
+    assert "needs.infrastructure-preflight.outputs.analytical_sha ==" not in price
     assert "sec_compact_status: ${{ steps.preflight.outputs.sec_compact_status }}" in weekly
 
     analytical = weekly.split("  analytical-production:", 1)[1]

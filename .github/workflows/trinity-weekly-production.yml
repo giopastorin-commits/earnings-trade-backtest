@@ -178,7 +178,6 @@ jobs:
       needs.infrastructure-preflight.outputs.r2_ready == 'true' &&
       needs.infrastructure-preflight.outputs.baseline_ready == 'true' &&
       needs.infrastructure-preflight.outputs.twelvedata_quota_ready == 'true' &&
-      needs.infrastructure-preflight.outputs.analytical_sha == 'ef4572960a2f22c1c0bf0fd5445de922c1474a35' &&
       needs.cycle-guard.outputs.eligible == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 140
