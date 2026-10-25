@@ -52,10 +52,18 @@ def test_europe_us_dst_mismatch_selects_only_rome_2300_twin(
     assert valid.target_session_close_utc.endswith(close_utc)
 
 
-def test_monday_market_holiday_uses_latest_session_final_at_decision_instant():
-    result = scheduled(datetime(2026, 9, 7, 21, tzinfo=timezone.utc), "0 21 * * 1")
-    assert result.target_market_session == "2026-09-04"
-    assert result.target_session_close_utc == "2026-09-04T20:00:00Z"
+def test_labor_day_week_targets_tuesday_and_never_prior_friday():
+    monday_noop = scheduled(
+        datetime(2026, 9, 7, 21, tzinfo=timezone.utc), "0 21 * * 1"
+    )
+    tuesday = scheduled(
+        datetime(2026, 9, 8, 21, tzinfo=timezone.utc), "0 21 * * 2"
+    )
+    assert monday_noop.should_run is False
+    assert tuesday.should_run is True
+    assert monday_noop.target_market_session == tuesday.target_market_session == "2026-09-08"
+    assert tuesday.target_market_session != "2026-09-04"
+    assert tuesday.target_session_close_utc == "2026-09-08T20:00:00Z"
 
 
 def test_monday_early_close_is_calendar_derived_and_final():
@@ -76,9 +84,13 @@ def test_latest_final_resolution_obeys_close_plus_twenty_minute_boundary():
 
 
 def test_runner_delay_cannot_advance_the_official_target():
-    delayed = scheduled(datetime(2026, 10, 27, 20, tzinfo=timezone.utc), "0 22 * * 1")
+    delayed = scheduled(datetime(2026, 10, 27, 8, tzinfo=timezone.utc), "0 22 * * 1")
+    tuesday_noop = scheduled(datetime(2026, 10, 27, 22, tzinfo=timezone.utc), "0 22 * * 2")
+    assert delayed.should_run is True
     assert delayed.intended_monday == "2026-10-26"
     assert delayed.target_market_session == "2026-10-26"
+    assert tuesday_noop.should_run is False
+    assert tuesday_noop.target_market_session == "2026-10-26"
 
 
 def test_manual_validation_full_smoke_behavior_remains_available():
@@ -116,6 +128,9 @@ def test_workflow_fail_closed_ordering_and_side_effect_guards():
     assert "TRINITY_ANALYTICAL_REF: eb15c45b041b8890194d2f98b025aa98ed7fa527" in workflow
     assert "TRINITY_ORCHESTRATOR_METHOD: TRINITY_WEEKLY_ORCHESTRATOR_V2" in workflow
     assert dispatch.count("- VALIDATION") == 1 and "- OFFICIAL" not in dispatch
+    for weekday in range(1, 6):
+        assert f'cron: "0 21 * * {weekday}"' in dispatch
+        assert f'cron: "0 22 * * {weekday}"' in dispatch
     assert "inputs.execution_scope == 'FULL_SMOKE'" in cycle
     assert "github.event_name == 'schedule'" in cycle
     assert "trinity_weekly_cycle_v2.py" in cycle and "args=(check" in cycle

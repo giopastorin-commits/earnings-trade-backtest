@@ -13,17 +13,22 @@ horizons, costs, ranking, trade plans, and statistical endpoints are unchanged.
 
 ## OFFICIAL decision contract
 
-- The intended weekly decision instant is Monday 23:00 `Europe/Rome`.
-- GitHub registers the 21:00 and 22:00 UTC Monday cron twins. The gate selects
-  only the twin that maps to 23:00 Rome for that date; the other is a no-op.
-- The target is the latest XNYS session whose calendar-derived close plus the
-  frozen 20-minute finality grace is complete at the intended decision instant.
-- Runner delay cannot advance the target because resolution uses the intended
-  decision instant, not the runner's eventual wall clock.
-- On a normal Monday the target is Monday. On a Monday XNYS holiday the target
-  is the latest prior final session. Early closes and Europe/U.S. DST mismatch
-  weeks come from `exchange-calendars==4.13.2`; weekday close times are not
-  hardcoded.
+- ISO week is authoritative. The target is the first actual XNYS session from
+  Monday through Sunday of that ISO week, exactly matching frozen
+  `observation_policy.slot_target=FIRST_XNYS_SESSION_OF_ISO_WEEK`.
+- GitHub registers the 21:00 and 22:00 UTC cron twins on Monday through Friday.
+  The gate permits only the target weekday and only the twin mapping to 23:00
+  `Europe/Rome`; every other invocation is a no-op.
+- Production becomes eligible only after the target session's calendar-derived
+  close plus the frozen 20-minute finality grace.
+- On a normal week the target is Monday. When Monday is an XNYS holiday the
+  target is Tuesday (or the first later XNYS session after a longer closure).
+  The scheduler never falls back into the prior ISO week's Friday.
+- The scheduled weekday freezes the ISO week and target. Runner delay can
+  neither advance nor otherwise change the target; excessive delay fails
+  closed instead of retargeting.
+- Early closes and Europe/U.S. DST mismatch weeks come from
+  `exchange-calendars==4.13.2`; weekday close times are not hardcoded.
 
 V2 completion markers use a new immutable namespace:
 

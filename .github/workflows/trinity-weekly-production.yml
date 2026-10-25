@@ -4,6 +4,14 @@ on:
   schedule:
     - cron: "0 21 * * 1"
     - cron: "0 22 * * 1"
+    - cron: "0 21 * * 2"
+    - cron: "0 22 * * 2"
+    - cron: "0 21 * * 3"
+    - cron: "0 22 * * 3"
+    - cron: "0 21 * * 4"
+    - cron: "0 22 * * 4"
+    - cron: "0 21 * * 5"
+    - cron: "0 22 * * 5"
   workflow_dispatch:
     inputs:
       mode:
@@ -40,7 +48,7 @@ env:
 
 jobs:
   schedule-gate:
-    name: Resolve Rome 23:00 schedule and latest final XNYS session
+    name: Resolve Rome 23:00 first-XNYS-session weekly slot
     runs-on: ubuntu-24.04
     outputs:
       should_run: ${{ steps.gate.outputs.should_run }}
@@ -89,7 +97,8 @@ jobs:
       - name: Record skipped DST twin
         if: steps.gate.outputs.should_run != 'true'
         run: >-
-          echo "No production: ${{ github.event.schedule }} is not Europe/Rome 23:00 for
+          echo "No production: ${{ github.event.schedule }} is not the eligible Europe/Rome
+          23:00 frozen slot invocation for ISO week beginning
           ${{ steps.gate.outputs.intended_monday }}."
 
   infrastructure-preflight:

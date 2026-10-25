@@ -20,9 +20,11 @@ ROME = ZoneInfo("Europe/Rome")
 CALENDAR_NAME = "XNYS"
 CONTRACT_VERSION = "TRINITY_WEEKLY_ORCHESTRATOR_V2"
 VALIDATION_CONTRACT_VERSION = "TRINITY_WEEKLY_ORCHESTRATOR_V1"
-SCHEDULES = frozenset({"0 21 * * 1", "0 22 * * 1"})
+SCHEDULES = frozenset(
+    f"0 {hour} * * {weekday}" for hour in (21, 22) for weekday in range(1, 6)
+)
 FINALITY_GRACE = timedelta(minutes=20)
-OFFICIAL_TARGET_RESOLUTION = "LATEST_FINAL_XNYS_AT_MONDAY_2300_EUROPE_ROME"
+OFFICIAL_TARGET_RESOLUTION = "FIRST_XNYS_SESSION_OF_ISO_WEEK"
 VALIDATION_WEEKLY_TARGET_RESOLUTION = "WEEKLY_INTENDED_MONDAY"
 VALIDATION_SMOKE_TARGET_RESOLUTION = "VALIDATION_LATEST_FINAL_XNYS"
 
@@ -92,6 +94,24 @@ def resolve_validation_weekly_session(intended_monday: date) -> dict[str, str]:
     return _calendar_result(session, calendar.schedule.loc[session])
 
 
+def resolve_official_slot_session(intended_monday: date) -> dict[str, str]:
+    """Mirror the frozen V1 first-XNYS-session-of-ISO-week slot policy."""
+
+    if intended_monday.weekday() != 0:
+        raise ValueError("intended production date must be a Monday")
+    sunday = intended_monday + timedelta(days=6)
+    calendar = exchange_calendars.get_calendar(
+        CALENDAR_NAME, start=intended_monday, end=sunday,
+    )
+    sessions = [item for item in calendar.sessions if intended_monday <= item.date() <= sunday]
+    if not sessions:
+        raise ValueError("ISO week contains no XNYS trading session")
+    session = sessions[0]
+    if session.date().isocalendar()[:2] != intended_monday.isocalendar()[:2]:
+        raise ValueError("XNYS slot target is outside requested ISO week")
+    return _calendar_result(session, calendar.schedule.loc[session])
+
+
 def _intended_monday(started_at: datetime) -> date:
     if started_at.tzinfo is None or started_at.utcoffset() is None:
         raise ValueError("run_started_at must be timezone-aware")
@@ -99,16 +119,42 @@ def _intended_monday(started_at: datetime) -> date:
     return local_day - timedelta(days=local_day.weekday())
 
 
-def _official_decision_instant(monday: date) -> datetime:
-    return datetime.combine(monday, time(23), ROME)
+def _parse_schedule(value: str) -> tuple[int, int]:
+    if value not in SCHEDULES:
+        raise ValueError("unrecognized scheduled cron expression")
+    minute, hour, day_of_month, month, weekday = value.split()
+    if (minute, day_of_month, month) != ("0", "*", "*"):
+        raise ValueError("unrecognized scheduled cron expression")
+    return int(hour), int(weekday)
 
 
-def _expected_schedule(monday: date) -> str:
-    hour = _official_decision_instant(monday).astimezone(timezone.utc).hour
-    expected = f"0 {hour} * * 1"
+def _scheduled_local_date(event_schedule: str, run_started_at: datetime) -> date:
+    """Recover the scheduled weekday without allowing runner delay to retarget it."""
+
+    _hour, weekday = _parse_schedule(event_schedule)
+    local_started = run_started_at.astimezone(ROME)
+    monday = local_started.date() - timedelta(days=local_started.date().weekday())
+    candidate = monday + timedelta(days=weekday - 1)
+    if datetime.combine(candidate, time(23), ROME) - local_started > timedelta(hours=6):
+        candidate -= timedelta(days=7)
+    return candidate
+
+
+def _official_decision_instant(target: date) -> datetime:
+    return datetime.combine(target, time(23), ROME)
+
+
+def _official_expected_schedule(target: date) -> str:
+    hour = _official_decision_instant(target).astimezone(timezone.utc).hour
+    expected = f"0 {hour} * * {target.isoweekday()}"
     if expected not in SCHEDULES:
         raise ValueError("Europe/Rome 23:00 resolved outside registered schedules")
     return expected
+
+
+def _validation_expected_schedule(monday: date) -> str:
+    hour = datetime.combine(monday, time(12), ROME).astimezone(timezone.utc).hour
+    return f"0 {hour} * * 1"
 
 
 def decide_schedule(
@@ -116,26 +162,43 @@ def decide_schedule(
     manual_monday: date | None = None, requested_mode: str | None = None,
     execution_scope: str | None = None,
 ) -> ScheduleDecision:
+    if run_started_at.tzinfo is None or run_started_at.utcoffset() is None:
+        raise ValueError("run_started_at must be timezone-aware")
     if event_name not in {"schedule", "workflow_dispatch"}:
         raise ValueError("unsupported weekly-production event")
-    monday = manual_monday or _intended_monday(run_started_at)
-    if monday.weekday() != 0:
-        raise ValueError("intended production date must be a Monday")
-    expected = _expected_schedule(monday)
 
     if event_name == "schedule":
-        if event_schedule not in SCHEDULES:
-            raise ValueError("unrecognized scheduled cron expression")
+        if event_schedule is None:
+            raise ValueError("scheduled weekly production requires its cron expression")
         if requested_mode not in (None, "", "OFFICIAL"):
             raise ValueError("scheduled weekly production must be OFFICIAL")
-        target = resolve_latest_final_xnys_session(_official_decision_instant(monday))
+        scheduled_date = _scheduled_local_date(event_schedule, run_started_at)
+        monday = scheduled_date - timedelta(days=scheduled_date.weekday())
+        target = resolve_official_slot_session(monday)
+        target_date = date.fromisoformat(target["target_market_session"])
+        expected = _official_expected_schedule(target_date)
+        intended_instant = _official_decision_instant(target_date)
+        finality = datetime.fromisoformat(
+            target["target_session_close_utc"].replace("Z", "+00:00")
+        ) + FINALITY_GRACE
+        delay = run_started_at.astimezone(timezone.utc) - intended_instant.astimezone(timezone.utc)
+        should_run = (
+            scheduled_date == target_date
+            and event_schedule == expected
+            and finality <= run_started_at.astimezone(timezone.utc)
+            and timedelta(0) <= delay <= timedelta(hours=48)
+        )
         return ScheduleDecision(
             event_name=event_name, mode="OFFICIAL", execution_scope="OFFICIAL_WEEKLY",
             intended_monday=monday.isoformat(), expected_schedule=expected,
-            received_schedule=event_schedule, should_run=event_schedule == expected,
+            received_schedule=event_schedule, should_run=should_run,
             target_session_resolution=OFFICIAL_TARGET_RESOLUTION, **target,
         )
 
+    monday = manual_monday or _intended_monday(run_started_at)
+    if monday.weekday() != 0:
+        raise ValueError("intended production date must be a Monday")
+    expected = _validation_expected_schedule(monday)
     mode = str(requested_mode or "VALIDATION").upper()
     if mode != "VALIDATION":
         raise ValueError("manual weekly production is restricted to VALIDATION")
