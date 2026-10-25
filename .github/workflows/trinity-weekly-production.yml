@@ -362,6 +362,18 @@ jobs:
           TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
           TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
         run: python -m trinity.shadow.cli archive
+      - name: Persist immutable OFFICIAL prospective cohort and expectations
+        if: needs.schedule-gate.outputs.mode == 'OFFICIAL'
+        env:
+          TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
+          TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
+          TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
+          TRINITY_R2_BUCKET: ${{ vars.TRINITY_R2_BUCKET || 'trinity-raw' }}
+        run: >-
+          python .workflow-registration/.github/scripts/trinity_p3_automatic_outcomes.py
+          ingest-official-r2
+          --run-root "$TRINITY_RUN_ROOT"
+          --store "$RUNNER_TEMP/trinity-prospective-ingestion.sqlite3"
       - name: Commit immutable OFFICIAL cycle marker
         env:
           TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
