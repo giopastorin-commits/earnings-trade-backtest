@@ -9,12 +9,17 @@ production transports can be tested without network access.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import re
+from statistics import fmean
 import sys
 from typing import Any, Callable, Iterable, Sequence
 
@@ -33,8 +38,16 @@ from trinity.validation.observation_cycle import (
     expectation_set_sha256,
 )
 from trinity.validation.observation_slots import ObservationSlot, weekly_observation_slot
-from trinity.validation.outcome_expectations import append_outcome_expectations
-from trinity.validation.outcome_finalization import CycleSourceLocator, finalize_outcomes
+from trinity.validation.outcome_expectations import (
+    append_outcome_expectations,
+    outcome_identity,
+)
+from trinity.validation.outcome_finalization import (
+    COMPLETE,
+    CycleSourceLocator,
+    finalize_outcomes,
+    load_outcome_finals,
+)
 from trinity.validation.protocol_v1 import (
     PROTOCOL_EPOCH,
     PROTOCOL_HASH,
@@ -43,6 +56,7 @@ from trinity.validation.protocol_v1 import (
     protocol_dict,
 )
 from trinity.validation.run_observation import append_run_observation
+from trinity.validation.run_observation import load_run_observations
 from trinity.validation.scorecard import build_final_scorecard
 from trinity.validation.simple_quant_baseline import build_simple_quant_comparator
 from trinity.validation.slot_assignment import (
@@ -65,6 +79,8 @@ ALREADY_COMPLETED = "ALREADY_COMPLETED"
 READY_TO_ACQUIRE = "READY_TO_ACQUIRE"
 COMPLETED = "COMPLETED"
 NAMESPACE_ROOT = f"prospective-validation/protocol={PROTOCOL_ID}/epoch={PROTOCOL_EPOCH}"
+SHADOW_RUN_ROOT = "runs/shadow/"
+_OFFICIAL_RUN_ID = re.compile(r"SHADOW_USA_[0-9]{4}-[0-9]{2}-[0-9]{2}_[A-Za-z0-9-]+_A[0-9]+\Z")
 
 
 class AutomaticOutcomesError(RuntimeError):
@@ -125,11 +141,15 @@ def ingest_official_run(store: ValidationStore, run_root: str | Path) -> dict[st
             )
         appended_expectations = append_outcome_expectations(store, collected)
         receipt = {
+            "schema_name": "trinity.official-ingestion-receipt",
+            "schema_version": "1",
             "protocol_id": PROTOCOL_ID,
             "protocol_hash": PROTOCOL_HASH,
             "protocol_epoch": PROTOCOL_EPOCH,
             "run_id": collected.run_id,
             "source_manifest_sha256": collected.source_manifest_sha256,
+            "analytical_commit_sha": collected.analytical_commit_sha,
+            "registration_commit_sha": os.environ.get("GITHUB_SHA"),
             "eligibility": collected.eligibility,
             "expectation_keys": tuple(
                 item.key for item in load_current_expectations(store)
@@ -523,6 +543,348 @@ def archive_immutable_tree(
     }
 
 
+def _jsonable(value: Any) -> Any:
+    """Convert frozen dataclasses and read-only mappings to canonical JSON data."""
+
+    if is_dataclass(value):
+        return {
+            field.name: _jsonable(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _authoritative_record_digest(store: ValidationStore) -> str:
+    """Return the deterministic identity of the current authoritative view."""
+
+    rows = store.connection.execute(
+        "SELECT record_kind, record_key, payload_sha256 "
+        "FROM validation_record ORDER BY record_kind, record_key"
+    ).fetchall()
+    return hashlib.sha256(canonical_json([
+        {
+            "record_kind": str(kind),
+            "record_key": str(key),
+            "payload_sha256": str(payload_sha256),
+        }
+        for kind, key, payload_sha256 in rows
+    ])).hexdigest()
+
+
+def _stage_scorecard_row(stage: Any) -> dict[str, Any]:
+    return {
+        "status": stage.status,
+        "members": list(stage.members),
+        "member_count": stage.member_count,
+        "complete_count": stage.complete_count,
+        "pending_count": stage.pending_count,
+        "dqf_count": stage.dqf_count,
+        "gross_active_return_pct": stage.gross_active_return_pct,
+        "cost_adjusted_active_return_pct": {
+            str(bps): value
+            for bps, value in stage.cost_adjusted_active_return_pct.items()
+        },
+    }
+
+
+def _horizon_scorecard(
+    weekly: tuple[Any, ...], horizon: int,
+) -> dict[str, Any]:
+    """Build descriptive D5/D20/D60 summaries without changing V1 endpoints."""
+
+    cohorts = ("SCANNER", "LUNA", "SOL")
+    cohort_summary: dict[str, Any] = {}
+    for cohort in cohorts:
+        stages = [week.basket(horizon, cohort) for week in weekly]
+        values = [
+            float(stage.gross_active_return_pct)
+            for stage in stages if stage.gross_active_return_pct is not None
+        ]
+        cohort_summary[cohort] = {
+            "n_official_weeks": len(stages),
+            "n_usable": len(values),
+            "n_pending": sum(stage.status == "PENDING" for stage in stages),
+            "n_dqf": sum(stage.status == "UNAVAILABLE_DQF" for stage in stages),
+            "mean_active_return_pct": None if not values else fmean(values),
+        }
+
+    def endpoint(first: str, second: str) -> dict[str, Any]:
+        values: list[float] = []
+        pending = dqf = 0
+        for week in weekly:
+            left = week.basket(horizon, first)
+            right = week.basket(horizon, second)
+            if left.status == "UNAVAILABLE_DQF" or right.status == "UNAVAILABLE_DQF":
+                dqf += 1
+            elif left.status == "PENDING" or right.status == "PENDING":
+                pending += 1
+            elif left.gross_active_return_pct is not None \
+                    and right.gross_active_return_pct is not None:
+                values.append(
+                    float(left.gross_active_return_pct)
+                    - float(right.gross_active_return_pct)
+                )
+            else:
+                raise AutomaticOutcomesError("stage basket has an impossible scorecard state")
+        return {
+            "n_total_official_weeks": len(weekly),
+            "n_usable": len(values),
+            "n_pending": pending,
+            "n_dqf": dqf,
+            "mean_delta_active_return_pct": None if not values else fmean(values),
+        }
+
+    weekly_rows = []
+    for week in weekly:
+        stages = {
+            cohort: _stage_scorecard_row(week.basket(horizon, cohort))
+            for cohort in cohorts
+        }
+        deltas: dict[str, float | None] = {}
+        for name, first, second in (
+            ("LUNA_MINUS_SCANNER", "LUNA", "SCANNER"),
+            ("SOL_MINUS_LUNA", "SOL", "LUNA"),
+            ("SOL_MINUS_SCANNER", "SOL", "SCANNER"),
+        ):
+            left = stages[first]["gross_active_return_pct"]
+            right = stages[second]["gross_active_return_pct"]
+            deltas[name] = None if left is None or right is None else left - right
+        weekly_rows.append({
+            "run_id": week.run_id,
+            "decision_target_session": week.decision_target_session,
+            "horizon_sessions": horizon,
+            "stages": stages,
+            "deltas": deltas,
+        })
+    return {
+        "horizon_sessions": horizon,
+        "cohorts": cohort_summary,
+        "endpoints": {
+            "LUNA_MINUS_SCANNER": endpoint("LUNA", "SCANNER"),
+            "SOL_MINUS_LUNA": endpoint("SOL", "LUNA"),
+            "SOL_MINUS_SCANNER": endpoint("SOL", "SCANNER"),
+        },
+        "weekly_distribution": weekly_rows,
+    }
+
+
+def _selection_error_diagnostics(store: ValidationStore) -> dict[str, Any]:
+    """Report missed Scanner winners and negative-return promoted selections."""
+
+    runs = tuple(
+        item for item in load_run_observations(store)
+        if item.eligibility == OFFICIAL_ELIGIBLE
+    )
+    expectations = load_current_expectations(store)
+    finals = {
+        item.expectation_key: item
+        for item in load_outcome_finals(store, expectations)
+    }
+    threshold = float(protocol_dict()["missed_winner_threshold_active_return_pct_20d"])
+    missed_luna: list[dict[str, Any]] = []
+    missed_sol: list[dict[str, Any]] = []
+    promoted_underperformers: list[dict[str, Any]] = []
+    for run in runs:
+        for ticker in run.scanner_tickers:
+            key = outcome_identity(run.run_id, ticker, "SCANNER", 20)
+            final = finals.get(key)
+            if final is None or final.status != COMPLETE \
+                    or final.active_return_pct is None:
+                continue
+            active_return = float(final.active_return_pct)
+            identity = {
+                "run_id": run.run_id,
+                "decision_target_session": run.decision_target_session,
+                "ticker": ticker,
+                "active_return_pct_20d": active_return,
+            }
+            if active_return >= threshold:
+                if ticker not in run.luna_tickers:
+                    missed_luna.append(identity)
+                if ticker not in run.sol_tickers:
+                    missed_sol.append(identity)
+            promoted_by = [
+                stage for stage, members in (
+                    ("LUNA", run.luna_tickers), ("SOL", run.sol_tickers),
+                ) if ticker in members
+            ]
+            if promoted_by and active_return < 0:
+                promoted_underperformers.append({
+                    **identity, "promoted_by": promoted_by,
+                })
+    return {
+        "winner_threshold_active_return_pct_20d": threshold,
+        "missed_winners_by_luna": missed_luna,
+        "missed_winners_by_sol": missed_sol,
+        "promoted_underperformers_20d": promoted_underperformers,
+    }
+
+
+def build_scorecard_artifact(store: ValidationStore) -> dict[str, Any]:
+    """Build a deterministic descriptive artifact plus the frozen V1 scorecard."""
+
+    weekly = build_official_weekly_baskets(store)
+    runs = tuple(
+        item for item in load_run_observations(store)
+        if item.eligibility == OFFICIAL_ELIGIBLE
+    )
+    api_costs = [str(item.total_api_cost_usd) for item in runs]
+    total_cost = sum((Decimal(value) for value in api_costs), Decimal("0"))
+    stage_costs = {"LUNA": Decimal("0"), "SOL": Decimal("0")}
+    official_run_ids = {item.run_id for item in runs}
+    for _key, payload in store.record_items("SELECTION"):
+        if payload.get("run_id") not in official_run_ids:
+            continue
+        stage_costs["LUNA"] += Decimal(str(payload.get("luna_cost_usd") or "0"))
+        stage_costs["SOL"] += Decimal(str(payload.get("sol_cost_usd") or "0"))
+    return {
+        "schema_name": "trinity.prospective-scorecard",
+        "schema_version": "1",
+        "protocol_id": PROTOCOL_ID,
+        "protocol_hash": PROTOCOL_HASH,
+        "protocol_epoch": PROTOCOL_EPOCH,
+        "source_records_sha256": _authoritative_record_digest(store),
+        "official_run_count": len(runs),
+        "api_costs": {
+            "official_run_cost_usd": api_costs,
+            "total_usd": format(total_cost, "f"),
+            "by_stage_usd": {
+                stage: format(value, "f") for stage, value in stage_costs.items()
+            },
+            "mean_per_official_run_usd": (
+                None if not api_costs else format(total_cost / len(api_costs), "f")
+            ),
+        },
+        "frozen_v1_scorecard": _jsonable(build_final_scorecard(store)),
+        "horizons": {
+            str(horizon): _horizon_scorecard(weekly, horizon)
+            for horizon in (5, 20, 60)
+        },
+        "selection_error_diagnostics": _selection_error_diagnostics(store),
+    }
+
+
+def archive_scorecard(
+    client: Any, bucket: str, *, store: ValidationStore, root: str | Path,
+) -> dict[str, Any]:
+    """Publish a deterministic scorecard tree keyed by authoritative records."""
+
+    payload = build_scorecard_artifact(store)
+    output = Path(root)
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "scorecard.json").write_bytes(canonical_json(payload))
+    return archive_immutable_tree(
+        client,
+        bucket,
+        kind="scorecards",
+        identity=str(payload["source_records_sha256"]),
+        root=output,
+    )
+
+
+def _validate_official_run_id(run_id: str) -> str:
+    if not _OFFICIAL_RUN_ID.fullmatch(run_id):
+        raise AutomaticOutcomesError("invalid archived OFFICIAL run identity")
+    return run_id
+
+
+def discover_archived_official_run(
+    client: Any,
+    bucket: str,
+    *,
+    github_run_id: str,
+    github_run_attempt: str,
+) -> str:
+    """Find exactly one archived complete-run identity for a workflow retry."""
+
+    marker = f"_{github_run_id}_A{github_run_attempt}"
+    candidates: set[str] = set()
+    for key in _list_keys(client, bucket, SHADOW_RUN_ROOT):
+        if not key.endswith("/artifacts/run_state.json") or "run_id=" not in key:
+            continue
+        run_id = key.split("run_id=", 1)[1].split("/", 1)[0]
+        if run_id.endswith(marker):
+            candidates.add(_validate_official_run_id(run_id))
+    if len(candidates) != 1:
+        raise AutomaticOutcomesError(
+            "expected exactly one archived OFFICIAL run for workflow retry, "
+            f"found={len(candidates)}"
+        )
+    return next(iter(candidates))
+
+
+def restore_archived_run(
+    client: Any,
+    bucket: str,
+    *,
+    run_id: str,
+    destination: str | Path,
+) -> Path:
+    """Restore a verified immutable Shadow archive without rerunning analysis."""
+
+    run_id = _validate_official_run_id(run_id)
+    prefix = f"{SHADOW_RUN_ROOT}run_id={run_id}/"
+    output = Path(destination)
+    if output.exists() and any(output.iterdir()):
+        raise AutomaticOutcomesError("restore destination must be new and empty")
+    output.mkdir(parents=True, exist_ok=True)
+    keys = _list_keys(client, bucket, prefix)
+    if not keys:
+        raise AutomaticOutcomesError("archived OFFICIAL run is not available in R2")
+    for key in keys:
+        relative_key = key.removeprefix(prefix)
+        parts = relative_key.split("/", 1)
+        if len(parts) != 2 or parts[0] not in {"artifacts", "ledger", "manifests", "reports"}:
+            raise AutomaticOutcomesError("archived run contains an unexpected object")
+        relative = PurePosixPath(parts[1])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise AutomaticOutcomesError("archived run contains an unsafe path")
+        target = output.joinpath(*relative.parts)
+        response = client.get_object(Bucket=bucket, Key=key)
+        body = response["Body"].read()
+        metadata = response.get("Metadata", {})
+        expected_sha = metadata.get("sha256") if isinstance(metadata, Mapping) else None
+        if expected_sha and hashlib.sha256(body).hexdigest() != expected_sha:
+            raise AutomaticOutcomesError(f"archived run checksum mismatch: {key}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+    return output
+
+
+def reconcile_official_run_r2(
+    client: Any,
+    bucket: str,
+    *,
+    local_store: str | Path,
+    restore_root: str | Path,
+    run_id: str | None = None,
+    github_run_id: str | None = None,
+    github_run_attempt: str = "1",
+) -> dict[str, Any]:
+    """Retry only the feedback ingestion from an already archived OFFICIAL run."""
+
+    if run_id is None:
+        if not github_run_id:
+            raise AutomaticOutcomesError("run_id or github_run_id is required")
+        run_id = discover_archived_official_run(
+            client,
+            bucket,
+            github_run_id=str(github_run_id),
+            github_run_attempt=str(github_run_attempt),
+        )
+    restored = restore_archived_run(
+        client, bucket, run_id=run_id, destination=restore_root,
+    )
+    result = ingest_official_run_r2(
+        client, bucket, run_root=restored, local_store=local_store,
+    )
+    return {**result, "restored_run_id": run_id, "restored_root": str(restored)}
+
+
 def ingest_official_run_r2(
     client: Any,
     bucket: str,
@@ -576,10 +938,17 @@ def run_outcomes_r2(
             store, iso_year=iso_year, iso_week=iso_week, now_utc=now(),
         )
         if plan.status in {NO_MATURE_EXPECTATIONS, ALREADY_COMPLETED}:
+            scorecard = archive_scorecard(
+                client,
+                bucket,
+                store=store,
+                root=Path(work_root) / "scorecard",
+            )
             return {
                 "status": plan.status,
                 "slot_target_session": plan.slot.slot_target_session,
                 "provider_calls": 0,
+                "scorecard": scorecard,
             }
         before = set(_record_map(store))
         result = execute_observation_slot(
@@ -608,11 +977,18 @@ def run_outcomes_r2(
         )
         key = commit_key("observation-slot", plan.slot.observation_slot_id)
         digest = put_immutable(client, bucket, key, bundle)
+        scorecard = archive_scorecard(
+            client,
+            bucket,
+            store=store,
+            root=root / "scorecard",
+        )
     return {
         **result,
         "archives": archives,
         "authoritative_commit_key": key,
         "authoritative_commit_sha256": digest,
+        "scorecard": scorecard,
     }
 
 
@@ -652,6 +1028,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ingest_r2 = sub.add_parser("ingest-official-r2")
     ingest_r2.add_argument("--run-root", type=Path, required=True)
     ingest_r2.add_argument("--store", type=Path, required=True)
+    reconcile = sub.add_parser("reconcile-official-r2")
+    reconcile.add_argument("--run-id")
+    reconcile.add_argument("--github-run-id")
+    reconcile.add_argument("--github-run-attempt", default="1")
+    reconcile.add_argument("--restore-root", type=Path, required=True)
+    reconcile.add_argument("--store", type=Path, required=True)
     plan = sub.add_parser("plan")
     plan.add_argument("--store", type=Path, required=True)
     plan.add_argument("--iso-year", type=int, required=True)
@@ -663,7 +1045,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     outcomes_r2.add_argument("--iso-year", type=int, required=True)
     outcomes_r2.add_argument("--iso-week", type=int, required=True)
     args = parser.parse_args(argv)
-    if args.command in {"ingest-official-r2", "run-outcomes-r2"}:
+    if args.command in {
+        "ingest-official-r2", "reconcile-official-r2", "run-outcomes-r2",
+    }:
         from trinity.shadow.r2 import client_from_environment
         client, bucket = client_from_environment()
         if args.command == "run-outcomes-r2":
@@ -675,6 +1059,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 local_store=args.store,
                 work_root=args.work_root,
                 provider=TwelveDataClient(),
+            )
+        elif args.command == "reconcile-official-r2":
+            result = reconcile_official_run_r2(
+                client,
+                bucket,
+                local_store=args.store,
+                restore_root=args.restore_root,
+                run_id=args.run_id,
+                github_run_id=args.github_run_id,
+                github_run_attempt=args.github_run_attempt,
             )
         else:
             result = ingest_official_run_r2(

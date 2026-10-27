@@ -237,9 +237,10 @@ def test_runner_delay_does_not_retarget_outcome_slot():
     assert result.target_market_session == "2026-10-26"
 
 
-def test_workflows_are_fail_closed_model_free_and_production_marker_follows_ingestion():
+def test_workflows_are_fail_closed_and_feedback_is_separate_from_production():
     outcome = (ROOT / ".github/workflows/trinity-weekly-outcomes.yml").read_text()
     production = (ROOT / ".github/workflows/trinity-weekly-production.yml").read_text()
+    reconciliation = (ROOT / ".github/workflows/trinity-official-feedback-reconciliation.yml").read_text()
     lower = outcome.lower()
     assert "trinity-prospective-outcomes-v1" in outcome
     assert "eb15c45b041b8890194d2f98b025aa98ed7fa527" in outcome
@@ -252,12 +253,15 @@ def test_workflows_are_fail_closed_model_free_and_production_marker_follows_inge
     ):
         assert forbidden not in lower
     archive = production.index("Archive and verify analytical run in R2")
-    ingestion = production.index("Persist immutable OFFICIAL prospective cohort")
     marker = production.index("Commit immutable OFFICIAL cycle marker")
     telegram = production.index("Deliver committed post-archive Telegram")
-    assert archive < ingestion < marker < telegram
-    ingestion_block = production[ingestion:marker]
-    assert "mode == 'OFFICIAL'" in ingestion_block
+    assert archive < marker < telegram
+    assert "Persist immutable OFFICIAL prospective cohort" not in production
+    assert "workflow_run:" in reconciliation
+    assert "reconcile-official-r2" in reconciliation
+    assert "restore archived official run" in reconciliation.lower()
+    assert "openai_api_key" not in reconciliation.lower()
+    assert "eodhd_api_key" not in reconciliation.lower()
 
 
 def test_offline_suite_blocks_network(monkeypatch):
@@ -268,3 +272,71 @@ def test_offline_suite_blocks_network(monkeypatch):
     )
     remote = FakeR2()
     assert p3._list_keys(remote, "bucket", p3.NAMESPACE_ROOT) == ()
+
+
+def test_no_mature_retry_persists_deterministic_scorecard_without_provider(tmp_path):
+    remote = FakeR2()
+
+    class NeverProvider:
+        def __getattr__(self, _name):
+            raise AssertionError("provider must not be touched")
+
+    first = p3.run_outcomes_r2(
+        remote,
+        "bucket",
+        iso_year=2026,
+        iso_week=42,
+        local_store=tmp_path / "first.sqlite3",
+        work_root=tmp_path / "first-work",
+        provider=NeverProvider(),
+        now=lambda: datetime(2026, 10, 20, 8, tzinfo=timezone.utc),
+    )
+    second = p3.run_outcomes_r2(
+        remote,
+        "bucket",
+        iso_year=2026,
+        iso_week=42,
+        local_store=tmp_path / "second.sqlite3",
+        work_root=tmp_path / "second-work",
+        provider=NeverProvider(),
+        now=lambda: datetime(2026, 10, 20, 8, tzinfo=timezone.utc),
+    )
+    assert first["status"] == second["status"] == p3.NO_MATURE_EXPECTATIONS
+    assert first["scorecard"]["prefix"] == second["scorecard"]["prefix"]
+    assert any("/scorecards/" in key for key in remote.objects)
+
+
+def test_scorecard_artifact_is_deterministic_and_covers_all_horizons(tmp_path):
+    run = _official(tmp_path / "run")
+    with ValidationStore(tmp_path / "store.sqlite3") as store:
+        p3.ingest_official_run(store, run)
+        first = p3.build_scorecard_artifact(store)
+        second = p3.build_scorecard_artifact(store)
+    assert first == second
+    assert set(first["horizons"]) == {"5", "20", "60"}
+    assert first["official_run_count"] == 1
+    assert first["horizons"]["20"]["cohorts"]["SCANNER"]["n_pending"] == 1
+    assert first["selection_error_diagnostics"]["missed_winners_by_luna"] == []
+
+
+def test_archived_official_run_discovery_and_safe_restore(tmp_path):
+    remote = FakeR2()
+    run_id = "SHADOW_USA_2026-10-26_40432096545_A1"
+    prefix = f"runs/shadow/run_id={run_id}/"
+    remote.objects[prefix + "artifacts/run_state.json"] = b'{"state":"COMPLETE"}'
+    remote.objects[prefix + "artifacts/artifacts/final_report.json"] = b"{}"
+    discovered = p3.discover_archived_official_run(
+        remote,
+        "bucket",
+        github_run_id="40432096545",
+        github_run_attempt="1",
+    )
+    restored = p3.restore_archived_run(
+        remote,
+        "bucket",
+        run_id=discovered,
+        destination=tmp_path / "restored",
+    )
+    assert discovered == run_id
+    assert (restored / "run_state.json").read_bytes() == b'{"state":"COMPLETE"}'
+    assert (restored / "artifacts/final_report.json").read_bytes() == b"{}"
