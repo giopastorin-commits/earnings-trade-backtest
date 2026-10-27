@@ -15,7 +15,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
-import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
@@ -80,7 +79,13 @@ READY_TO_ACQUIRE = "READY_TO_ACQUIRE"
 COMPLETED = "COMPLETED"
 NAMESPACE_ROOT = f"prospective-validation/protocol={PROTOCOL_ID}/epoch={PROTOCOL_EPOCH}"
 SHADOW_RUN_ROOT = "runs/shadow/"
-_OFFICIAL_RUN_ID = re.compile(r"SHADOW_USA_[0-9]{4}-[0-9]{2}-[0-9]{2}_[A-Za-z0-9-]+_A[0-9]+\Z")
+ORCHESTRATOR_METHOD = "TRINITY_WEEKLY_ORCHESTRATOR_V2"
+NO_OFFICIAL_CYCLE = "NO_OFFICIAL_CYCLE"
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*\Z")
+_OFFICIAL_RUN_ID = re.compile(
+    r"SHADOW_USA_([0-9]{4}-[0-9]{2}-[0-9]{2})_([1-9][0-9]*)_A([1-9][0-9]*)\Z"
+)
 
 
 class AutomaticOutcomesError(RuntimeError):
@@ -149,7 +154,6 @@ def ingest_official_run(store: ValidationStore, run_root: str | Path) -> dict[st
             "run_id": collected.run_id,
             "source_manifest_sha256": collected.source_manifest_sha256,
             "analytical_commit_sha": collected.analytical_commit_sha,
-            "registration_commit_sha": os.environ.get("GITHUB_SHA"),
             "eligibility": collected.eligibility,
             "expectation_keys": tuple(
                 item.key for item in load_current_expectations(store)
@@ -685,8 +689,15 @@ def _selection_error_diagnostics(store: ValidationStore) -> dict[str, Any]:
         for item in load_outcome_finals(store, expectations)
     }
     threshold = float(protocol_dict()["missed_winner_threshold_active_return_pct_20d"])
+    selections = {
+        (str(payload.get("run_id")), str(payload.get("ticker"))): payload
+        for _key, payload in store.record_items("SELECTION")
+    }
     missed_luna: list[dict[str, Any]] = []
-    missed_sol: list[dict[str, Any]] = []
+    pipeline_not_promoted: list[dict[str, Any]] = []
+    sol_evaluated_rejected: list[dict[str, Any]] = []
+    sol_evaluation_failed: list[dict[str, Any]] = []
+    not_routed_to_sol: list[dict[str, Any]] = []
     promoted_underperformers: list[dict[str, Any]] = []
     for run in runs:
         for ticker in run.scanner_tickers:
@@ -706,7 +717,17 @@ def _selection_error_diagnostics(store: ValidationStore) -> dict[str, Any]:
                 if ticker not in run.luna_tickers:
                     missed_luna.append(identity)
                 if ticker not in run.sol_tickers:
-                    missed_sol.append(identity)
+                    pipeline_not_promoted.append(identity)
+                    selection = selections.get((run.run_id, ticker), {})
+                    if selection.get("sol_evaluated") is True \
+                            and selection.get("sol_status") == "REJECTED":
+                        sol_evaluated_rejected.append(identity)
+                    elif selection.get("sol_evaluated") is True \
+                            and selection.get("sol_status") == "EVALUATED_FAILED":
+                        sol_evaluation_failed.append(identity)
+                    elif selection.get("sol_evaluated") is False \
+                            and selection.get("sol_status") == "NOT_EVALUATED":
+                        not_routed_to_sol.append(identity)
             promoted_by = [
                 stage for stage, members in (
                     ("LUNA", run.luna_tickers), ("SOL", run.sol_tickers),
@@ -719,7 +740,13 @@ def _selection_error_diagnostics(store: ValidationStore) -> dict[str, Any]:
     return {
         "winner_threshold_active_return_pct_20d": threshold,
         "missed_winners_by_luna": missed_luna,
-        "missed_winners_by_sol": missed_sol,
+        # Retained as a compatibility alias. It describes whole-pipeline
+        # non-promotion and must not be interpreted as a Sol rejection.
+        "missed_winners_by_sol": pipeline_not_promoted,
+        "pipeline_not_promoted_winners": pipeline_not_promoted,
+        "sol_evaluated_rejected_winners": sol_evaluated_rejected,
+        "sol_evaluation_failed_winners": sol_evaluation_failed,
+        "not_routed_to_sol_winners": not_routed_to_sol,
         "promoted_underperformers_20d": promoted_underperformers,
     }
 
@@ -786,10 +813,170 @@ def archive_scorecard(
     )
 
 
+def official_completion_marker_key(intended_monday: str, target_session: str) -> str:
+    if not _DATE.fullmatch(intended_monday) or not _DATE.fullmatch(target_session):
+        raise AutomaticOutcomesError("invalid official marker temporal identity")
+    return (
+        "orchestration/weekly/"
+        f"method={ORCHESTRATOR_METHOD}/intended_monday={intended_monday}/"
+        f"target_session={target_session}/official-complete.json"
+    )
+
+
+def _read_source_json(root: Path, relative: str) -> dict[str, Any]:
+    try:
+        value = json.loads((root / relative).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AutomaticOutcomesError(f"invalid source artifact: {relative}") from exc
+    if not isinstance(value, dict):
+        raise AutomaticOutcomesError(f"source artifact is not an object: {relative}")
+    return value
+
+
+def _aware_utc(value: object, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise AutomaticOutcomesError(f"invalid {field}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise AutomaticOutcomesError(f"invalid {field}")
+    return parsed.astimezone(timezone.utc)
+
+
+def verify_official_completion_marker(
+    client: Any,
+    bucket: str,
+    *,
+    run_root: str | Path,
+) -> dict[str, Any]:
+    """Bind an archived source run to its immutable OFFICIAL completion marker."""
+
+    root = Path(run_root)
+    collected = collect_run(root)
+    if collected.eligibility != OFFICIAL_ELIGIBLE:
+        raise AutomaticOutcomesError("source run is not OFFICIAL_ELIGIBLE")
+    orchestrator = _read_source_json(root, "artifacts/weekly_orchestrator.json")
+    restore = _read_source_json(root, "artifacts/price_snapshot_restore.json")
+    intended_monday = str(orchestrator.get("intended_monday_europe_rome") or "")
+    target_session = str(orchestrator.get("target_market_session") or "")
+    if orchestrator.get("mode") != "OFFICIAL" \
+            or orchestrator.get("official_benchmark_observation") is not True \
+            or orchestrator.get("method_version") != ORCHESTRATOR_METHOD:
+        raise AutomaticOutcomesError("source run lacks the frozen OFFICIAL V2 identity")
+    try:
+        monday = date.fromisoformat(intended_monday)
+        target = date.fromisoformat(target_session)
+    except ValueError as exc:
+        raise AutomaticOutcomesError("source run temporal identity is invalid") from exc
+    if monday.weekday() != 0 \
+            or target.isocalendar()[:2] != monday.isocalendar()[:2] \
+            or target_session != collected.decision_target_session:
+        raise AutomaticOutcomesError("source run temporal identity is inconsistent")
+    marker_key = official_completion_marker_key(intended_monday, target_session)
+    try:
+        response = client.get_object(Bucket=bucket, Key=marker_key)
+        raw = response["Body"].read()
+        head = client.head_object(Bucket=bucket, Key=marker_key)
+    except Exception as exc:
+        raise AutomaticOutcomesError("OFFICIAL completion marker is missing") from exc
+    digest = hashlib.sha256(raw).hexdigest()
+    if int(head.get("ContentLength", -1)) != len(raw) \
+            or head.get("Metadata", {}).get("sha256") != digest:
+        raise AutomaticOutcomesError("OFFICIAL completion marker checksum mismatch")
+    try:
+        marker = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AutomaticOutcomesError("OFFICIAL completion marker is malformed") from exc
+    expected_fields = {
+        "schema", "mode", "method_version", "intended_monday_europe_rome",
+        "target_market_session", "analytical_commit", "workflow_registration_commit",
+        "price_snapshot_id", "price_snapshot_sha256", "price_snapshot_r2_prefix",
+        "analytical_run_id", "analytical_archive", "completed_at_utc",
+    }
+    if not isinstance(marker, dict) or set(marker) != expected_fields \
+            or marker.get("schema") != "trinity.weekly-cycle-completion.v1" \
+            or marker.get("mode") != "OFFICIAL" \
+            or marker.get("method_version") != ORCHESTRATOR_METHOD:
+        raise AutomaticOutcomesError("OFFICIAL completion marker contract mismatch")
+    expected = {
+        "intended_monday_europe_rome": intended_monday,
+        "target_market_session": target_session,
+        "analytical_commit": collected.analytical_commit_sha,
+        "workflow_registration_commit": orchestrator.get("workflow_registration_commit"),
+        "price_snapshot_id": collected.snapshot_id,
+        "price_snapshot_sha256": collected.snapshot_sha256,
+        "price_snapshot_r2_prefix": restore.get("prefix"),
+        "analytical_run_id": collected.run_id,
+    }
+    if any(marker.get(field) != value or not value for field, value in expected.items()):
+        raise AutomaticOutcomesError("OFFICIAL completion marker lineage mismatch")
+    archive = marker.get("analytical_archive")
+    if not isinstance(archive, dict) \
+            or type(archive.get("object_count")) is not int \
+            or archive["object_count"] <= 0 \
+            or type(archive.get("total_bytes")) is not int \
+            or archive["total_bytes"] < 0:
+        raise AutomaticOutcomesError("OFFICIAL completion marker archive evidence is invalid")
+    archive_prefix = f"{SHADOW_RUN_ROOT}run_id={collected.run_id}/"
+    archive_keys = _list_keys(client, bucket, archive_prefix)
+    local_archive: dict[str, tuple[int, str]] = {}
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        if path.name.endswith(("-wal", "-shm", "-journal", ".tmp")):
+            continue
+        relative = path.relative_to(root).as_posix()
+        group = "ledger" if path.suffix == ".sqlite3" else (
+            "manifests" if path.name in {"manifest.json", "checksums.sha256"} else
+            "reports" if path.suffix in {".txt", ".md"} else "artifacts"
+        )
+        raw = path.read_bytes()
+        local_archive[f"{archive_prefix}{group}/{relative}"] = (
+            len(raw), hashlib.sha256(raw).hexdigest(),
+        )
+    if set(archive_keys) != set(local_archive):
+        raise AutomaticOutcomesError("OFFICIAL archive object set differs from source run")
+    try:
+        archived_bytes = 0
+        for key in archive_keys:
+            head = client.head_object(Bucket=bucket, Key=key)
+            expected_size, expected_sha = local_archive[key]
+            if int(head["ContentLength"]) != expected_size \
+                    or head.get("Metadata", {}).get("sha256") != expected_sha:
+                raise AutomaticOutcomesError(
+                    f"OFFICIAL archive object differs from source run: {key}"
+                )
+            archived_bytes += expected_size
+    except Exception as exc:
+        if isinstance(exc, AutomaticOutcomesError):
+            raise
+        raise AutomaticOutcomesError("OFFICIAL archive evidence is unavailable") from exc
+    if len(archive_keys) != archive["object_count"] \
+            or archived_bytes != archive["total_bytes"]:
+        raise AutomaticOutcomesError("OFFICIAL archive differs from completion marker")
+    completed_at = _aware_utc(marker.get("completed_at_utc"), "marker completed_at_utc")
+    decision_at = _aware_utc(collected.run_timestamp_utc, "run timestamp")
+    if completed_at < decision_at:
+        raise AutomaticOutcomesError("OFFICIAL marker predates the source decision")
+    run_match = _OFFICIAL_RUN_ID.fullmatch(collected.run_id)
+    if run_match and run_match.group(1) != target_session:
+        raise AutomaticOutcomesError("run ID session differs from OFFICIAL marker")
+    return {
+        "status": "OFFICIAL_MARKER_VERIFIED",
+        "key": marker_key,
+        "sha256": digest,
+        "payload": marker,
+    }
+
+
 def _validate_official_run_id(run_id: str) -> str:
     if not _OFFICIAL_RUN_ID.fullmatch(run_id):
         raise AutomaticOutcomesError("invalid archived OFFICIAL run identity")
     return run_id
+
+
+def _validate_positive_integer(value: str, field: str) -> str:
+    if not _POSITIVE_INTEGER.fullmatch(value):
+        raise AutomaticOutcomesError(f"{field} must be a positive integer")
+    return value
 
 
 def discover_archived_official_run(
@@ -798,9 +985,14 @@ def discover_archived_official_run(
     *,
     github_run_id: str,
     github_run_attempt: str,
-) -> str:
+    allow_missing: bool = False,
+) -> str | None:
     """Find exactly one archived complete-run identity for a workflow retry."""
 
+    github_run_id = _validate_positive_integer(str(github_run_id), "github_run_id")
+    github_run_attempt = _validate_positive_integer(
+        str(github_run_attempt), "github_run_attempt",
+    )
     marker = f"_{github_run_id}_A{github_run_attempt}"
     candidates: set[str] = set()
     for key in _list_keys(client, bucket, SHADOW_RUN_ROOT):
@@ -809,6 +1001,8 @@ def discover_archived_official_run(
         run_id = key.split("run_id=", 1)[1].split("/", 1)[0]
         if run_id.endswith(marker):
             candidates.add(_validate_official_run_id(run_id))
+    if not candidates and allow_missing:
+        return None
     if len(candidates) != 1:
         raise AutomaticOutcomesError(
             "expected exactly one archived OFFICIAL run for workflow retry, "
@@ -864,6 +1058,7 @@ def reconcile_official_run_r2(
     run_id: str | None = None,
     github_run_id: str | None = None,
     github_run_attempt: str = "1",
+    allow_no_official_cycle: bool = False,
 ) -> dict[str, Any]:
     """Retry only the feedback ingestion from an already archived OFFICIAL run."""
 
@@ -875,7 +1070,16 @@ def reconcile_official_run_r2(
             bucket,
             github_run_id=str(github_run_id),
             github_run_attempt=str(github_run_attempt),
+            allow_missing=allow_no_official_cycle,
         )
+        if run_id is None:
+            return {
+                "status": NO_OFFICIAL_CYCLE,
+                "github_run_id": str(github_run_id),
+                "github_run_attempt": str(github_run_attempt),
+                "records_appended": 0,
+                "provider_calls": 0,
+            }
     restored = restore_archived_run(
         client, bucket, run_id=run_id, destination=restore_root,
     )
@@ -894,6 +1098,9 @@ def ingest_official_run_r2(
 ) -> dict[str, Any]:
     """Hydrate, ingest, and atomically publish an OFFICIAL cohort commit."""
 
+    marker = verify_official_completion_marker(
+        client, bucket, run_root=run_root,
+    )
     with ValidationStore(local_store) as store:
         hydrate_authoritative_store(client, bucket, store)
         before = set(_record_map(store))
@@ -903,7 +1110,14 @@ def ingest_official_run_r2(
             # An identical replay must already have an identical authoritative commit.
             raw = client.get_object(Bucket=bucket, Key=key)["Body"].read()
             import_commit_bundle(store, raw)
-            return {**result, "authoritative_commit_key": key, "idempotent": True}
+            return {
+                **result,
+                "official_completion_marker": {
+                    "key": marker["key"], "sha256": marker["sha256"],
+                },
+                "authoritative_commit_key": key,
+                "idempotent": True,
+            }
         bundle = build_commit_bundle(
             store,
             before=before,
@@ -913,6 +1127,9 @@ def ingest_official_run_r2(
         digest = put_immutable(client, bucket, key, bundle)
     return {
         **result,
+        "official_completion_marker": {
+            "key": marker["key"], "sha256": marker["sha256"],
+        },
         "authoritative_commit_key": key,
         "authoritative_commit_sha256": digest,
         "idempotent": False,
@@ -992,39 +1209,59 @@ def run_outcomes_r2(
     }
 
 
+def _is_conditional_write_conflict(exc: Exception) -> bool:
+    response = getattr(exc, "response", {})
+    code = str(response.get("Error", {}).get("Code", ""))
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in {"409", "412", "ConditionalRequestConflict", "PreconditionFailed"} \
+        or status in {409, 412}
+
+
+def _verify_immutable_object(
+    client: Any, bucket: str, key: str, expected: bytes, digest: str,
+) -> None:
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+        existing = response["Body"].read()
+        head = client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        raise AutomaticOutcomesError(
+            f"immutable object verification failed: {key}"
+        ) from exc
+    if existing != expected:
+        raise AutomaticOutcomesError(f"immutable object collision: {key}")
+    if int(head.get("ContentLength", -1)) != len(expected) \
+            or head.get("Metadata", {}).get("sha256") != digest:
+        raise AutomaticOutcomesError(
+            f"immutable object metadata verification failed: {key}"
+        )
+
+
 def put_immutable(client: Any, bucket: str, key: str, body: bytes) -> str:
-    """Create-or-verify one immutable object; divergent replay fails closed."""
+    """Atomically create once, or verify an identical concurrent/retry write."""
 
     digest = hashlib.sha256(body).hexdigest()
     try:
-        existing = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+            Metadata={"sha256": digest},
+            IfNoneMatch="*",
+        )
     except Exception as exc:
-        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
-        if str(code) not in {"404", "NoSuchKey", "NotFound"}:
-            raise AutomaticOutcomesError("immutable object lookup failed") from exc
-    else:
-        if existing != body:
-            raise AutomaticOutcomesError(f"immutable object collision: {key}")
-        return digest
-    client.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=body,
-        ContentType="application/json",
-        Metadata={"sha256": digest},
-    )
-    verified = client.get_object(Bucket=bucket, Key=key)["Body"].read()
-    if verified != body:
-        raise AutomaticOutcomesError(f"immutable object verification failed: {key}")
+        if not _is_conditional_write_conflict(exc):
+            raise AutomaticOutcomesError(
+                f"immutable object create failed: {key}"
+            ) from exc
+    _verify_immutable_object(client, bucket, key, body, digest)
     return digest
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    ingest = sub.add_parser("ingest-official")
-    ingest.add_argument("--run-root", type=Path, required=True)
-    ingest.add_argument("--store", type=Path, required=True)
     ingest_r2 = sub.add_parser("ingest-official-r2")
     ingest_r2.add_argument("--run-root", type=Path, required=True)
     ingest_r2.add_argument("--store", type=Path, required=True)
@@ -1032,6 +1269,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     reconcile.add_argument("--run-id")
     reconcile.add_argument("--github-run-id")
     reconcile.add_argument("--github-run-attempt", default="1")
+    reconcile.add_argument("--allow-no-official-cycle", action="store_true")
     reconcile.add_argument("--restore-root", type=Path, required=True)
     reconcile.add_argument("--store", type=Path, required=True)
     plan = sub.add_parser("plan")
@@ -1069,6 +1307,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_id=args.run_id,
                 github_run_id=args.github_run_id,
                 github_run_attempt=args.github_run_attempt,
+                allow_no_official_cycle=args.allow_no_official_cycle,
             )
         else:
             result = ingest_official_run_r2(
@@ -1076,15 +1315,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     else:
         with ValidationStore(args.store) as store:
-            if args.command == "ingest-official":
-                result = ingest_official_run(store, args.run_root)
-            else:
-                result = asdict(plan_observation_slot(
-                    store,
-                    iso_year=args.iso_year,
-                    iso_week=args.iso_week,
-                    now_utc=args.now_utc,
-                ))
+            result = asdict(plan_observation_slot(
+                store,
+                iso_year=args.iso_year,
+                iso_week=args.iso_week,
+                now_utc=args.now_utc,
+            ))
     print(json.dumps(result, sort_keys=True, default=str))
     return 0
 

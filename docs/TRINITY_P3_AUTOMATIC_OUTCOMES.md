@@ -38,10 +38,23 @@ feedback collector. A successful `TRINITY Weekly Production` run then triggers
 retry accepts the exact archived run identity, so an ingestion failure never
 reruns Scanner, Luna, or Sol.
 
+A successful production workflow can legitimately have skipped its production
+gate. If no matching archived run exists, the automatic `workflow_run` path
+returns `NO_OFFICIAL_CYCLE` without creating a store, publishing an object, or
+calling a provider. The manual retry remains fail-closed when its requested
+archive does not exist. Workflow-dispatch values are passed through environment
+variables and validated both in the shell boundary and by the Python command;
+they are never interpolated directly into shell source.
+
 The reconciliation command is idempotent. It discovers exactly one archived
-run for a workflow-run ID/attempt, verifies the run archive checksums and the
-collector's complete-run contract, hydrates existing authoritative commits,
-and publishes the official-ingestion commit only after all records validate.
+run for a workflow-run ID/attempt and verifies the frozen collector's
+complete-run contract. Before opening the validation store, it requires the
+immutable OFFICIAL completion marker and matches its run ID, analytical and
+workflow commits, price-snapshot ID/hash/prefix, intended Monday, target
+session, completion time, archive object set, byte count, and per-object
+checksums to the restored source. An absent or divergent marker/archive fails
+closed. Only then does it hydrate existing authoritative commits and publish
+the official-ingestion commit.
 
 Stock acquisition uses the frozen
 `trinity.validation.stock_observation_acquisition.acquire_stock_observation`.
@@ -84,7 +97,10 @@ It contains:
 
 Each commit is a single canonical JSON object containing the exact new
 append-only validation records and their payload hashes. Commit publication is
-the authoritative atomic boundary. Snapshot and cycle trees have immutable
+the authoritative atomic boundary. Each immutable object is created with R2's
+atomic `If-None-Match: *` precondition; a concurrent/retry conflict is accepted
+only after byte-for-byte, length, and SHA-256 metadata verification. Snapshot
+and cycle trees have immutable
 per-file hashes plus an archive manifest and are fully verified before the
 slot commit is published. Create-or-verify semantics accept identical replay
 and reject divergent content. No mutable `latest.json` participates in
@@ -101,8 +117,11 @@ The outcome collector also publishes a deterministic scorecard artifact under
 `scorecards/identity=<authoritative-record-digest>/`. It contains the frozen
 V1 scorecard, descriptive D5/D20/D60 cohort summaries, weekly distributions,
 API-cost totals, and diagnostics for missed Scanner winners and promoted
-underperformers. A no-mature-expectations run still publishes the current
-scorecard and makes no market-data provider call.
+underperformers. The diagnostics explicitly separate whole-pipeline
+non-promotion from titles actually evaluated and rejected by Sol, Sol failures,
+and titles never routed to Sol; no frozen metric is changed. A
+no-mature-expectations run still publishes the current scorecard and makes no
+market-data provider call.
 
 No OpenAI, EODHD, Scanner, Luna, Sol, Telegram, broker, order, or trade
 execution path exists in the outcome workflow. Formal inference remains

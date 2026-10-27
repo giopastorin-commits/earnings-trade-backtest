@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import socket
 import sys
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +24,7 @@ from trinity.validation.slot_assignment import (
     OBSERVATION_SLOT_CLOSURE,
 )
 from trinity.validation.storage import ValidationStorageConflict, ValidationStore
+from trinity.shadow.r2 import archive_run
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,33 +54,159 @@ _fixture = _collector_tests._fixture
 
 
 class MissingObject(Exception):
-    response = {"Error": {"Code": "NoSuchKey"}}
+    response = {
+        "Error": {"Code": "NoSuchKey"},
+        "ResponseMetadata": {"HTTPStatusCode": 404},
+    }
+
+
+class ConditionalConflict(Exception):
+    response = {
+        "Error": {"Code": "PreconditionFailed"},
+        "ResponseMetadata": {"HTTPStatusCode": 412},
+    }
 
 
 class FakeR2:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
+        self.metadata: dict[str, dict[str, str]] = {}
         self.puts = 0
+        self.put_attempts = 0
+        self._lock = threading.Lock()
 
     def get_object(self, *, Bucket, Key):
         del Bucket
-        if Key not in self.objects:
-            raise MissingObject(Key)
-        return {"Body": io.BytesIO(self.objects[Key])}
+        with self._lock:
+            if Key not in self.objects:
+                raise MissingObject(Key)
+            body = self.objects[Key]
+            metadata = dict(self.metadata.get(Key, {}))
+        return {"Body": io.BytesIO(body), "Metadata": metadata}
 
-    def put_object(self, *, Bucket, Key, Body, **_kwargs):
+    def head_object(self, *, Bucket, Key):
         del Bucket
-        self.puts += 1
-        self.objects[Key] = bytes(Body)
+        with self._lock:
+            if Key not in self.objects:
+                raise MissingObject(Key)
+            return {
+                "ContentLength": len(self.objects[Key]),
+                "Metadata": dict(self.metadata.get(Key, {})),
+            }
+
+    def put_object(self, *, Bucket, Key, Body, Metadata=None, IfNoneMatch=None, **_kwargs):
+        del Bucket
+        raw = Body.read() if hasattr(Body, "read") else bytes(Body)
+        with self._lock:
+            self.put_attempts += 1
+            if IfNoneMatch == "*" and Key in self.objects:
+                raise ConditionalConflict(Key)
+            self.objects[Key] = raw
+            self.metadata[Key] = dict(Metadata or {})
+            self.puts += 1
+
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs=None):
+        extra = dict(ExtraArgs or {})
+        self.put_object(
+            Bucket=Bucket,
+            Key=Key,
+            Body=Path(Filename).read_bytes(),
+            Metadata=extra.get("Metadata"),
+        )
 
     def list_objects_v2(self, *, Bucket, Prefix, **_kwargs):
         del Bucket
-        keys = sorted(key for key in self.objects if key.startswith(Prefix))
-        return {"Contents": [{"Key": key} for key in keys], "IsTruncated": False}
+        with self._lock:
+            keys = sorted(key for key in self.objects if key.startswith(Prefix))
+            contents = [
+                {"Key": key, "Size": len(self.objects[key])} for key in keys
+            ]
+        return {"Contents": contents, "IsTruncated": False}
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+
+
+def _refresh_manifest(root: Path) -> None:
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    for item in manifest["files"]:
+        source = root / item["path"]
+        raw = source.read_bytes()
+        item.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    _write_json(path, manifest)
 
 
 def _official(root: Path) -> Path:
-    return _fixture(root, mode="OFFICIAL", official=True)
+    run = _fixture(root, mode="OFFICIAL", official=True)
+    orchestrator_path = run / "artifacts" / "weekly_orchestrator.json"
+    orchestrator = json.loads(orchestrator_path.read_text(encoding="utf-8"))
+    orchestrator.update({
+        "method_version": p3.ORCHESTRATOR_METHOD,
+        "intended_monday_europe_rome": "2026-10-05",
+        "workflow_registration_commit": "d" * 40,
+    })
+    _write_json(orchestrator_path, orchestrator)
+    restore_path = run / "artifacts" / "price_snapshot_restore.json"
+    restore = json.loads(restore_path.read_text(encoding="utf-8"))
+    restore["prefix"] = "prices/twelvedata/session=2026-10-09/run_id=fixture/"
+    _write_json(restore_path, restore)
+    _refresh_manifest(run)
+    return run
+
+
+def _set_run_id(run: Path, run_id: str) -> None:
+    for relative in ("artifacts/final_report.json", "run_state.json"):
+        path = run / relative
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["run_id"] = run_id
+        _write_json(path, payload)
+    manifest_path = run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["run_id"] = run_id
+    _write_json(manifest_path, manifest)
+    _refresh_manifest(run)
+
+
+def _archive_and_mark(remote: FakeR2, run: Path) -> dict[str, int]:
+    collected = collect_run(run)
+    archived = archive_run(remote, "bucket", collected.run_id, run)
+    orchestrator = json.loads(
+        (run / "artifacts" / "weekly_orchestrator.json").read_text(encoding="utf-8")
+    )
+    restore = json.loads(
+        (run / "artifacts" / "price_snapshot_restore.json").read_text(encoding="utf-8")
+    )
+    payload = {
+        "schema": "trinity.weekly-cycle-completion.v1",
+        "mode": "OFFICIAL",
+        "method_version": p3.ORCHESTRATOR_METHOD,
+        "intended_monday_europe_rome": orchestrator["intended_monday_europe_rome"],
+        "target_market_session": orchestrator["target_market_session"],
+        "analytical_commit": collected.analytical_commit_sha,
+        "workflow_registration_commit": orchestrator["workflow_registration_commit"],
+        "price_snapshot_id": collected.snapshot_id,
+        "price_snapshot_sha256": collected.snapshot_sha256,
+        "price_snapshot_r2_prefix": restore["prefix"],
+        "analytical_run_id": collected.run_id,
+        "analytical_archive": archived,
+        "completed_at_utc": "2026-10-13T00:00:00Z",
+    }
+    body = (json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ) + "\n").encode()
+    digest = hashlib.sha256(body).hexdigest()
+    remote.put_object(
+        Bucket="bucket",
+        Key=p3.official_completion_marker_key(
+            payload["intended_monday_europe_rome"], payload["target_market_session"],
+        ),
+        Body=body,
+        Metadata={"sha256": digest},
+        IfNoneMatch="*",
+    )
+    return archived
 
 
 def test_official_ingestion_is_atomic_complete_and_idempotent(tmp_path):
@@ -193,6 +325,8 @@ def test_quota_shortfall_fails_before_stock_or_spy_acquisition(tmp_path):
 def test_atomic_commit_roundtrip_and_divergent_object_collision(tmp_path):
     run = _official(tmp_path / "run")
     remote = FakeR2()
+    _archive_and_mark(remote, run)
+    puts_before_ingestion = remote.puts
     first = p3.ingest_official_run_r2(
         remote, "bucket", run_root=run, local_store=tmp_path / "first.sqlite3",
     )
@@ -200,13 +334,137 @@ def test_atomic_commit_roundtrip_and_divergent_object_collision(tmp_path):
         remote, "bucket", run_root=run, local_store=tmp_path / "second.sqlite3",
     )
     assert first["idempotent"] is False and second["idempotent"] is True
-    assert remote.puts == 1
+    assert remote.puts == puts_before_ingestion + 1
     key = first["authoritative_commit_key"]
     with pytest.raises(p3.AutomaticOutcomesError, match="collision"):
         p3.put_immutable(remote, "bucket", key, b"divergent")
     with ValidationStore(tmp_path / "restored.sqlite3") as restored:
         p3.hydrate_authoritative_store(remote, "bucket", restored)
         assert len(restored.records(OUTCOME_EXPECTATION)) == 18
+
+
+def test_authoritative_receipt_is_deterministic_across_registration_retries(
+    monkeypatch, tmp_path,
+):
+    run = _official(tmp_path / "run")
+    receipts = []
+    for index, sha in enumerate(("1" * 40, "2" * 40)):
+        monkeypatch.setenv("GITHUB_SHA", sha)
+        with ValidationStore(tmp_path / f"store-{index}.sqlite3") as store:
+            p3.ingest_official_run(store, run)
+            receipts.append(store.records(p3.INGESTION_RECEIPT))
+    assert receipts[0] == receipts[1]
+    assert "registration_commit_sha" not in receipts[0][0]
+
+
+def test_official_ingestion_requires_completed_matching_r2_marker(tmp_path):
+    run = _official(tmp_path / "run")
+    remote = FakeR2()
+    archive_run(remote, "bucket", collect_run(run).run_id, run)
+    store_path = tmp_path / "store.sqlite3"
+    with pytest.raises(p3.AutomaticOutcomesError, match="marker is missing"):
+        p3.ingest_official_run_r2(
+            remote, "bucket", run_root=run, local_store=store_path,
+        )
+    assert not store_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("analytical_run_id", "SHADOW_OTHER"),
+        ("price_snapshot_id", "other-snapshot"),
+        ("analytical_commit", "e" * 40),
+        ("target_market_session", "2026-10-10"),
+    ],
+)
+def test_official_marker_lineage_mismatch_is_rejected_before_ingestion(
+    field, value, tmp_path,
+):
+    run = _official(tmp_path / "run")
+    remote = FakeR2()
+    _archive_and_mark(remote, run)
+    key = p3.official_completion_marker_key("2026-10-05", "2026-10-09")
+    payload = json.loads(remote.objects[key])
+    payload[field] = value
+    raw = (json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ) + "\n").encode()
+    remote.objects[key] = raw
+    remote.metadata[key] = {"sha256": hashlib.sha256(raw).hexdigest()}
+    store_path = tmp_path / "store.sqlite3"
+    with pytest.raises(p3.AutomaticOutcomesError, match="lineage mismatch"):
+        p3.ingest_official_run_r2(
+            remote, "bucket", run_root=run, local_store=store_path,
+        )
+    assert not store_path.exists()
+
+
+def test_put_immutable_serializes_two_concurrent_writers():
+    remote = FakeR2()
+    key = "immutable/concurrent.json"
+    body = b'{"same":true}'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(
+            lambda _index: p3.put_immutable(remote, "bucket", key, body),
+            range(2),
+        ))
+    assert len(set(results)) == 1
+    assert remote.put_attempts == 2
+    assert remote.puts == 1
+    assert remote.objects[key] == body
+    with pytest.raises(p3.AutomaticOutcomesError, match="collision"):
+        p3.put_immutable(remote, "bucket", key, b'{"same":false}')
+
+
+def test_put_immutable_rejects_divergent_concurrent_writer():
+    remote = FakeR2()
+    key = "immutable/divergent-concurrent.json"
+    bodies = (b'{"writer":1}', b'{"writer":2}')
+
+    def write(body):
+        try:
+            return ("ok", p3.put_immutable(remote, "bucket", key, body))
+        except p3.AutomaticOutcomesError as exc:
+            return ("error", str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(write, bodies))
+    assert sorted(status for status, _value in results) == ["error", "ok"]
+    assert remote.puts == 1
+    assert remote.objects[key] in bodies
+    assert "collision" in next(value for status, value in results if status == "error")
+
+
+def test_successful_workflow_without_official_archive_is_clean_noop(tmp_path):
+    remote = FakeR2()
+    result = p3.reconcile_official_run_r2(
+        remote,
+        "bucket",
+        local_store=tmp_path / "store.sqlite3",
+        restore_root=tmp_path / "restore",
+        github_run_id="40432096545",
+        github_run_attempt="1",
+        allow_no_official_cycle=True,
+    )
+    assert result == {
+        "status": p3.NO_OFFICIAL_CYCLE,
+        "github_run_id": "40432096545",
+        "github_run_attempt": "1",
+        "records_appended": 0,
+        "provider_calls": 0,
+    }
+    assert remote.puts == 0
+    assert not (tmp_path / "store.sqlite3").exists()
+    with pytest.raises(p3.AutomaticOutcomesError, match="found=0"):
+        p3.reconcile_official_run_r2(
+            remote,
+            "bucket",
+            local_store=tmp_path / "manual.sqlite3",
+            restore_root=tmp_path / "manual-restore",
+            github_run_id="40432096545",
+            github_run_attempt="1",
+        )
 
 
 @pytest.mark.parametrize(
@@ -262,6 +520,10 @@ def test_workflows_are_fail_closed_and_feedback_is_separate_from_production():
     assert "restore archived official run" in reconciliation.lower()
     assert "openai_api_key" not in reconciliation.lower()
     assert "eodhd_api_key" not in reconciliation.lower()
+    assert '--run-id "${{ inputs.official_run_id }}"' not in reconciliation
+    assert '--github-run-id "${{ github.event.workflow_run.id }}"' not in reconciliation
+    assert "MANUAL_OFFICIAL_RUN_ID: ${{ inputs.official_run_id }}" in reconciliation
+    assert "--allow-no-official-cycle" in reconciliation
 
 
 def test_offline_suite_blocks_network(monkeypatch):
@@ -340,3 +602,68 @@ def test_archived_official_run_discovery_and_safe_restore(tmp_path):
     assert discovered == run_id
     assert (restored / "run_state.json").read_bytes() == b'{"state":"COMPLETE"}'
     assert (restored / "artifacts/final_report.json").read_bytes() == b"{}"
+
+
+def test_real_archive_run_format_restores_and_ingests_end_to_end(tmp_path):
+    remote = FakeR2()
+    run_id = "SHADOW_USA_2026-10-09_40432096545_A1"
+    source = _official(tmp_path / "source")
+    _set_run_id(source, run_id)
+    archived = _archive_and_mark(remote, source)
+    result = p3.reconcile_official_run_r2(
+        remote,
+        "bucket",
+        local_store=tmp_path / "store.sqlite3",
+        restore_root=tmp_path / "restored",
+        github_run_id="40432096545",
+        github_run_attempt="1",
+    )
+    assert archived["object_count"] > 0
+    assert result["restored_run_id"] == run_id
+    assert result["idempotent"] is False
+    assert result["official_completion_marker"]["sha256"]
+    with ValidationStore(tmp_path / "store.sqlite3") as store:
+        assert len(store.records("SELECTION")) == 4
+        assert len(store.records(OUTCOME_EXPECTATION)) == 18
+
+
+def test_selection_diagnostics_separate_pipeline_and_sol_rejections(monkeypatch):
+    run = SimpleNamespace(
+        eligibility="OFFICIAL_ELIGIBLE",
+        run_id="RUN",
+        decision_target_session="2026-10-09",
+        scanner_tickers=("AAA", "BBB", "CCC"),
+        luna_tickers=("AAA", "BBB", "CCC"),
+        sol_tickers=(),
+    )
+    finals = [
+        SimpleNamespace(
+            expectation_key=p3.outcome_identity("RUN", ticker, "SCANNER", 20),
+            status=p3.COMPLETE,
+            active_return_pct=10,
+        )
+        for ticker in run.scanner_tickers
+    ]
+    payloads = {
+        "AAA": {"run_id": "RUN", "ticker": "AAA", "sol_evaluated": True,
+                "sol_status": "REJECTED"},
+        "BBB": {"run_id": "RUN", "ticker": "BBB", "sol_evaluated": False,
+                "sol_status": "NOT_EVALUATED"},
+        "CCC": {"run_id": "RUN", "ticker": "CCC", "sol_evaluated": True,
+                "sol_status": "EVALUATED_FAILED"},
+    }
+    store = SimpleNamespace(record_items=lambda kind: [
+        (ticker, payload) for ticker, payload in payloads.items()
+    ] if kind == "SELECTION" else [])
+    monkeypatch.setattr(p3, "load_run_observations", lambda _store: (run,))
+    monkeypatch.setattr(p3, "load_current_expectations", lambda _store: ())
+    monkeypatch.setattr(p3, "load_outcome_finals", lambda _store, _expectations: finals)
+    result = p3._selection_error_diagnostics(store)
+    assert [item["ticker"] for item in result["pipeline_not_promoted_winners"]] \
+        == ["AAA", "BBB", "CCC"]
+    assert [item["ticker"] for item in result["sol_evaluated_rejected_winners"]] \
+        == ["AAA"]
+    assert [item["ticker"] for item in result["not_routed_to_sol_winners"]] \
+        == ["BBB"]
+    assert [item["ticker"] for item in result["sol_evaluation_failed_winners"]] \
+        == ["CCC"]

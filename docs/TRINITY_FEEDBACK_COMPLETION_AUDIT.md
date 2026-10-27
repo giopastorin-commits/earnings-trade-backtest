@@ -28,6 +28,43 @@ The local environment has no R2 credentials, so the remote bucket was not read o
 7. Added descriptive D5/D20/D60 summaries, weekly distributions, API-cost totals, missed-winner diagnostics and promoted-underperformer diagnostics alongside the frozen V1 scorecard. The frozen protocol and its formal 52-week inference gate remain unchanged.
 8. Added tests for deterministic scorecard output, no-op scorecard persistence, archived-run discovery/restore and separated workflow ordering.
 
+## Corrective review of PR #1
+
+The independent findings against commit `e01c250` were corrected on the same
+feature branch without changing Scanner, Luna, Sol, the validation protocol, or
+the frozen analytical commit:
+
+1. Automatic reconciliation now reports `NO_OFFICIAL_CYCLE` for a successful
+   production workflow that produced no OFFICIAL archive; manual absence and
+   ambiguous discovery remain errors.
+2. `OFFICIAL_INGESTION_RECEIPT` no longer contains the registration workflow's
+   `GITHUB_SHA`, so retries over the same source run produce identical content.
+3. Every authoritative R2 ingestion validates the immutable OFFICIAL completion
+   marker and the complete archived source before opening or mutating the local
+   validation store.
+4. Immutable validation objects use atomic R2 create-if-absent semantics via
+   `If-None-Match: *`; a 409/412 conflict is accepted only for identical bytes
+   and verified SHA-256 metadata.
+5. Workflow-dispatch input is carried through environment variables and checked
+   against strict run-ID/integer patterns before use.
+
+The tests now include two concurrent immutable writers, missing/divergent marker
+rejection, retry-deterministic receipts, clean skipped-cycle handling, and an
+end-to-end path that archives with the real frozen `archive_run`, restores the
+archive through `FakeR2`, and imports it with the frozen collector. Selection
+diagnostics separately identify whole-pipeline non-promotion, Sol rejection,
+Sol evaluation failure, and no Sol routing.
+
+Validation executed on 27 October 2026:
+
+- Corrected P3 suite: `29 passed`.
+- Frozen `tests/trinity/validation` suite at analytical commit
+  `eb15c45b041b8890194d2f98b025aa98ed7fa527`: `400 passed`.
+- Python compilation and workflow YAML parse: passed.
+- Production R2 integration, workflow dispatch, deployment and merge: not run
+  by design; the review used only local fixtures, `FakeR2`, and the detached
+  frozen analytical checkout.
+
 ## R2 layout added
 
 ```text

@@ -1,8 +1,9 @@
 name: TRINITY Official Feedback Reconciliation
 
 # This workflow is deliberately separate from production analysis. It runs
-# only after a successful OFFICIAL production workflow, restores the immutable
-# archived run, and retries ingestion without rerunning Scanner/Luna/Sol.
+# only after a successful production workflow. It cleanly skips runs with no
+# OFFICIAL cycle; otherwise it restores the immutable archive and retries
+# ingestion without rerunning Scanner/Luna/Sol.
 on:
   workflow_run:
     workflows: ["TRINITY Weekly Production"]
@@ -54,6 +55,10 @@ jobs:
       - run: python -m pip install --disable-pip-version-check -r requirements-shadow.txt
       - name: Ingest archived official run without rerunning analysis
         env:
+          SOURCE_EVENT_NAME: ${{ github.event_name }}
+          SOURCE_WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_WORKFLOW_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          MANUAL_OFFICIAL_RUN_ID: ${{ inputs.official_run_id }}
           TRINITY_R2_ENDPOINT: ${{ secrets.TRINITY_R2_ENDPOINT }}
           TRINITY_R2_ACCESS_KEY_ID: ${{ secrets.TRINITY_R2_ACCESS_KEY_ID }}
           TRINITY_R2_SECRET_ACCESS_KEY: ${{ secrets.TRINITY_R2_SECRET_ACCESS_KEY }}
@@ -63,11 +68,24 @@ jobs:
           args=(reconcile-official-r2
             --restore-root "$RUNNER_TEMP/trinity-restored-official"
             --store "$RUNNER_TEMP/trinity-prospective-ingestion.sqlite3")
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
-            args+=(--github-run-id "${{ github.event.workflow_run.id }}"
-              --github-run-attempt "${{ github.event.workflow_run.run_attempt }}")
+          if [[ "$SOURCE_EVENT_NAME" == "workflow_run" ]]; then
+            [[ "$SOURCE_WORKFLOW_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
+              echo "Invalid source workflow run ID" >&2; exit 2;
+            }
+            [[ "$SOURCE_WORKFLOW_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || {
+              echo "Invalid source workflow run attempt" >&2; exit 2;
+            }
+            args+=(--github-run-id "$SOURCE_WORKFLOW_RUN_ID"
+              --github-run-attempt "$SOURCE_WORKFLOW_RUN_ATTEMPT"
+              --allow-no-official-cycle)
+          elif [[ "$SOURCE_EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$MANUAL_OFFICIAL_RUN_ID" =~ ^SHADOW_USA_[0-9]{4}-[0-9]{2}-[0-9]{2}_[1-9][0-9]*_A[1-9][0-9]*$ ]] || {
+              echo "Invalid archived OFFICIAL run identity" >&2; exit 2;
+            }
+            args+=(--run-id "$MANUAL_OFFICIAL_RUN_ID")
           else
-            args+=(--run-id "${{ inputs.official_run_id }}")
+            echo "Unsupported reconciliation event" >&2
+            exit 2
           fi
           python .workflow-registration/.github/scripts/trinity_p3_automatic_outcomes.py "${args[@]}"
       - name: Preserve reconciliation diagnostics
