@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .canonical import sha256_bytes, sha256_json, write_json
 from .adjudication import build_adjudication_dataset
-from .client import MAX_OUTPUT_TOKENS, build_request_body, ProviderCallError
+from .client import MAX_OUTPUT_TOKENS, LiveShadowDisabled, build_request_body, ProviderCallError
 from .config import ARMS, MODEL, Effort
 from .dataset import TickerInput
 from .journal import CallJournal, JournalError
@@ -64,6 +65,8 @@ def _call_record(*, plan_item: dict[str, Any], record: TickerInput, response: An
                  status: str = "SUCCEEDED", error_type: str | None = None,
                  error: str | None = None, accounting: dict[str, Any] | None = None) -> dict[str, Any]:
     accounting = dict(accounting or {})
+    cost_value = accounting.get("cost_usd")
+    cost_unknown = cost_value is None or bool(accounting.get("cost_unknown"))
     result = {**plan_item, "status": status, "model": MODEL, "input_hash": record.input_hash,
               "request_hash": request_hash, "prompt_hash": sha256_bytes(prompt.encode("utf-8")),
               "schema_hash": sha256_json(schema), "prompt": prompt, "schema": schema,
@@ -76,7 +79,8 @@ def _call_record(*, plan_item: dict[str, Any], record: TickerInput, response: An
               "visible_output_tokens": int(accounting.get("visible_output_tokens") or 0),
               "reasoning_tokens": int(accounting.get("reasoning_tokens") or 0),
               "total_tokens": int(accounting.get("total_tokens") or 0),
-              "duration_seconds": 0.0, "cost_usd": str(accounting.get("cost_usd") or "0"),
+              "duration_seconds": 0.0, "cost_usd": None if cost_unknown else str(cost_value),
+              "cost_unknown": cost_unknown,
               "error_type": error_type, "error": error}
     if response is not None:
         result.update({"output_text": response.output_text, "parsed": response.parsed,
@@ -86,7 +90,8 @@ def _call_record(*, plan_item: dict[str, Any], record: TickerInput, response: An
                        "cache_write_tokens": response.cache_write_tokens, "output_tokens": response.output_tokens,
                        "visible_output_tokens": getattr(response, "visible_output_tokens", 0),
                        "reasoning_tokens": response.reasoning_tokens, "total_tokens": response.total_tokens,
-                       "duration_seconds": response.duration_seconds, "cost_usd": response.cost_usd})
+                       "duration_seconds": response.duration_seconds, "cost_usd": response.cost_usd,
+                       "cost_unknown": False})
         if plan_item["role"] == "ANALYST":
             result["draft_hash"] = result["output_hash"]
     return result
@@ -106,8 +111,12 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
     metadata = {"record_id": record.record_id, "role": item["role"], "ticker": record.ticker,
                 "effort": item["effort"], "prompt_hash": sha256_bytes(prompt.encode("utf-8")),
                 "schema_hash": sha256_json(schema)}
-    existing = journal.start(call_id=item["call_id"], request_hash=request_hash, metadata=metadata)
-    if existing.get("status") in {"SUCCEEDED", "FAILED"}:
+    reservation = client.estimate_max_cost(prompt) if hasattr(client, "estimate_max_cost") else 0
+    existing = journal.start(call_id=item["call_id"], request_hash=request_hash, metadata=metadata,
+                             reservation_usd=reservation)
+    if existing.get("status") in {"SUCCEEDED", "FAILED", "INDETERMINATE", "SKIPPED_DEPENDENCY"}:
+        if existing.get("status") == "INDETERMINATE":
+            raise JournalError(f"call {item['call_id']} is INDETERMINATE; explicit resolution required")
         saved = existing.get("result")
         if isinstance(saved, dict):
             return saved
@@ -177,8 +186,12 @@ def run_experiment(*, records: tuple[TickerInput, ...], dataset: Any, mode: str,
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     plan = build_call_plan(records, replicate_id=replicate_id)
+    started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     manifest = build_manifest(dataset, records, plan=plan, replicate_id=replicate_id,
-                              max_output_tokens=getattr(client, "max_output_tokens", MAX_OUTPUT_TOKENS))
+                              max_output_tokens=getattr(client, "max_output_tokens", MAX_OUTPUT_TOKENS),
+                              execution_timestamp_utc=started_at)
+    if mode == "live-shadow" and manifest.get("code_commit") in (None, "", "UNKNOWN"):
+        raise LiveShadowDisabled("LIVE SHADOW requires a verifiable experiment code commit")
     write_json(output / "manifest.json", manifest)
     write_json(output / "call_plan.json", plan)
     if mode == "dry-run":
@@ -191,6 +204,8 @@ def run_experiment(*, records: tuple[TickerInput, ...], dataset: Any, mode: str,
     journal = CallJournal(output / "journal")
     if hasattr(client, "journal"):
         client.journal = journal
+    if mode == "live-shadow":
+        journal.configure_budget(client.max_budget_usd)
     calls: list[dict[str, Any]] = []
     analysts: dict[tuple[str, Effort], dict[str, Any]] = {}
     for item in plan:
@@ -203,6 +218,12 @@ def run_experiment(*, records: tuple[TickerInput, ...], dataset: Any, mode: str,
         else:
             draft = analysts.get((record.record_id, item["analyst_effort"]))
             if draft is None:
+                skipped_hash = sha256_json({"call_id": item["call_id"], "status": "SKIPPED_DEPENDENCY", "depends_on": item["depends_on"]})
+                saved = _call_record(plan_item=item, record=record, response=None,
+                                     prompt=record.critic_prompt_template, schema=record.critic_schema,
+                                     request_hash=skipped_hash, status="SKIPPED_DEPENDENCY",
+                                     error_type="DEPENDENCY", error="Analyst dependency did not succeed")
+                calls.append(saved)
                 continue
             prompt = render_critic_prompt(record, draft["output_text"])
             saved = _execute_call(client=client, journal=journal, item=item, record=record, prompt=prompt, schema=record.critic_schema)
@@ -221,8 +242,11 @@ def run_experiment(*, records: tuple[TickerInput, ...], dataset: Any, mode: str,
     write_json(output / "manifest.json", final_manifest)
     results = {"experiment_id": "TRINITY_SOL_EFFORT_COMPARISON_V1", "mode": mode, "manifest_hash": final_manifest["manifest_hash"],
                "replicate_id": replicate_id, "calls": calls, "arms": arms,
+               "planned_calls": len(plan), "execution_timestamp_utc": started_at,
                "status": "COMPLETE" if all(item["status"] == "SUCCEEDED" for item in arms) else "PARTIAL",
-               "journal_cost_usd": str(journal.consumed_cost())}
+               "journal_cost_usd": str(journal.consumed_cost()),
+               "journal_reserved_usd": str(journal.reserved_cost()),
+               "cost_unknown_calls": sum(bool(item.get("cost_unknown")) for item in calls)}
     write_json(output / "results.json", results)
     write_json(output / "scorecard.json", build_scorecard(results))
     adjudication, blind_key = build_adjudication_dataset(results)

@@ -180,7 +180,7 @@ class MockResponsesClient:
             output_tokens=output_tokens,
             visible_output_tokens=visible_output_tokens,
             reasoning_tokens=reasoning_tokens,
-            total_tokens=input_tokens + output_tokens + reasoning_tokens,
+            total_tokens=input_tokens + output_tokens,
             duration_seconds=0.0,
             cost_usd=str(calculate_cost(input_tokens, 0, 0, output_tokens)),
             raw_sha256=sha256_bytes(raw),
@@ -230,6 +230,10 @@ class OpenAIResponsesClient:
             raise LiveShadowDisabled("OPENAI_API_KEY is not configured")
         self.session = session
 
+    def estimate_max_cost(self, prompt: str) -> Decimal:
+        estimated_input = max(1, len(prompt.encode("utf-8")) // 4)
+        return calculate_cost(estimated_input, 0, 0, self.max_output_tokens)
+
     def invoke(
         self, *, call_id: str, role: str, ticker: str, effort: Effort,
         prompt: str, schema: Mapping[str, Any], checkpoint: Callable[..., Any] | None = None,
@@ -238,8 +242,7 @@ class OpenAIResponsesClient:
             self.total_cost = max(self.total_cost, self.journal.consumed_cost())
         if self.total_cost >= self.max_budget_usd:
             raise LiveShadowDisabled("LIVE SHADOW budget exhausted before next call")
-        estimated_input = max(1, len(prompt.encode("utf-8")) // 4)
-        worst_case = calculate_cost(estimated_input, 0, 0, self.max_output_tokens)
+        worst_case = self.estimate_max_cost(prompt)
         if self.total_cost + worst_case > self.max_budget_usd:
             raise LiveShadowDisabled(
                 "LIVE SHADOW budget preflight rejected the next call"
@@ -268,20 +271,24 @@ class OpenAIResponsesClient:
             )
         raw = bytes(response.content)
         raw_sha256 = sha256_bytes(raw)
+        unknown_accounting = {
+            "cost_usd": None,
+            "cost_unknown": True,
+            "usage_unavailable": True,
+        }
+        # This is intentionally the first operation after HTTP 200. No JSON
+        # parsing, usage extraction or status interpretation occurs before it.
+        if checkpoint is not None:
+            checkpoint(call_id=call_id, raw=raw, accounting=unknown_accounting)
         try:
             envelope = json.loads(raw)
         except json.JSONDecodeError as exc:
-            if checkpoint is not None:
-                checkpoint(
-                    call_id=call_id,
-                    raw=raw,
-                    accounting={"cost_usd": "0", "usage_unavailable": True},
-                )
             raise ProviderCallError(
                 "Responses API returned invalid JSON after HTTP 200",
                 error_type="PARSE",
                 status="INDETERMINATE",
                 raw_sha256=raw_sha256,
+                accounting=unknown_accounting,
             ) from exc
         usage = envelope.get("usage") or {}
         input_details = usage.get("input_tokens_details") or {}
@@ -300,6 +307,7 @@ class OpenAIResponsesClient:
             "reasoning_tokens": reasoning_tokens,
             "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens),
             "cost_usd": str(cost),
+            "cost_unknown": False,
         }
         if checkpoint is not None:
             checkpoint(call_id=call_id, raw=raw, accounting=accounting)

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from decimal import Decimal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,7 +20,7 @@ from experiments.sol_effort_v1.client import (
 from experiments.sol_effort_v1.adjudication import build_adjudication_dataset
 from experiments.sol_effort_v1.archive import _json_payload, _official_request
 from experiments.sol_effort_v1.canonical import sha256_bytes
-from experiments.sol_effort_v1.journal import CallJournal, JournalError
+from experiments.sol_effort_v1.journal import BudgetExceeded, CallJournal, JournalBusy, JournalError
 from experiments.sol_effort_v1.dataset import DatasetError, load_dataset, select_records
 from experiments.sol_effort_v1.runner import build_call_plan, run_experiment
 from experiments.sol_effort_v1.schema import ResponseValidationError
@@ -92,8 +95,16 @@ def test_manifest_and_mock_results_are_reproducible(tmp_path: Path) -> None:
         output_dir=second_dir,
         client=MockResponsesClient(),
     )
-    assert (first_dir / "manifest.json").read_bytes() == (second_dir / "manifest.json").read_bytes()
-    assert (first_dir / "results.json").read_bytes() == (second_dir / "results.json").read_bytes()
+    first_manifest = json.loads((first_dir / "manifest.json").read_text())
+    second_manifest = json.loads((second_dir / "manifest.json").read_text())
+    assert first_manifest["dataset_identity"] == second_manifest["dataset_identity"]
+    assert first_manifest["planned_calls"] == second_manifest["planned_calls"]
+    assert first_manifest["execution_timestamp_utc"] != second_manifest["execution_timestamp_utc"]
+    first_manifest.pop("execution_timestamp_utc")
+    second_manifest.pop("execution_timestamp_utc")
+    first_manifest.pop("manifest_hash")
+    second_manifest.pop("manifest_hash")
+    assert first_manifest == second_manifest
 
 
 def test_dry_run_makes_no_client_calls(tmp_path: Path) -> None:
@@ -147,6 +158,8 @@ def test_schema_failure_is_recorded_and_does_not_promote(tmp_path: Path) -> None
     )
     assert result["status"] == "PARTIAL"
     assert any(item["error_type"] == "SCHEMA" for item in result["calls"])
+    assert sum(item["status"] == "SKIPPED_DEPENDENCY" for item in result["calls"]) == 4
+    assert len(result["calls"]) == result["planned_calls"]
     assert all(item["status"] == "INCOMPLETE" for item in result["arms"])
 
 
@@ -175,6 +188,8 @@ def test_mock_reasoning_tokens_are_billable() -> None:
     high = client.invoke(call_id="h", role="ANALYST", ticker="X", effort="high", prompt="p", schema=schema)
     assert medium.output_tokens == medium.visible_output_tokens + medium.reasoning_tokens
     assert high.output_tokens == high.visible_output_tokens + high.reasoning_tokens
+    assert medium.total_tokens == medium.input_tokens + medium.output_tokens
+    assert high.total_tokens == high.input_tokens + high.output_tokens
     assert Decimal(high.cost_usd) > 0
     assert Decimal(high.cost_usd) == calculate_cost(high.input_tokens, 0, 0, high.output_tokens)
 
@@ -236,6 +251,45 @@ def test_incomplete_response_with_usage_is_not_a_financial_result(tmp_path: Path
     assert journal.consumed_cost() > 0
 
 
+def test_raw_checkpoint_precedes_envelope_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import experiments.sol_effort_v1.client as client_module
+    payload = {"id": "r1", "status": "completed", "output": [{"content": [{"type": "output_text", "text": "{}"}]}],
+               "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}
+    session = _Session(_Response(json.dumps(payload).encode()))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session,
+    )
+    events: list[str] = []
+    original_loads = client_module.json.loads
+
+    def traced_loads(value):
+        events.append("parse")
+        return original_loads(value)
+
+    monkeypatch.setattr(client_module.json, "loads", traced_loads)
+    client.invoke(call_id="order", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
+                  checkpoint=lambda **kwargs: events.append("checkpoint"))
+    assert events[0] == "checkpoint"
+    assert "parse" in events
+
+
+def test_unknown_cost_is_not_recorded_as_zero(tmp_path: Path) -> None:
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="unknown", request_hash="h", metadata={}, reservation_usd=Decimal("0.08"))
+    session = _Session(_Response(b"not-json"))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("0.10"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session, journal=journal,
+    )
+    with pytest.raises(ProviderCallError) as exc:
+        client.invoke(call_id="unknown", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
+                      checkpoint=journal.record_http_response)
+    assert exc.value.accounting["cost_usd"] is None
+    assert journal.consumed_cost() == 0
+    assert journal.reserved_cost() == Decimal("0.08")
+
+
 def test_http_200_invalid_json_is_checkpointed_and_blocks_retry(tmp_path: Path) -> None:
     journal = CallJournal(tmp_path / "journal")
     journal.start(call_id="bad-json", request_hash="h", metadata={})
@@ -285,6 +339,9 @@ def test_resume_reuses_terminal_calls_after_crash(tmp_path: Path) -> None:
     records = select_records(dataset, 1)
     base = MockResponsesClient()
 
+    class SyntheticCrash(BaseException):
+        pass
+
     class CrashClient:
         def __init__(self):
             self.count = 0
@@ -292,15 +349,15 @@ def test_resume_reuses_terminal_calls_after_crash(tmp_path: Path) -> None:
         def invoke(self, **kwargs):
             self.count += 1
             if self.count == 3:
-                raise KeyboardInterrupt("synthetic process crash")
+                raise SyntheticCrash("synthetic process crash")
             return base.invoke(**kwargs)
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(SyntheticCrash):
         run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=CrashClient())
     resumed = MockResponsesClient()
-    result = run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=resumed)
-    assert result["status"] == "COMPLETE"
-    assert len(resumed.calls) == 4
+    with pytest.raises(JournalError, match="INDETERMINATE"):
+        run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=resumed)
+    assert resumed.calls == []
 
 
 def test_repeated_run_does_not_repeat_completed_calls(tmp_path: Path) -> None:
@@ -319,6 +376,65 @@ def test_journal_blocks_indeterminate_retry(tmp_path: Path) -> None:
     journal.finalize(call_id="c", status="INDETERMINATE", error_type="RECOVERY", error="test")
     with pytest.raises(JournalError, match="INDETERMINATE"):
         journal.start(call_id="c", request_hash="h", metadata={})
+
+
+def test_cross_process_claim_and_budget_are_atomic(tmp_path: Path) -> None:
+    first = CallJournal(tmp_path / "journal")
+    second = CallJournal(tmp_path / "journal")
+    first.configure_budget(Decimal("0.10"))
+    first.start(call_id="claimed", request_hash="h", metadata={}, reservation_usd=Decimal("0.08"))
+    second.owner_pid = 99999999
+    with pytest.raises(JournalBusy):
+        second.start(call_id="claimed", request_hash="h", metadata={}, reservation_usd=Decimal("0.08"))
+    with pytest.raises(BudgetExceeded):
+        second.start(call_id="different", request_hash="h2", metadata={}, reservation_usd=Decimal("0.08"))
+    assert first.reserved_cost() == Decimal("0.08")
+
+
+@pytest.mark.skipif(
+    os.environ.get("TRINITY_RUN_PROCESS_TEST") != "1",
+    reason="real subprocess coordination test is run explicitly to avoid hanging the full pytest worker",
+)
+def test_two_real_processes_cannot_claim_same_call(tmp_path: Path) -> None:
+    root = tmp_path / "shared"
+    CallJournal(root)
+    outputs = [tmp_path / "one.txt", tmp_path / "two.txt"]
+    release = tmp_path / "release.txt"
+    script = (
+        "import sys,time\n"
+        "from decimal import Decimal\n"
+        "from experiments.sol_effort_v1.journal import CallJournal\n"
+        "j=CallJournal(sys.argv[1])\n"
+        "j.configure_budget(Decimal('0.10'))\n"
+        "try:\n"
+        " j.start(call_id='same',request_hash='h',metadata={},reservation_usd=Decimal('0.08'))\n"
+        " open(sys.argv[2],'w').write('CLAIMED')\n"
+        " while not __import__('pathlib').Path(sys.argv[3]).exists(): time.sleep(0.01)\n"
+        "except Exception as e:\n"
+        " open(sys.argv[2],'w').write(type(e).__name__)\n"
+    )
+    code = "exec(" + repr(script) + ")"
+    process_one = subprocess.Popen(
+        [sys.executable, "-c", code, str(root), str(outputs[0]), str(release)], cwd=str(Path.cwd()),
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    )
+    for _ in range(100):
+        if outputs[0].exists():
+            break
+        import time
+        time.sleep(0.01)
+    process_two = subprocess.Popen(
+        [sys.executable, "-c", code, str(root), str(outputs[1]), str(release)], cwd=str(Path.cwd()),
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    )
+    assert process_two.wait(timeout=10) == 0
+    release.write_text("release")
+    assert process_one.wait(timeout=10) == 0
+    statuses = [path.read_text() for path in outputs]
+    assert statuses.count("CLAIMED") == 1
+    assert statuses.count("JournalBusy") == 1
 
 
 def test_ledger_checksum_tampering_is_rejected() -> None:

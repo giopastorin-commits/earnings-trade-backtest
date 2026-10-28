@@ -158,13 +158,16 @@ def load_ledger_dataset(
     *,
     run_id: str | None = None,
     analytical_commit: str | None = None,
+    immutable: bool = False,
 ) -> Dataset:
     """Export usable historical Sol inputs from a frozen Ledger SQLite file."""
 
     database = Path(path).resolve()
     if not database.is_file():
         raise ArchiveDatasetError(f"Ledger SQLite file does not exist: {database}")
-    uri = f"file:{database.as_posix()}?mode=ro"
+    uri = database.as_uri() + "?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
     try:
         connection = sqlite3.connect(uri, uri=True)
         connection.row_factory = sqlite3.Row
@@ -294,6 +297,10 @@ def load_ledger_dataset(
             "data_cutoff_utc": cutoff,
             "snapshot": {
                 "kind": "LEDGER_ARCHIVE_LINEAGE",
+                "source": "TRINITY_LEDGER",
+                "provenance": f"{effective_run_id}:{interaction['attempt_id']}",
+                "captured_at": cutoff,
+                "source_reference": str(database),
                 "run_id": effective_run_id,
                 "attempt_id": interaction["attempt_id"],
             },

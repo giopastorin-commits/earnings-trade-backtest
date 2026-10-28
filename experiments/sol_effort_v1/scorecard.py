@@ -103,12 +103,16 @@ def build_scorecard(results: Mapping[str, Any]) -> dict[str, Any]:
         "calls": 0, "cost_usd": 0.0, "input_tokens": 0, "cached_input_tokens": 0,
         "cache_write_tokens": 0, "output_tokens": 0, "visible_output_tokens": 0,
         "reasoning_tokens": 0, "latencies": [], "failures": 0,
+            "unknown_cost_calls": 0,
     })
     for call in calls:
         key = f"{call['role'].lower()}_{call['effort']}"
         entry = costs[key]
         entry["calls"] += 1
-        entry["cost_usd"] += float(call.get("cost_usd") or 0)
+        if call.get("cost_unknown") or call.get("cost_usd") is None:
+            entry["unknown_cost_calls"] += 1
+        else:
+            entry["cost_usd"] += float(call.get("cost_usd") or 0)
         for field in ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "visible_output_tokens", "reasoning_tokens"):
             entry[field] += int(call.get(field) or 0)
         entry["latencies"].append(float(call.get("duration_seconds") or 0))
@@ -140,7 +144,11 @@ def build_scorecard(results: Mapping[str, Any]) -> dict[str, Any]:
         "factorial_contrasts": _factorial_financial(arms) if available else {},
         "trade_returns": {"available": False, "reason": "No executable trade_return_pct and trade_cost_pct fields supplied"},
         "transaction_costs": {"included": False, "reason": "Not supplied in outcome contract"},
-        "ai_costs": {"total_usd": sum(float(call.get("cost_usd") or 0) for call in calls), "included_separately": True},
+        "ai_costs": {
+            "total_usd": sum(float(call.get("cost_usd") or 0) for call in calls if not call.get("cost_unknown")),
+            "unknown_cost_calls": sum(bool(call.get("cost_unknown")) for call in calls),
+            "included_separately": True,
+        },
     }
     # Backward-compatible common-outcome view. It is deliberately not used
     # for arm comparisons; each arm's basket remains in by_arm above.
@@ -161,12 +169,14 @@ def build_scorecard(results: Mapping[str, Any]) -> dict[str, Any]:
         "official_protocol_untouched": True,
         "quality": {
             "records_selected": len({item["record_id"] for item in arms}),
-            "arms_expected": 4, "calls_total": len(calls),
+            "arms_expected": 4, "calls_planned": int(results.get("planned_calls") or 0),
+            "calls_total": len(calls),
             "calls_succeeded": sum(item.get("status") == "SUCCEEDED" for item in calls),
             "calls_failed": sum(item.get("status") != "SUCCEEDED" for item in calls),
             "schema_errors": sum(item.get("error_type") == "SCHEMA" for item in calls),
             "parse_errors": sum(item.get("error_type") == "PARSE" for item in calls),
             "indeterminate_calls": sum(item.get("status") == "INDETERMINATE" for item in calls),
+            "skipped_dependency_calls": sum(item.get("status") == "SKIPPED_DEPENDENCY" for item in calls),
         },
         "costs_by_call_type": dict(costs),
         "decisions_by_arm": {key: dict(value) for key, value in decisions.items()},

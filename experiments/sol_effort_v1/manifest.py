@@ -31,7 +31,8 @@ def _code_commit() -> str:
 
 
 def build_manifest(dataset: Dataset, records: Iterable[TickerInput], *, plan: Iterable[dict[str, Any]] = (),
-                   replicate_id: str = "r1", max_output_tokens: int = MAX_OUTPUT_TOKENS) -> dict[str, Any]:
+                   replicate_id: str = "r1", max_output_tokens: int = MAX_OUTPUT_TOKENS,
+                   execution_timestamp_utc: str | None = None) -> dict[str, Any]:
     selected = tuple(records)
     payload = {
         "experiment_id": "TRINITY_SOL_EFFORT_COMPARISON_V1",
@@ -42,6 +43,7 @@ def build_manifest(dataset: Dataset, records: Iterable[TickerInput], *, plan: It
         "max_output_tokens": max_output_tokens,
         "validator_version": VALIDATOR_VERSION,
         "code_commit": _code_commit(),
+        "execution_timestamp_utc": execution_timestamp_utc,
         "replicate_id": replicate_id,
         "reasoning_efforts": ["medium", "high"],
         "dataset_schema_name": dataset.schema_name,
@@ -68,6 +70,13 @@ def build_manifest(dataset: Dataset, records: Iterable[TickerInput], *, plan: It
             }
             for record in selected
         ],
+        "dataset_identity": sha256_json({
+            "schema_name": dataset.schema_name,
+            "schema_version": dataset.schema_version,
+            "source_type": dataset.source_type,
+            "analytical_commit": dataset.analytical_commit,
+            "records": [record.input_hash for record in selected],
+        }),
         "planned_calls": [
             {
                 "call_id": item["call_id"],

@@ -15,6 +15,12 @@ class DatasetError(ValueError):
     """The experiment input is incomplete or temporally unsafe."""
 
 
+_TEMPORAL_KEY_PARTS = (
+    "published", "retrieved", "as_of", "available", "observed", "timestamp",
+    "effective", "event_date", "captured", "snapshot", "cutoff",
+)
+
+
 def _utc(value: str, field: str) -> datetime:
     if not isinstance(value, str) or not value.strip():
         raise DatasetError(f"{field} must be an ISO-8601 timestamp")
@@ -25,6 +31,43 @@ def _utc(value: str, field: str) -> datetime:
     if parsed.tzinfo is None:
         raise DatasetError(f"{field} must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def _temporal_value(value: Any, field: str) -> datetime:
+    if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-":
+        try:
+            # Date-only provenance is accepted at end-of-day, conservatively.
+            return datetime.fromisoformat(value).replace(
+                hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc
+            )
+        except ValueError as exc:
+            raise DatasetError(f"{field} is not a valid date") from exc
+    return _utc(str(value), field)
+
+
+def _validate_nested_temporal(value: Any, cutoff: datetime, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key).lower()
+            if (item is not None and any(part in key_text for part in _TEMPORAL_KEY_PARTS)
+                    and "precision" not in key_text and not key_text.endswith("_id")):
+                if isinstance(item, (str, int, float)):
+                    try:
+                        if (isinstance(item, str) and len(item) == 10 and "as_of" in key_text
+                                and datetime.fromisoformat(item).date() <= cutoff.date()):
+                            pass
+                        elif _temporal_value(item, f"{path}.{key}") > cutoff:
+                            raise DatasetError(f"future temporal field detected: {path}.{key}")
+                    except DatasetError:
+                        raise
+                    except (TypeError, ValueError):
+                        # Non-date labels such as `snapshot_id` are provenance
+                        # identifiers, not timestamps.
+                        pass
+            _validate_nested_temporal(item, cutoff, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_nested_temporal(item, cutoff, f"{path}[{index}]")
 
 
 @dataclass(frozen=True)
@@ -64,6 +107,8 @@ class TickerInput:
         sources = value["sources"]
         if not isinstance(sources, list):
             raise DatasetError("sources must be a list")
+        if not sources:
+            raise DatasetError("sources must contain temporal provenance")
         normalized_sources: list[Mapping[str, Any]] = []
         for index, source in enumerate(sources):
             if not isinstance(source, Mapping):
@@ -75,20 +120,29 @@ class TickerInput:
             if not any(value is not None for _, value in temporal_values):
                 raise DatasetError(f"sources[{index}] has no temporal provenance")
             for field, source_value in temporal_values:
-                if source_value is not None and _utc(str(source_value), f"sources[{index}].{field}") > cutoff:
+                if source_value is not None and _temporal_value(source_value, f"sources[{index}].{field}") > cutoff:
                     raise DatasetError(
                         f"future source detected for {ticker}: sources[{index}].{field}"
                     )
             normalized_sources.append(dict(source))
+        if "outcomes" in value:
+            raise DatasetError("outcomes must be stored separately at dataset level")
+        for field in ("snapshot", "facts", "analyst_schema", "critic_schema"):
+            if not isinstance(value[field], Mapping):
+                raise DatasetError(f"{field} must be an object")
+        _validate_nested_temporal(value["facts"], cutoff, f"{ticker}.facts")
+        _validate_nested_temporal(value["snapshot"], cutoff, f"{ticker}.snapshot")
+        snapshot = value["snapshot"]
+        snapshot_source = snapshot.get("source") or snapshot.get("source_uri") or snapshot.get("provenance")
+        snapshot_time = next((snapshot.get(key) for key in ("captured_at", "snapshot_at", "as_of_at", "retrieved_at", "timestamp", "date") if snapshot.get(key) is not None), None)
+        if not snapshot_source or snapshot_time is None:
+            raise DatasetError(f"snapshot for {ticker} lacks verifiable provenance and timestamp")
         analyst_prompt = value["analyst_prompt"]
         critic_template = value["critic_prompt_template"]
         if not isinstance(analyst_prompt, str) or not analyst_prompt:
             raise DatasetError("analyst_prompt must be non-empty text")
         if not isinstance(critic_template, str) or "{{ANALYST_DRAFT_JSON}}" not in critic_template:
             raise DatasetError("critic_prompt_template must contain {{ANALYST_DRAFT_JSON}}")
-        for field in ("snapshot", "facts", "analyst_schema", "critic_schema"):
-            if not isinstance(value[field], Mapping):
-                raise DatasetError(f"{field} must be an object")
         record_id = str(value.get("record_id") or f"{ticker}:{week}:{value['snapshot_id']}")
         return cls(
             record_id=record_id,

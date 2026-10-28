@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--authorize-live-shadow", default="")
     parser.add_argument("--replicate-id", default="r1")
     parser.add_argument("--max-output-tokens", type=int, default=4096)
+    parser.add_argument("--immutable-ledger", action="store_true")
     return parser
 
 
@@ -36,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
             args.ledger,
             run_id=args.run_id,
             analytical_commit=args.analytical_commit,
+            immutable=args.immutable_ledger,
         )
         if args.ledger
         else load_dataset(args.input)
