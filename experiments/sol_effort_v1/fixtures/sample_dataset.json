@@ -1,0 +1,128 @@
+{
+  "schema_name": "trinity.sol-effort-v1.input-dataset",
+  "schema_version": "1",
+  "source_type": "TEST_FIXTURE",
+  "analytical_commit": "eb15c45b041b8890194d2f98b025aa98ed7fa527",
+  "records": [
+    {
+      "record_id": "FIX-AAPL-2026-W42",
+      "ticker": "AAPL",
+      "week": "2026-W42",
+      "snapshot_id": "fixture-snapshot-2026-10-19",
+      "data_cutoff_utc": "2026-10-19T20:00:00Z",
+      "snapshot": {"source": "fixture", "price": 100.0},
+      "facts": {"evidence": [{"id": "f1", "text": "Fixture fact"}]},
+      "sources": [{"id": "s1", "published_at": "2026-10-18T10:00:00Z"}],
+      "analyst_prompt": "ANALYST AAPL FACTS {{FACTS_JSON}}",
+      "critic_prompt_template": "CRITIC {{TICKER}} FACTS {{FACTS_JSON}} DRAFT {{ANALYST_DRAFT_JSON}}",
+      "analyst_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "thesis"],
+        "properties": {
+          "decision": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "thesis": {"type": "string"}
+        }
+      },
+      "critic_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "notes"],
+        "properties": {
+          "status": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    {
+      "record_id": "FIX-MSFT-2026-W42",
+      "ticker": "MSFT",
+      "week": "2026-W42",
+      "snapshot_id": "fixture-snapshot-2026-10-19",
+      "data_cutoff_utc": "2026-10-19T20:00:00Z",
+      "snapshot": {"source": "fixture", "price": 100.0},
+      "facts": {"evidence": [{"id": "f1", "text": "Fixture fact"}]},
+      "sources": [{"id": "s1", "published_at": "2026-10-18T10:00:00Z"}],
+      "analyst_prompt": "ANALYST MSFT FACTS {{FACTS_JSON}}",
+      "critic_prompt_template": "CRITIC {{TICKER}} FACTS {{FACTS_JSON}} DRAFT {{ANALYST_DRAFT_JSON}}",
+      "analyst_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "thesis"],
+        "properties": {
+          "decision": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "thesis": {"type": "string"}
+        }
+      },
+      "critic_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "notes"],
+        "properties": {
+          "status": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    {
+      "record_id": "FIX-NVDA-2026-W42",
+      "ticker": "NVDA",
+      "week": "2026-W42",
+      "snapshot_id": "fixture-snapshot-2026-10-19",
+      "data_cutoff_utc": "2026-10-19T20:00:00Z",
+      "snapshot": {"source": "fixture", "price": 100.0},
+      "facts": {"evidence": [{"id": "f1", "text": "Fixture fact"}]},
+      "sources": [{"id": "s1", "published_at": "2026-10-18T10:00:00Z"}],
+      "analyst_prompt": "ANALYST NVDA FACTS {{FACTS_JSON}}",
+      "critic_prompt_template": "CRITIC {{TICKER}} FACTS {{FACTS_JSON}} DRAFT {{ANALYST_DRAFT_JSON}}",
+      "analyst_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "thesis"],
+        "properties": {
+          "decision": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "thesis": {"type": "string"}
+        }
+      },
+      "critic_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "notes"],
+        "properties": {
+          "status": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "notes": {"type": "string"}
+        }
+      }
+    },
+    {
+      "record_id": "FIX-AMD-2026-W42",
+      "ticker": "AMD",
+      "week": "2026-W42",
+      "snapshot_id": "fixture-snapshot-2026-10-19",
+      "data_cutoff_utc": "2026-10-19T20:00:00Z",
+      "snapshot": {"source": "fixture", "price": 100.0},
+      "facts": {"evidence": [{"id": "f1", "text": "Fixture fact"}]},
+      "sources": [{"id": "s1", "published_at": "2026-10-18T10:00:00Z"}],
+      "analyst_prompt": "ANALYST AMD FACTS {{FACTS_JSON}}",
+      "critic_prompt_template": "CRITIC {{TICKER}} FACTS {{FACTS_JSON}} DRAFT {{ANALYST_DRAFT_JSON}}",
+      "analyst_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decision", "thesis"],
+        "properties": {
+          "decision": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "thesis": {"type": "string"}
+        }
+      },
+      "critic_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "notes"],
+        "properties": {
+          "status": {"type": "string", "enum": ["PASS", "WATCH", "INVESTIGATE"]},
+          "notes": {"type": "string"}
+        }
+      }
+    }
+  ]
+}
