@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,13 @@ from experiments.sol_effort_v1.client import (
     LiveShadowDisabled,
     MockResponsesClient,
     OpenAIResponsesClient,
+    ProviderCallError,
+    calculate_cost,
 )
+from experiments.sol_effort_v1.adjudication import build_adjudication_dataset
+from experiments.sol_effort_v1.archive import _json_payload, _official_request
+from experiments.sol_effort_v1.canonical import sha256_bytes
+from experiments.sol_effort_v1.journal import CallJournal, JournalError
 from experiments.sol_effort_v1.dataset import DatasetError, load_dataset, select_records
 from experiments.sol_effort_v1.runner import build_call_plan, run_experiment
 from experiments.sol_effort_v1.schema import ResponseValidationError
@@ -158,4 +166,205 @@ def test_financial_outcome_is_not_counted_four_times() -> None:
         ],
     })
     assert scorecard["financial_outcomes"]["horizons"]["D20"]["n"] == 1
+
+
+def test_mock_reasoning_tokens_are_billable() -> None:
+    client = MockResponsesClient()
+    schema = {"type": "object", "required": ["x"], "properties": {"x": {"type": "string"}}}
+    medium = client.invoke(call_id="m", role="ANALYST", ticker="X", effort="medium", prompt="p", schema=schema)
+    high = client.invoke(call_id="h", role="ANALYST", ticker="X", effort="high", prompt="p", schema=schema)
+    assert medium.output_tokens == medium.visible_output_tokens + medium.reasoning_tokens
+    assert high.output_tokens == high.visible_output_tokens + high.reasoning_tokens
+    assert Decimal(high.cost_usd) > 0
+    assert Decimal(high.cost_usd) == calculate_cost(high.input_tokens, 0, 0, high.output_tokens)
+
+
+class _Response:
+    def __init__(self, payload: bytes, status_code: int = 200):
+        self.content = payload
+        self.status_code = status_code
+
+
+class _Session:
+    def __init__(self, response):
+        self.response = response
+        self.calls = 0
+        self.last_kwargs = None
+
+    def post(self, *args, **kwargs):
+        self.calls += 1
+        self.last_kwargs = kwargs
+        return self.response
+
+
+def _live_client(payload: dict, tmp_path: Path) -> tuple[OpenAIResponsesClient, CallJournal, str]:
+    raw = json.dumps(payload).encode()
+    journal = CallJournal(tmp_path / "journal")
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=_Session(_Response(raw)),
+    )
+    call_id = "call-http"
+    journal.start(call_id=call_id, request_hash="request", metadata={})
+    return client, journal, call_id
+
+
+def test_paid_invalid_schema_response_is_accounted_before_failure(tmp_path: Path) -> None:
+    payload = {
+        "id": "r1", "status": "completed", "output": [{"content": [{"type": "output_text", "text": "{}"}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+    }
+    client, journal, call_id = _live_client(payload, tmp_path)
+    captured = []
+    schema = {"type": "object", "required": ["x"], "properties": {"x": {"type": "string"}}}
+    with pytest.raises(ProviderCallError) as exc:
+        client.invoke(call_id=call_id, role="ANALYST", ticker="X", effort="high", prompt="p", schema=schema,
+                      checkpoint=lambda **kwargs: (captured.append(kwargs), journal.record_http_response(**kwargs)))
+    assert exc.value.error_type == "SCHEMA"
+    assert captured and journal.consumed_cost() > 0
+    assert journal.load(call_id)["raw_sha256"] == sha256_bytes(json.dumps(payload).encode())
+
+
+def test_incomplete_response_with_usage_is_not_a_financial_result(tmp_path: Path) -> None:
+    payload = {"id": "r1", "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+               "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}}
+    client, journal, call_id = _live_client(payload, tmp_path)
+    with pytest.raises(ProviderCallError) as exc:
+        client.invoke(call_id=call_id, role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
+                      checkpoint=journal.record_http_response)
+    assert exc.value.error_type == "INCOMPLETE"
+    assert journal.consumed_cost() > 0
+
+
+def test_http_200_invalid_json_is_checkpointed_and_blocks_retry(tmp_path: Path) -> None:
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="bad-json", request_hash="h", metadata={})
+    session = _Session(_Response(b"not-json"))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session,
+    )
+    with pytest.raises(ProviderCallError) as exc:
+        client.invoke(call_id="bad-json", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
+                      checkpoint=journal.record_http_response)
+    assert exc.value.call_status == "INDETERMINATE"
+    assert journal.load("bad-json")["raw_sha256"] == sha256_bytes(b"not-json")
+    assert journal.consumed_cost() == 0
+
+
+def test_budget_uses_persisted_consumption_and_effort_is_sent(tmp_path: Path) -> None:
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="spent", request_hash="h", metadata={})
+    journal.record_http_response(call_id="spent", raw=b"{}", accounting={"cost_usd": "1.00"})
+    session = _Session(_Response(json.dumps({"id": "x", "status": "completed", "output": [], "usage": {}}).encode()))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session, journal=journal,
+    )
+    with pytest.raises(LiveShadowDisabled, match="budget"):
+        client.invoke(call_id="new", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"})
+    assert session.calls == 0
+
+
+def test_responses_body_contains_explicit_reasoning_effort(tmp_path: Path) -> None:
+    payload = {"id": "r1", "status": "completed", "output": [{"content": [{"type": "output_text", "text": "{}"}]}],
+               "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}}
+    session = _Session(_Response(json.dumps(payload).encode()))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session, max_output_tokens=512,
+    )
+    client.invoke(call_id="body", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"})
+    body = session.last_kwargs["json"]
+    assert body["reasoning"] == {"effort": "high"}
+    assert body["max_output_tokens"] == 512
+
+
+def test_resume_reuses_terminal_calls_after_crash(tmp_path: Path) -> None:
+    dataset = load_dataset(FIXTURE)
+    records = select_records(dataset, 1)
+    base = MockResponsesClient()
+
+    class CrashClient:
+        def __init__(self):
+            self.count = 0
+
+        def invoke(self, **kwargs):
+            self.count += 1
+            if self.count == 3:
+                raise KeyboardInterrupt("synthetic process crash")
+            return base.invoke(**kwargs)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=CrashClient())
+    resumed = MockResponsesClient()
+    result = run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=resumed)
+    assert result["status"] == "COMPLETE"
+    assert len(resumed.calls) == 4
+
+
+def test_repeated_run_does_not_repeat_completed_calls(tmp_path: Path) -> None:
+    dataset = load_dataset(FIXTURE)
+    records = select_records(dataset, 1)
+    run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=MockResponsesClient())
+    second = MockResponsesClient()
+    run_experiment(records=records, dataset=dataset, mode="mock", output_dir=tmp_path, client=second)
+    assert second.calls == []
+
+
+def test_journal_blocks_indeterminate_retry(tmp_path: Path) -> None:
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="c", request_hash="h", metadata={})
+    journal.record_http_response(call_id="c", raw=b"{}", accounting={"cost_usd": "0.01"})
+    journal.finalize(call_id="c", status="INDETERMINATE", error_type="RECOVERY", error="test")
+    with pytest.raises(JournalError, match="INDETERMINATE"):
+        journal.start(call_id="c", request_hash="h", metadata={})
+
+
+def test_ledger_checksum_tampering_is_rejected() -> None:
+    payload = b'{"x":1}'
+    row = {"payload": payload, "byte_length": len(payload), "sha256": "0" * 64, "content_hash": "0" * 64}
+    with pytest.raises(Exception, match="sha256 mismatch"):
+        _json_payload({"a": row}, "a")
+
+
+def test_ledger_adapter_rejects_non_official_request() -> None:
+    with pytest.raises(Exception, match="not marked OFFICIAL"):
+        _official_request({"request_kind": "EXPLORATORY_NON_PIT", "parameters_json": "{}"})
+    _official_request({"request_kind": "PIT_SAFE_DECISION", "parameters_json": "{}"})
+
+
+def test_source_without_temporal_provenance_is_rejected(tmp_path: Path) -> None:
+    value = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    value["records"][0]["sources"] = [{"id": "missing-time"}]
+    path = tmp_path / "missing-time.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(DatasetError, match="temporal provenance"):
+        load_dataset(path)
+
+
+def test_membership_and_factorial_contrasts_are_arm_specific() -> None:
+    outcome = {"D5": {"status": "COMPLETE", "stock_return_pct": 5.0, "spy_return_pct": 1.0}}
+    arms = [{"record_id": "R1", "arm_id": arm, "status": "SUCCEEDED", "membership": arm != "A", "outcomes": outcome} for arm in ("A", "B", "C", "D")]
+    scorecard = build_scorecard({"calls": [], "arms": arms})
+    assert scorecard["financial_outcomes"]["by_arm"]["A"]["selection"]["D5"]["n"] == 0
+    assert scorecard["financial_outcomes"]["by_arm"]["B"]["selection"]["D5"]["n"] == 1
+    assert scorecard["financial_outcomes"]["factorial_contrasts"]["D5"]["B-A"]["mean_pct"] == 4.0
+
+
+def test_blind_adjudication_does_not_assign_fact_scores() -> None:
+    result = {"calls": [{"call_id": "c", "parsed": {"claims": ["claim"]}}],
+              "arms": [{"record_id": "R", "arm_id": "A", "critic_call_id": "c", "critic_output_hash": "h"}]}
+    dataset, key = build_adjudication_dataset(result)
+    assert dataset["rows"][0]["verdict"] is None
+    assert dataset["factual_scores_assigned"] is False
+    assert key
+
+
+def test_call_order_is_counterbalanced() -> None:
+    dataset = load_dataset(FIXTURE)
+    records = select_records(dataset, 4)
+    from experiments.sol_effort_v1.runner import build_call_plan
+    first_efforts = [next(item["effort"] for item in build_call_plan(records) if item["record_id"] == record.record_id and item["role"] == "ANALYST") for record in records]
+    assert set(first_efforts) == {"medium", "high"}
 

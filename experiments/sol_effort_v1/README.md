@@ -47,3 +47,19 @@ The experiment scorecard is separate from the official scorecard. Financial
 outcomes remain unavailable until COMPLETE point-in-time observations are
 provided; no returns are inferred or synthesized.
 
+Each MOCK or LIVE SHADOW run writes a local `journal/` under its output
+directory. The raw response is checkpointed before parsing, usage/cost is
+recorded even for a paid invalid response, and a response whose billing state
+is indeterminate blocks automatic retry. Re-running the same output directory
+resumes only verified terminal calls.
+
+Useful options are `--replicate-id` and `--max-output-tokens`. The latter is
+experimental only and is included in the request and manifest hashes. LIVE
+SHADOW remains blocked unless the authorization sentinel, API key and positive
+budget are all supplied; no workflow or R2 integration is provided here.
+
+`scorecard.json` keeps arm-specific selection baskets, paired numeric
+contrasts, executable-trade fields, transaction costs and AI costs separate.
+`adjudication.json` is a blank, blinded review dataset: it never assigns
+factual scores automatically.
+

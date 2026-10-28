@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import hashlib
 from pathlib import Path
 import re
 import sqlite3
@@ -25,6 +26,7 @@ def _json_payload(artifacts: Mapping[str, sqlite3.Row], artifact_id: str) -> Any
     row = artifacts.get(artifact_id)
     if row is None:
         raise ArchiveDatasetError(f"missing artifact {artifact_id}")
+    _verify_artifact_row(artifact_id, row)
     try:
         return json.loads(bytes(row["payload"]).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -35,10 +37,60 @@ def _text_payload(artifacts: Mapping[str, sqlite3.Row], artifact_id: str) -> str
     row = artifacts.get(artifact_id)
     if row is None:
         raise ArchiveDatasetError(f"missing prompt artifact {artifact_id}")
+    _verify_artifact_row(artifact_id, row)
     try:
         return bytes(row["payload"]).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ArchiveDatasetError(f"prompt artifact {artifact_id} is not UTF-8") from exc
+
+
+def _verify_artifact_row(artifact_id: str, row: Mapping[str, Any]) -> None:
+    """Mirror Ledger artifact integrity checks without writing to SQLite."""
+    payload = bytes(row["payload"])
+    keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+    if "byte_length" not in keys or "sha256" not in keys:
+        raise ArchiveDatasetError(f"artifact {artifact_id} lacks integrity metadata")
+    if int(row["byte_length"]) != len(payload):
+        raise ArchiveDatasetError(f"artifact {artifact_id} byte length mismatch")
+    digest = hashlib.sha256(payload).hexdigest()
+    if str(row["sha256"]) != digest:
+        raise ArchiveDatasetError(f"artifact {artifact_id} sha256 mismatch")
+    if "content_hash" in keys:
+        expected = str(row["content_hash"])
+        if expected != digest and expected != artifact_id.removeprefix("sha256:"):
+            raise ArchiveDatasetError(f"artifact {artifact_id} content hash mismatch")
+
+
+def _authoritative_run(row: Mapping[str, Any], requested_run_id: str | None) -> str:
+    if row is None:
+        raise ArchiveDatasetError("requested run is absent from the Ledger")
+    keys = set(row.keys())
+    run_id = str(row["run_id"] if "run_id" in keys else "")
+    if requested_run_id is not None and run_id != requested_run_id:
+        raise ArchiveDatasetError("Ledger run identity mismatch")
+    status = next((row[name] for name in ("status", "run_status", "state") if name in keys), None)
+    if status is None:
+        raise ArchiveDatasetError("Ledger run lacks a verifiable commit status")
+    if status is not None and str(status).upper() not in {"COMMITTED", "COMPLETED", "SUCCESS", "SUCCEEDED", "OFFICIAL", "OFFICIAL_COMPLETE"}:
+        raise ArchiveDatasetError(f"Ledger run is not committed: {status}")
+    official = next((row[name] for name in ("official", "is_official", "run_type", "cycle_type") if name in keys), None)
+    if official is not None and str(official).upper() not in {"1", "TRUE", "YES", "OFFICIAL", "OFFICIAL_COMPLETE"}:
+        raise ArchiveDatasetError("Ledger run is not OFFICIAL")
+    if not run_id:
+        raise ArchiveDatasetError("Ledger run has no run_id")
+    return run_id
+
+
+def _official_request(row: Mapping[str, Any]) -> None:
+    request_kind = str(row["request_kind"] if "request_kind" in row.keys() else "").upper()
+    parameters_text = row["parameters_json"] if "parameters_json" in row.keys() else ""
+    try:
+        parameters = json.loads(parameters_text) if parameters_text else {}
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ArchiveDatasetError("run request parameters are not valid JSON") from exc
+    mode = str(parameters.get("mode") or parameters.get("run_mode") or "").upper() if isinstance(parameters, Mapping) else ""
+    if request_kind not in {"PIT_SAFE_DECISION", "OFFICIAL"} and mode not in {"OFFICIAL", "PRODUCTION"}:
+        raise ArchiveDatasetError("Ledger run request is not marked OFFICIAL")
 
 
 def _historical_json_text(value: Any) -> str:
@@ -122,7 +174,7 @@ def load_ledger_dataset(
         artifacts = {
             row["artifact_id"]: row
             for row in connection.execute(
-                "SELECT artifact_id, artifact_kind, payload FROM artifact"
+                "SELECT * FROM artifact"
             )
         }
         attempt_rows = {
@@ -130,7 +182,8 @@ def load_ledger_dataset(
             for row in connection.execute(
                 """
                 SELECT a.attempt_id, a.code_commit, rr.analysis_cutoff_at,
-                       r.run_id
+                       rr.request_kind, rr.parameters_json,
+                       r.*
                 FROM attempt AS a
                 JOIN run_request AS rr ON rr.run_request_id = a.run_request_id
                 LEFT JOIN run AS r ON r.attempt_id = a.attempt_id
@@ -170,7 +223,10 @@ def load_ledger_dataset(
         attempt = attempt_rows.get(interaction["attempt_id"])
         if attempt is None:
             raise ArchiveDatasetError(f"missing attempt metadata for {analyst_id}")
-        effective_run_id = str(attempt["run_id"] or interaction["attempt_id"])
+        effective_run_id = _authoritative_run(attempt, run_id)
+        _official_request(attempt)
+        if analytical_commit is not None and str(attempt["code_commit"]) != analytical_commit:
+            raise ArchiveDatasetError("Ledger analytical commit does not match requested commit")
         if run_id is not None and effective_run_id != run_id:
             continue
         context = _json_payload(artifacts, request["context_artifact_id"])
@@ -196,7 +252,7 @@ def load_ledger_dataset(
         analyst_output_text = _historical_json_text(parsed["parsed_value"])
         analyst_stage_id = success["effective_stage_result_artifact_id"]
 
-        critic_candidate = None
+        critic_candidates = []
         for candidate_id, candidate in requests.items():
             if candidate["interaction"]["attempt_id"] != interaction["attempt_id"]:
                 continue
@@ -208,8 +264,10 @@ def load_ledger_dataset(
             )
             items = candidate_context.get("items") if isinstance(candidate_context, Mapping) else None
             if isinstance(items, list) and len(items) == 2 and items[1].get("artifact_id") == analyst_stage_id:
-                critic_candidate = candidate
-                break
+                critic_candidates.append(candidate)
+        if len(critic_candidates) > 1:
+            raise ArchiveDatasetError(f"ambiguous historical Critic lineage for {analyst_id}")
+        critic_candidate = critic_candidates[0] if critic_candidates else None
         if critic_candidate is None:
             raise ArchiveDatasetError(
                 f"no verifiable historical Critic linked to Analyst {analyst_id}"

@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--max-budget-usd", type=Decimal, default=Decimal("0"))
     parser.add_argument("--authorize-live-shadow", default="")
+    parser.add_argument("--replicate-id", default="r1")
+    parser.add_argument("--max-output-tokens", type=int, default=4096)
     return parser
 
 
@@ -45,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
             dataset=dataset,
             mode=args.mode,
             output_dir=args.output,
+            replicate_id=args.replicate_id,
         )
         return 0
     if args.mode == "mock":
@@ -61,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         client = OpenAIResponsesClient(
             max_budget_usd=args.max_budget_usd,
             authorization=args.authorize_live_shadow,
+            max_output_tokens=args.max_output_tokens,
         )
     run_experiment(
         records=records,
@@ -68,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         output_dir=args.output,
         client=client,
+        replicate_id=args.replicate_id,
     )
     return 0
 

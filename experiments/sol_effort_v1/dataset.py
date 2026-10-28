@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -42,6 +42,8 @@ class TickerInput:
     analyst_schema: Mapping[str, Any]
     critic_schema: Mapping[str, Any]
     metadata: Mapping[str, Any]
+    # Kept as a compatibility field, but deliberately excluded from the
+    # point-in-time input payload. Loaded datasets store outcomes separately.
     outcomes: Mapping[str, Any]
 
     @classmethod
@@ -66,13 +68,17 @@ class TickerInput:
         for index, source in enumerate(sources):
             if not isinstance(source, Mapping):
                 raise DatasetError(f"sources[{index}] must be an object")
-            published = source.get("published_at")
-            if published is not None and _utc(
-                str(published), f"sources[{index}].published_at"
-            ) > cutoff:
-                raise DatasetError(
-                    f"future source detected for {ticker}: sources[{index}].published_at"
-                )
+            temporal_values = [
+                ("published_at", source.get("published_at")),
+                ("retrieved_at", source.get("retrieved_at")),
+            ]
+            if not any(value is not None for _, value in temporal_values):
+                raise DatasetError(f"sources[{index}] has no temporal provenance")
+            for field, source_value in temporal_values:
+                if source_value is not None and _utc(str(source_value), f"sources[{index}].{field}") > cutoff:
+                    raise DatasetError(
+                        f"future source detected for {ticker}: sources[{index}].{field}"
+                    )
             normalized_sources.append(dict(source))
         analyst_prompt = value["analyst_prompt"]
         critic_template = value["critic_prompt_template"]
@@ -131,6 +137,7 @@ class Dataset:
     source_reference: str
     analytical_commit: str | None
     records: tuple[TickerInput, ...]
+    outcomes: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 def _read_source(path: Path) -> tuple[dict[str, Any], str]:
@@ -173,6 +180,11 @@ def load_dataset(path: str | Path) -> Dataset:
             else str(value["analytical_commit"])
         ),
         records=records,
+        outcomes={
+            str(key): dict(value)
+            for key, value in (value.get("outcomes") or {}).items()
+            if isinstance(value, Mapping)
+        },
     )
 
 
