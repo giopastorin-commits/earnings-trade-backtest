@@ -43,6 +43,14 @@ The default mode is dry-run. It performs no model call. Mock is fully offline
 and deterministic. Live-shadow requires the authorization sentinel, a
 positive budget, and OPENAI_API_KEY; it is never the default.
 
+LIVE budget reservations use the complete canonical request body, including
+the response schema, a versioned UTF-8 byte-based conservative bound, explicit
+request overhead, the configured maximum output (including reasoning), and
+full-price input assumptions even when caching might apply. This is a local
+reservation guard, not an absolute provider billing cap. HTTP errors and
+timeouts whose billing state cannot be proven are recorded as INDETERMINATE;
+their reservation remains active until an explicit cost reconciliation.
+
 The experiment scorecard is separate from the official scorecard. Financial
 outcomes remain unavailable until COMPLETE point-in-time observations are
 provided; no returns are inferred or synthesized.

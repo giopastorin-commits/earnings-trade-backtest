@@ -8,7 +8,16 @@ import subprocess
 from typing import Any, Iterable
 
 from .canonical import sha256_json
-from .client import API_URL, MAX_OUTPUT_TOKENS, SERVICE_TIER, VALIDATOR_VERSION
+from .client import (
+    API_URL,
+    BUDGET_ESTIMATOR_VERSION,
+    INPUT_TOKEN_SAFETY_MULTIPLIER,
+    MAX_OUTPUT_TOKENS,
+    PRICING_VERSION,
+    REQUEST_OVERHEAD_TOKENS,
+    SERVICE_TIER,
+    VALIDATOR_VERSION,
+)
 from .config import ARMS, MODEL
 from .dataset import Dataset, TickerInput
 
@@ -41,6 +50,10 @@ def build_manifest(dataset: Dataset, records: Iterable[TickerInput], *, plan: It
         "api_url": API_URL,
         "service_tier": SERVICE_TIER,
         "max_output_tokens": max_output_tokens,
+        "pricing_version": PRICING_VERSION,
+        "budget_estimator_version": BUDGET_ESTIMATOR_VERSION,
+        "input_token_safety_multiplier": str(INPUT_TOKEN_SAFETY_MULTIPLIER),
+        "request_overhead_tokens": REQUEST_OVERHEAD_TOKENS,
         "validator_version": VALIDATOR_VERSION,
         "code_commit": _code_commit(),
         "execution_timestamp_utc": execution_timestamp_utc,

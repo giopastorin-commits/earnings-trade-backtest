@@ -111,7 +111,15 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
     metadata = {"record_id": record.record_id, "role": item["role"], "ticker": record.ticker,
                 "effort": item["effort"], "prompt_hash": sha256_bytes(prompt.encode("utf-8")),
                 "schema_hash": sha256_json(schema)}
-    reservation = client.estimate_max_cost(prompt) if hasattr(client, "estimate_max_cost") else 0
+    reservation = (
+        client.estimate_max_cost(
+            role=item["role"],
+            effort=item["effort"],
+            prompt=prompt,
+            schema=schema,
+        )
+        if hasattr(client, "estimate_max_cost") else 0
+    )
     existing = journal.start(call_id=item["call_id"], request_hash=request_hash, metadata=metadata,
                              reservation_usd=reservation)
     if existing.get("status") in {"SUCCEEDED", "FAILED", "INDETERMINATE", "SKIPPED_DEPENDENCY"}:
@@ -134,6 +142,12 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
         return saved
     except ProviderCallError as exc:
         accounting = dict(exc.accounting)
+        if accounting.get("cost_unknown") or accounting.get("cost_usd") is None:
+            journal.record_accounting(call_id=item["call_id"], accounting={
+                **accounting,
+                "cost_usd": None,
+                "cost_unknown": True,
+            })
         saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
                              request_hash=request_hash, status=exc.call_status, error_type=exc.error_type,
                              error=str(exc), accounting=accounting)
@@ -143,6 +157,17 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
         if exc.call_status == "INDETERMINATE":
             raise JournalError(f"call {item['call_id']} is indeterminate; no automatic retry") from exc
         return saved
+    except LiveShadowDisabled as exc:
+        # This exception is raised before the HTTP request is sent (for
+        # example, a local preflight budget failure), so it is safe to release
+        # the reservation and classify it as a local failure.
+        saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
+                             request_hash=request_hash, status="FAILED", error_type="PRECONDITION",
+                             error=str(exc),
+                             accounting={"cost_usd": "0", "cost_unknown": False})
+        journal.finalize(call_id=item["call_id"], status="FAILED", result=saved,
+                         error_type="PRECONDITION", error=str(exc))
+        return saved
     except ResponseValidationError as exc:
         saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
                              request_hash=request_hash, status="FAILED", error_type="SCHEMA", error=str(exc))
@@ -151,6 +176,13 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
     except Exception as exc:
         status = "INDETERMINATE" if getattr(client, "is_live_shadow", False) else "FAILED"
         error_type = "INDETERMINATE" if status == "INDETERMINATE" else "TRANSPORT"
+        if status == "INDETERMINATE":
+            journal.record_accounting(call_id=item["call_id"], accounting={
+                "cost_usd": None,
+                "cost_unknown": True,
+                "usage_unavailable": True,
+                "error_type": type(exc).__name__,
+            })
         saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
                              request_hash=request_hash, status=status, error_type=error_type, error=type(exc).__name__)
         journal.finalize(call_id=item["call_id"], status=status, result=saved, error_type=error_type, error=type(exc).__name__)

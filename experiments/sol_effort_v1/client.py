@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from decimal import ROUND_CEILING
 import json
 import os
 from time import perf_counter
@@ -21,6 +22,10 @@ OUTPUT_RATE = Decimal("20.00")
 MAX_OUTPUT_TOKENS = 4096
 SERVICE_TIER = "default"
 VALIDATOR_VERSION = "schema-v1"
+PRICING_VERSION = "local-gpt-5.6-sol-rates-v1"
+BUDGET_ESTIMATOR_VERSION = "utf8-request-bytes-margin-v1"
+INPUT_TOKEN_SAFETY_MULTIPLIER = Decimal("1.25")
+REQUEST_OVERHEAD_TOKENS = 256
 
 
 def build_request_body(*, role: str, effort: Effort, prompt: str,
@@ -94,6 +99,25 @@ def calculate_cost(
         + Decimal(cache_write_tokens) * CACHE_WRITE_RATE
         + Decimal(output_tokens) * OUTPUT_RATE
     ) / Decimal(1_000_000)
+
+
+def prudent_input_token_bound(request_body: Mapping[str, Any]) -> int:
+    """Return a deliberately conservative input-token reservation bound.
+
+    The provider tokenizer is not installed in this isolated checkout. A
+    UTF-8 byte count is therefore used as the base bound for the complete
+    request body (including the schema), then enlarged by a versioned margin
+    and fixed request overhead. This is a reservation guard, not a claim that
+    the provider's tokenizer or pricing can never differ from the local
+    contract.
+    """
+    byte_length = len(canonical_bytes(request_body))
+    if byte_length <= 0:
+        raise LiveShadowDisabled("cannot establish a positive input budget bound")
+    with_margin = (Decimal(byte_length) * INPUT_TOKEN_SAFETY_MULTIPLIER).to_integral_value(
+        rounding=ROUND_CEILING
+    )
+    return int(with_margin) + REQUEST_OVERHEAD_TOKENS
 
 
 def _sample(schema: Mapping[str, Any], seed: str) -> Any:
@@ -230,9 +254,21 @@ class OpenAIResponsesClient:
             raise LiveShadowDisabled("OPENAI_API_KEY is not configured")
         self.session = session
 
-    def estimate_max_cost(self, prompt: str) -> Decimal:
-        estimated_input = max(1, len(prompt.encode("utf-8")) // 4)
-        return calculate_cost(estimated_input, 0, 0, self.max_output_tokens)
+    def estimate_max_cost(
+        self, *, role: str, effort: Effort, prompt: str,
+        schema: Mapping[str, Any],
+    ) -> Decimal:
+        body = build_request_body(
+            role=role,
+            effort=effort,
+            prompt=prompt,
+            schema=schema,
+            max_output_tokens=self.max_output_tokens,
+        )
+        input_bound = prudent_input_token_bound(body)
+        # Cached input is priced at full input rate in the reservation. The
+        # full output limit includes reasoning tokens under the usage contract.
+        return calculate_cost(input_bound, 0, 0, self.max_output_tokens)
 
     def invoke(
         self, *, call_id: str, role: str, ticker: str, effort: Effort,
@@ -242,7 +278,9 @@ class OpenAIResponsesClient:
             self.total_cost = max(self.total_cost, self.journal.consumed_cost())
         if self.total_cost >= self.max_budget_usd:
             raise LiveShadowDisabled("LIVE SHADOW budget exhausted before next call")
-        worst_case = self.estimate_max_cost(prompt)
+        worst_case = self.estimate_max_cost(
+            role=role, effort=effort, prompt=prompt, schema=schema,
+        )
         if self.total_cost + worst_case > self.max_budget_usd:
             raise LiveShadowDisabled(
                 "LIVE SHADOW budget preflight rejected the next call"
@@ -264,10 +302,17 @@ class OpenAIResponsesClient:
             timeout=300,
         )
         if int(response.status_code) >= 400:
+            accounting = {
+                "cost_usd": None,
+                "cost_unknown": True,
+                "usage_unavailable": True,
+                "http_status": int(response.status_code),
+            }
             raise ProviderCallError(
                 f"Responses API failed with HTTP {response.status_code}",
                 error_type="HTTP",
-                status="FAILED",
+                status="INDETERMINATE",
+                accounting=accounting,
             )
         raw = bytes(response.content)
         raw_sha256 = sha256_bytes(raw)
@@ -298,6 +343,9 @@ class OpenAIResponsesClient:
         cache_write = int(input_details.get("cache_write_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
         reasoning_tokens = int(output_details.get("reasoning_tokens") or 0)
+        normalized_total_tokens = int(
+            usage.get("total_tokens") or input_tokens + output_tokens
+        )
         cost = calculate_cost(input_tokens, cached, cache_write, output_tokens)
         accounting = {
             "input_tokens": input_tokens,
@@ -305,7 +353,7 @@ class OpenAIResponsesClient:
             "cache_write_tokens": cache_write,
             "output_tokens": output_tokens,
             "reasoning_tokens": reasoning_tokens,
-            "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens),
+            "total_tokens": normalized_total_tokens,
             "cost_usd": str(cost),
             "cost_unknown": False,
         }
@@ -354,7 +402,7 @@ class OpenAIResponsesClient:
             cache_write_tokens=cache_write,
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,
-            total_tokens=int(usage.get("total_tokens") or 0),
+            total_tokens=normalized_total_tokens,
             duration_seconds=perf_counter() - started,
             cost_usd=str(cost),
             raw_sha256=raw_sha256,

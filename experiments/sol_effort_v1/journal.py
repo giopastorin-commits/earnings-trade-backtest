@@ -212,6 +212,63 @@ class CallJournal:
             c.commit()
         return self.load(call_id) or {}
 
+    def record_accounting(self, *, call_id: str,
+                          accounting: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist billing metadata when no raw response is available.
+
+        Unknown billing deliberately keeps the existing reservation. A later
+        explicit reconciliation may replace it with a verified cost.
+        """
+        cost_value = accounting.get("cost_usd")
+        if cost_value is not None or not bool(accounting.get("cost_unknown")):
+            raise JournalError("record_accounting requires unknown billing")
+        with self._connection() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT * FROM calls WHERE call_id=?", (call_id,)).fetchone()
+            if row is None:
+                c.rollback()
+                raise JournalError(f"call was not started: {call_id}")
+            if row["cost_unknown"] == 0 and row["cost_usd"] is not None:
+                c.commit()
+                return self.load(call_id) or {}
+            c.execute(
+                "UPDATE calls SET accounting_json=?,cost_usd=NULL,cost_unknown=1 WHERE call_id=?",
+                (json.dumps(dict(accounting), sort_keys=True), call_id),
+            )
+            c.commit()
+        return self.load(call_id) or {}
+
+    def reconcile_cost(self, *, call_id: str, cost_usd: Decimal,
+                       accounting: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Release an indeterminate reservation only after explicit evidence."""
+        if cost_usd < 0:
+            raise JournalError("reconciled cost cannot be negative")
+        with self._connection() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT * FROM calls WHERE call_id=?", (call_id,)).fetchone()
+            if row is None:
+                c.rollback()
+                raise JournalError(f"call was not started: {call_id}")
+            if row["status"] != "INDETERMINATE":
+                c.rollback()
+                raise JournalError("only INDETERMINATE calls require explicit reconciliation")
+            if row["cost_unknown"] == 0 and row["cost_usd"] is not None:
+                if _decimal(row["cost_usd"]) != cost_usd:
+                    c.rollback()
+                    raise JournalError(f"reconciled cost conflicts for {call_id}")
+                c.commit()
+                return self.load(call_id) or {}
+            merged = dict(json.loads(row["accounting_json"] or "{}"))
+            merged.update(dict(accounting or {}))
+            merged.update({"cost_usd": str(cost_usd), "cost_unknown": False})
+            c.execute(
+                """UPDATE calls SET accounting_json=?,cost_usd=?,cost_unknown=0,
+                   reserved_usd='0' WHERE call_id=?""",
+                (json.dumps(merged, sort_keys=True), str(cost_usd), call_id),
+            )
+            c.commit()
+        return self.load(call_id) or {}
+
     def finalize(self, *, call_id: str, status: str, result: Mapping[str, Any] | None = None,
                  error_type: str | None = None, error: str | None = None) -> dict[str, Any]:
         if status not in TERMINAL_STATES:
@@ -287,5 +344,6 @@ class CallJournal:
             key = field.removesuffix("_json")
             value[key] = None if raw is None else json.loads(raw)
         value["response_received"] = bool(value.get("response_received"))
+        value["cost_unknown"] = bool(value.get("cost_unknown"))
         return value
 

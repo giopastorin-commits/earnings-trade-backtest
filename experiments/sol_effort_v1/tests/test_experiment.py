@@ -11,18 +11,22 @@ from pathlib import Path
 import pytest
 
 from experiments.sol_effort_v1.client import (
+    MAX_OUTPUT_TOKENS,
     LiveShadowDisabled,
     MockResponsesClient,
     OpenAIResponsesClient,
     ProviderCallError,
+    build_request_body,
     calculate_cost,
+    prudent_input_token_bound,
 )
 from experiments.sol_effort_v1.adjudication import build_adjudication_dataset
 from experiments.sol_effort_v1.archive import _json_payload, _official_request
 from experiments.sol_effort_v1.canonical import sha256_bytes
 from experiments.sol_effort_v1.journal import BudgetExceeded, CallJournal, JournalBusy, JournalError
 from experiments.sol_effort_v1.dataset import DatasetError, load_dataset, select_records
-from experiments.sol_effort_v1.runner import build_call_plan, run_experiment
+from experiments.sol_effort_v1.runner import _execute_call, build_call_plan, run_experiment
+from experiments.sol_effort_v1.prompts import render_critic_prompt
 from experiments.sol_effort_v1.schema import ResponseValidationError
 from experiments.sol_effort_v1.scorecard import build_scorecard
 
@@ -251,6 +255,192 @@ def test_incomplete_response_with_usage_is_not_a_financial_result(tmp_path: Path
     assert journal.consumed_cost() > 0
 
 
+@pytest.mark.parametrize("status_code", (400, 429, 500))
+def test_http_error_without_usage_is_indeterminate_and_reserved(
+    tmp_path: Path, status_code: int,
+) -> None:
+    dataset = load_dataset(FIXTURE)
+    record = select_records(dataset, 1)[0]
+    journal = CallJournal(tmp_path / "journal", max_budget_usd=Decimal("100"))
+    session = _Session(_Response(b"provider-error", status_code=status_code))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("100"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session, journal=journal,
+    )
+    item = {
+        "call_id": f"http-{status_code}", "record_id": record.record_id,
+        "ticker": record.ticker, "role": "ANALYST", "effort": "high",
+        "replicate_id": "r1", "sequence_index": 0,
+        "order_group": "TEST", "depends_on": [],
+    }
+    with pytest.raises(JournalError, match="indeterminate"):
+        _execute_call(
+            client=client, journal=journal, item=item, record=record,
+            prompt=record.analyst_prompt, schema=record.analyst_schema,
+        )
+    row = journal.load(item["call_id"])
+    assert session.calls == 1
+    assert row["status"] == "INDETERMINATE"
+    assert row["cost_unknown"] is True
+    assert row["reserved_usd"] != "0"
+    retry_session = _Session(_Response(b"should-not-send"))
+    retry_client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("100"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=retry_session, journal=journal,
+    )
+    with pytest.raises(JournalError, match="INDETERMINATE"):
+        _execute_call(
+            client=retry_client, journal=journal, item=item, record=record,
+            prompt=record.analyst_prompt, schema=record.analyst_schema,
+        )
+    assert retry_session.calls == 0
+
+
+def test_timeout_after_send_is_indeterminate_and_reserved(tmp_path: Path) -> None:
+    dataset = load_dataset(FIXTURE)
+    record = select_records(dataset, 1)[0]
+
+    class TimeoutSession(_Session):
+        def post(self, *args, **kwargs):
+            self.calls += 1
+            raise TimeoutError("timeout after request dispatch")
+
+    journal = CallJournal(tmp_path / "journal", max_budget_usd=Decimal("100"))
+    session = TimeoutSession(_Response(b"unused"))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("100"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session, journal=journal,
+    )
+    item = {
+        "call_id": "timeout", "record_id": record.record_id,
+        "ticker": record.ticker, "role": "ANALYST", "effort": "medium",
+        "replicate_id": "r1", "sequence_index": 0,
+        "order_group": "TEST", "depends_on": [],
+    }
+    with pytest.raises(JournalError, match="may have been billed"):
+        _execute_call(
+            client=client, journal=journal, item=item, record=record,
+            prompt=record.analyst_prompt, schema=record.analyst_schema,
+        )
+    row = journal.load("timeout")
+    assert session.calls == 1
+    assert row["status"] == "INDETERMINATE"
+    assert row["cost_unknown"] is True
+    assert row["reserved_usd"] != "0"
+
+
+def test_total_tokens_missing_is_normalized_in_client_and_journal(tmp_path: Path) -> None:
+    payload = {
+        "id": "missing-total", "status": "completed",
+        "output": [{"content": [{"type": "output_text", "text": "{}"}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 20},
+    }
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="missing-total", request_hash="h", metadata={})
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("1"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=_Session(_Response(json.dumps(payload).encode())),
+        journal=journal,
+    )
+    response = client.invoke(
+        call_id="missing-total", role="ANALYST", ticker="X", effort="high",
+        prompt="p", schema={"type": "object"}, checkpoint=journal.record_http_response,
+    )
+    assert response.total_tokens == 30
+    assert journal.load("missing-total")["accounting"]["total_tokens"] == 30
+
+
+def test_prudent_budget_includes_schema_and_full_output_limit() -> None:
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("100"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only",
+    )
+    small_schema = {"type": "object"}
+    large_schema = {"type": "object", "description": "x" * 10000}
+    short = client.estimate_max_cost(
+        role="CRITIC", effort="medium", prompt="short", schema=small_schema,
+    )
+    long = client.estimate_max_cost(
+        role="CRITIC", effort="medium", prompt="x" * 10000, schema=large_schema,
+    )
+    body = build_request_body(
+        role="CRITIC", effort="high", prompt="short", schema=small_schema,
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+    )
+    expected = calculate_cost(
+        prudent_input_token_bound(body), 0, 0, MAX_OUTPUT_TOKENS,
+    )
+    assert long > short
+    assert client.estimate_max_cost(
+        role="CRITIC", effort="high", prompt="short", schema=small_schema,
+    ) == expected
+
+
+def test_prudent_budget_uses_reasoning_output_limit() -> None:
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("100"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", max_output_tokens=512,
+    )
+    body = build_request_body(
+        role="ANALYST", effort="high", prompt="p", schema={"type": "object"},
+        max_output_tokens=512,
+    )
+    assert client.estimate_max_cost(
+        role="ANALYST", effort="high", prompt="p", schema={"type": "object"},
+    ) == calculate_cost(prudent_input_token_bound(body), 0, 0, 512)
+
+
+def test_budget_rejects_critic_before_http(tmp_path: Path) -> None:
+    dataset = load_dataset(FIXTURE)
+    record = select_records(dataset, 1)[0]
+    prompt = render_critic_prompt(record, "draft")
+    session = _Session(_Response(b"should-not-send"))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("100"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=session,
+    )
+    reservation = client.estimate_max_cost(
+        role="CRITIC", effort="high", prompt=prompt, schema=record.critic_schema,
+    )
+    journal = CallJournal(tmp_path / "journal", max_budget_usd=reservation / 2)
+    item = {
+        "call_id": "critic-budget", "record_id": record.record_id,
+        "ticker": record.ticker, "role": "CRITIC", "effort": "high",
+        "analyst_effort": "medium", "replicate_id": "r1",
+        "sequence_index": 0, "order_group": "TEST", "depends_on": ["analyst"],
+    }
+    with pytest.raises(BudgetExceeded):
+        _execute_call(
+            client=client, journal=journal, item=item, record=record,
+            prompt=prompt, schema=record.critic_schema,
+        )
+    assert session.calls == 0
+
+
+def test_indeterminate_unknown_reservation_survives_resume(tmp_path: Path) -> None:
+    root = tmp_path / "journal"
+    first = CallJournal(root)
+    first.start(call_id="resume-unknown", request_hash="h", metadata={}, reservation_usd=Decimal("0.08"))
+    first.record_accounting(call_id="resume-unknown", accounting={
+        "cost_usd": None, "cost_unknown": True, "usage_unavailable": True,
+    })
+    first.finalize(call_id="resume-unknown", status="INDETERMINATE", error_type="RECOVERY")
+    second = CallJournal(root)
+    with pytest.raises(JournalError, match="INDETERMINATE"):
+        second.start(call_id="resume-unknown", request_hash="h", metadata={})
+    assert second.reserved_cost() == Decimal("0.08")
+    reconciled = second.reconcile_cost(call_id="resume-unknown", cost_usd=Decimal("0.03"))
+    assert reconciled["cost_unknown"] is False
+    assert second.reserved_cost() == Decimal("0")
+
+
 def test_raw_checkpoint_precedes_envelope_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
     import experiments.sol_effort_v1.client as client_module
     payload = {"id": "r1", "status": "completed", "output": [{"content": [{"type": "output_text", "text": "{}"}]}],
@@ -435,6 +625,40 @@ def test_two_real_processes_cannot_claim_same_call(tmp_path: Path) -> None:
     statuses = [path.read_text() for path in outputs]
     assert statuses.count("CLAIMED") == 1
     assert statuses.count("JournalBusy") == 1
+
+
+@pytest.mark.skipif(
+    os.environ.get("TRINITY_RUN_PROCESS_TEST") != "1",
+    reason="real subprocess budget test is run explicitly to avoid hanging the full pytest worker",
+)
+def test_two_real_processes_respect_shared_budget_for_different_calls(tmp_path: Path) -> None:
+    root = tmp_path / "shared-budget"
+    output = [tmp_path / "one.txt", tmp_path / "two.txt"]
+    script = (
+        "import sys\n"
+        "from decimal import Decimal\n"
+        "from experiments.sol_effort_v1.journal import CallJournal\n"
+        "j=CallJournal(sys.argv[1])\n"
+        "j.configure_budget(Decimal('0.10'))\n"
+        "j.start(call_id=sys.argv[2],request_hash=sys.argv[2],metadata={},reservation_usd=Decimal('0.08'))\n"
+        "open(sys.argv[3],'w').write('CLAIMED')\n"
+    )
+    code = "exec(" + repr(script) + ")"
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", code, str(root), name, str(path)],
+            cwd=str(Path.cwd()), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        for name, path in (("one", output[0]), ("two", output[1]))
+    ]
+    codes = [process.wait(timeout=10) for process in processes]
+    assert sorted(codes) == [0, 1]
+    claimed = [path.exists() for path in output]
+    journal = CallJournal(root)
+    assert sum(claimed) == 1
+    assert journal.reserved_cost() == Decimal("0.08")
 
 
 def test_ledger_checksum_tampering_is_rejected() -> None:
