@@ -6,7 +6,7 @@ import argparse
 from decimal import Decimal
 
 from .client import MockResponsesClient, OpenAIResponsesClient
-from .config import AUTHORIZATION_SENTINEL
+from .config import AUTHORIZATION_SENTINEL, TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL
 from .dataset import load_dataset, select_records
 from .archive import load_ledger_dataset
 from .runner import run_experiment
@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--max-budget-usd", type=Decimal, default=Decimal("0"))
     parser.add_argument("--authorize-live-shadow", default="")
+    parser.add_argument("--authorize-token-preflight", default="")
     parser.add_argument("--replicate-id", default="r1")
     parser.add_argument("--max-output-tokens", type=int, default=4096)
     parser.add_argument("--immutable-ledger", action="store_true")
@@ -63,10 +64,15 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(
                 "LIVE SHADOW blocked: --max-budget-usd must be positive"
             )
+        if args.authorize_token_preflight != TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL:
+            raise SystemExit(
+                "LIVE SHADOW blocked: explicit input-token preflight authorization required"
+            )
         client = OpenAIResponsesClient(
             max_budget_usd=args.max_budget_usd,
             authorization=args.authorize_live_shadow,
             max_output_tokens=args.max_output_tokens,
+            token_preflight_authorization=args.authorize_token_preflight,
         )
     run_experiment(
         records=records,

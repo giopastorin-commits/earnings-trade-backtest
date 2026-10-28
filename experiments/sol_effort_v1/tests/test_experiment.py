@@ -18,11 +18,13 @@ from experiments.sol_effort_v1.client import (
     ProviderCallError,
     build_request_body,
     calculate_cost,
+    calculate_prudent_reservation,
     prudent_input_token_bound,
 )
 from experiments.sol_effort_v1.adjudication import build_adjudication_dataset
 from experiments.sol_effort_v1.archive import _json_payload, _official_request
-from experiments.sol_effort_v1.canonical import sha256_bytes
+from experiments.sol_effort_v1.canonical import sha256_bytes, sha256_json
+from experiments.sol_effort_v1.config import TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL
 from experiments.sol_effort_v1.journal import BudgetExceeded, CallJournal, JournalBusy, JournalError
 from experiments.sol_effort_v1.dataset import DatasetError, load_dataset, select_records
 from experiments.sol_effort_v1.runner import _execute_call, build_call_plan, run_experiment
@@ -216,12 +218,50 @@ class _Session:
         return self.response
 
 
+def _count_session(input_tokens: int = 100) -> _Session:
+    return _Session(_Response(json.dumps({
+        "object": "response.input_tokens", "input_tokens": input_tokens,
+    }).encode()))
+
+
+def _preflight(client: OpenAIResponsesClient, *, role: str, effort: str,
+               prompt: str, schema: dict, input_tokens: int = 100) -> dict:
+    body = build_request_body(
+        role=role, effort=effort, prompt=prompt, schema=schema,
+        max_output_tokens=client.max_output_tokens,
+    )
+    return {
+        "model": body["model"],
+        "request_hash": sha256_json(body),
+        "input_tokens": input_tokens,
+        "max_output_tokens": client.max_output_tokens,
+        "reservation_usd": str(calculate_prudent_reservation(
+            input_tokens, client.max_output_tokens,
+        )),
+    }
+
+
+def _billing_evidence(**overrides) -> dict:
+    value = {
+        "source_type": "OPENAI_BILLING_EXPORT",
+        "external_reference": "billing-export-2026-10-28/call-123",
+        "document_sha256": "a" * 64,
+        "evidence_timestamp_utc": "2026-10-28T12:00:00Z",
+        "reason": "Provider billing export identifies the settled request.",
+        "verified_by": "independent-auditor",
+    }
+    value.update(overrides)
+    return value
+
+
 def _live_client(payload: dict, tmp_path: Path) -> tuple[OpenAIResponsesClient, CallJournal, str]:
     raw = json.dumps(payload).encode()
     journal = CallJournal(tmp_path / "journal")
     client = OpenAIResponsesClient(
         max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
         api_key="test-only", session=_Session(_Response(raw)),
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(),
     )
     call_id = "call-http"
     journal.start(call_id=call_id, request_hash="request", metadata={})
@@ -238,7 +278,8 @@ def test_paid_invalid_schema_response_is_accounted_before_failure(tmp_path: Path
     schema = {"type": "object", "required": ["x"], "properties": {"x": {"type": "string"}}}
     with pytest.raises(ProviderCallError) as exc:
         client.invoke(call_id=call_id, role="ANALYST", ticker="X", effort="high", prompt="p", schema=schema,
-                      checkpoint=lambda **kwargs: (captured.append(kwargs), journal.record_http_response(**kwargs)))
+                      checkpoint=lambda **kwargs: (captured.append(kwargs), journal.record_http_response(**kwargs)),
+                      token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema=schema))
     assert exc.value.error_type == "SCHEMA"
     assert captured and journal.consumed_cost() > 0
     assert journal.load(call_id)["raw_sha256"] == sha256_bytes(json.dumps(payload).encode())
@@ -250,7 +291,8 @@ def test_incomplete_response_with_usage_is_not_a_financial_result(tmp_path: Path
     client, journal, call_id = _live_client(payload, tmp_path)
     with pytest.raises(ProviderCallError) as exc:
         client.invoke(call_id=call_id, role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
-                      checkpoint=journal.record_http_response)
+                      checkpoint=journal.record_http_response,
+                      token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}))
     assert exc.value.error_type == "INCOMPLETE"
     assert journal.consumed_cost() > 0
 
@@ -267,6 +309,8 @@ def test_http_error_without_usage_is_indeterminate_and_reserved(
         max_budget_usd=Decimal("100"),
         authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
         api_key="test-only", session=session, journal=journal,
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(),
     )
     item = {
         "call_id": f"http-{status_code}", "record_id": record.record_id,
@@ -289,6 +333,8 @@ def test_http_error_without_usage_is_indeterminate_and_reserved(
         max_budget_usd=Decimal("100"),
         authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
         api_key="test-only", session=retry_session, journal=journal,
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(),
     )
     with pytest.raises(JournalError, match="INDETERMINATE"):
         _execute_call(
@@ -313,6 +359,8 @@ def test_timeout_after_send_is_indeterminate_and_reserved(tmp_path: Path) -> Non
         max_budget_usd=Decimal("100"),
         authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
         api_key="test-only", session=session, journal=journal,
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(),
     )
     item = {
         "call_id": "timeout", "record_id": record.record_id,
@@ -349,6 +397,7 @@ def test_total_tokens_missing_is_normalized_in_client_and_journal(tmp_path: Path
     response = client.invoke(
         call_id="missing-total", role="ANALYST", ticker="X", effort="high",
         prompt="p", schema={"type": "object"}, checkpoint=journal.record_http_response,
+        token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}),
     )
     assert response.total_tokens == 30
     assert journal.load("missing-total")["accounting"]["total_tokens"] == 30
@@ -362,21 +411,21 @@ def test_prudent_budget_includes_schema_and_full_output_limit() -> None:
     )
     small_schema = {"type": "object"}
     large_schema = {"type": "object", "description": "x" * 10000}
-    short = client.estimate_max_cost(
+    short = client.offline_estimate_max_cost(
         role="CRITIC", effort="medium", prompt="short", schema=small_schema,
     )
-    long = client.estimate_max_cost(
+    long = client.offline_estimate_max_cost(
         role="CRITIC", effort="medium", prompt="x" * 10000, schema=large_schema,
     )
     body = build_request_body(
         role="CRITIC", effort="high", prompt="short", schema=small_schema,
         max_output_tokens=MAX_OUTPUT_TOKENS,
     )
-    expected = calculate_cost(
-        prudent_input_token_bound(body), 0, 0, MAX_OUTPUT_TOKENS,
+    expected = calculate_prudent_reservation(
+        prudent_input_token_bound(body), MAX_OUTPUT_TOKENS,
     )
     assert long > short
-    assert client.estimate_max_cost(
+    assert client.offline_estimate_max_cost(
         role="CRITIC", effort="high", prompt="short", schema=small_schema,
     ) == expected
 
@@ -391,9 +440,83 @@ def test_prudent_budget_uses_reasoning_output_limit() -> None:
         role="ANALYST", effort="high", prompt="p", schema={"type": "object"},
         max_output_tokens=512,
     )
-    assert client.estimate_max_cost(
+    assert client.offline_estimate_max_cost(
         role="ANALYST", effort="high", prompt="p", schema={"type": "object"},
-    ) == calculate_cost(prudent_input_token_bound(body), 0, 0, 512)
+    ) == calculate_prudent_reservation(prudent_input_token_bound(body), 512)
+
+
+def test_provider_token_preflight_counts_exact_request_and_records_hash() -> None:
+    count_session = _count_session(1234)
+    generation_session = _Session(_Response(b"unused"))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("10"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=generation_session,
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=count_session,
+    )
+    schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+    preflight = client.prepare_reservation(
+        role="ANALYST", effort="high", prompt="prompt", schema=schema,
+    )
+    exact_body = build_request_body(
+        role="ANALYST", effort="high", prompt="prompt", schema=schema,
+        max_output_tokens=client.max_output_tokens,
+    )
+    assert count_session.last_kwargs["json"] == exact_body
+    assert preflight["request_hash"] == sha256_json(exact_body)
+    assert preflight["input_tokens"] == 1234
+    assert Decimal(preflight["reservation_usd"]) == calculate_prudent_reservation(1234, MAX_OUTPUT_TOKENS)
+    assert generation_session.calls == 0
+
+
+def test_generation_rejects_request_modified_after_token_count() -> None:
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("10"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=_Session(_Response(b"unused")),
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(100),
+    )
+    schema = {"type": "object"}
+    preflight = client.prepare_reservation(
+        role="ANALYST", effort="medium", prompt="original", schema=schema,
+    )
+    with pytest.raises(LiveShadowDisabled, match="differs"):
+        client.invoke(
+            call_id="changed", role="ANALYST", ticker="X", effort="medium",
+            prompt="modified", schema=schema, token_preflight=preflight,
+        )
+    assert client.session.calls == 0
+
+
+def test_provider_count_above_272k_blocks_generation() -> None:
+    generation_session = _Session(_Response(b"unused"))
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("10"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=generation_session,
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(272001),
+    )
+    with pytest.raises(LiveShadowDisabled, match="272000"):
+        client.prepare_reservation(
+            role="ANALYST", effort="high", prompt="p", schema={"type": "object"},
+        )
+    assert generation_session.calls == 0
+
+
+def test_live_generation_requires_authorized_reliable_token_count() -> None:
+    client = OpenAIResponsesClient(
+        max_budget_usd=Decimal("10"),
+        authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
+        api_key="test-only", session=_Session(_Response(b"unused")),
+        token_count_session=_count_session(100),
+    )
+    with pytest.raises(LiveShadowDisabled, match="authorization"):
+        client.prepare_reservation(
+            role="ANALYST", effort="high", prompt="p", schema={"type": "object"},
+        )
 
 
 def test_budget_rejects_critic_before_http(tmp_path: Path) -> None:
@@ -405,10 +528,10 @@ def test_budget_rejects_critic_before_http(tmp_path: Path) -> None:
         max_budget_usd=Decimal("100"),
         authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
         api_key="test-only", session=session,
+        token_preflight_authorization=TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+        token_count_session=_count_session(),
     )
-    reservation = client.estimate_max_cost(
-        role="CRITIC", effort="high", prompt=prompt, schema=record.critic_schema,
-    )
+    reservation = calculate_prudent_reservation(100, client.max_output_tokens)
     journal = CallJournal(tmp_path / "journal", max_budget_usd=reservation / 2)
     item = {
         "call_id": "critic-budget", "record_id": record.record_id,
@@ -436,9 +559,50 @@ def test_indeterminate_unknown_reservation_survives_resume(tmp_path: Path) -> No
     with pytest.raises(JournalError, match="INDETERMINATE"):
         second.start(call_id="resume-unknown", request_hash="h", metadata={})
     assert second.reserved_cost() == Decimal("0.08")
-    reconciled = second.reconcile_cost(call_id="resume-unknown", cost_usd=Decimal("0.03"))
+    reconciled = second.reconcile_cost(
+        call_id="resume-unknown", cost_usd=Decimal("0.03"), evidence=_billing_evidence(),
+    )
     assert reconciled["cost_unknown"] is False
     assert second.reserved_cost() == Decimal("0")
+
+
+def test_reconciliation_requires_verifiable_evidence_and_keeps_reservation(tmp_path: Path) -> None:
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="unknown", request_hash="h", metadata={}, reservation_usd=Decimal("0.08"))
+    journal.record_accounting(call_id="unknown", accounting={"cost_usd": None, "cost_unknown": True})
+    journal.finalize(call_id="unknown", status="INDETERMINATE")
+    for evidence in (None, {}, {"source_type": "anything"}, _billing_evidence(document_sha256="bad")):
+        with pytest.raises(JournalError, match="evidence|source|checksum|fields"):
+            journal.reconcile_cost(call_id="unknown", cost_usd=Decimal("0"), evidence=evidence)
+    assert journal.load("unknown")["cost_unknown"] is True
+    assert journal.reserved_cost() == Decimal("0.08")
+
+
+def test_reconciliation_is_append_only_idempotent_and_auditable(tmp_path: Path) -> None:
+    journal = CallJournal(tmp_path / "journal")
+    journal.start(call_id="unknown", request_hash="h", metadata={}, reservation_usd=Decimal("0.08"))
+    journal.record_accounting(call_id="unknown", accounting={"cost_usd": None, "cost_unknown": True})
+    journal.finalize(call_id="unknown", status="INDETERMINATE")
+    evidence = _billing_evidence()
+    journal.reconcile_cost(call_id="unknown", cost_usd=Decimal("0.03"), evidence=evidence)
+    history = journal.reconciliations("unknown")
+    assert len(history) == 1
+    assert history[0]["previous_cost_usd"] is None
+    assert history[0]["reconciled_cost_usd"] == "0.03"
+    assert history[0]["released_reservation_usd"] == "0.08"
+    assert history[0]["evidence"] == evidence
+    journal.reconcile_cost(call_id="unknown", cost_usd=Decimal("0.03"), evidence=evidence)
+    assert len(journal.reconciliations("unknown")) == 1
+    with pytest.raises(JournalError, match="already exists"):
+        journal.reconcile_cost(
+            call_id="unknown", cost_usd=Decimal("0"),
+            evidence=_billing_evidence(external_reference="billing-export-other"),
+        )
+    with journal._connection() as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "UPDATE cost_reconciliations SET reconciled_cost_usd='0' WHERE call_id='unknown'"
+            )
 
 
 def test_raw_checkpoint_precedes_envelope_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,7 +623,8 @@ def test_raw_checkpoint_precedes_envelope_parsing(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(client_module.json, "loads", traced_loads)
     client.invoke(call_id="order", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
-                  checkpoint=lambda **kwargs: events.append("checkpoint"))
+                  checkpoint=lambda **kwargs: events.append("checkpoint"),
+                  token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}))
     assert events[0] == "checkpoint"
     assert "parse" in events
 
@@ -474,7 +639,8 @@ def test_unknown_cost_is_not_recorded_as_zero(tmp_path: Path) -> None:
     )
     with pytest.raises(ProviderCallError) as exc:
         client.invoke(call_id="unknown", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
-                      checkpoint=journal.record_http_response)
+                      checkpoint=journal.record_http_response,
+                      token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}))
     assert exc.value.accounting["cost_usd"] is None
     assert journal.consumed_cost() == 0
     assert journal.reserved_cost() == Decimal("0.08")
@@ -490,7 +656,8 @@ def test_http_200_invalid_json_is_checkpointed_and_blocks_retry(tmp_path: Path) 
     )
     with pytest.raises(ProviderCallError) as exc:
         client.invoke(call_id="bad-json", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
-                      checkpoint=journal.record_http_response)
+                      checkpoint=journal.record_http_response,
+                      token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}))
     assert exc.value.call_status == "INDETERMINATE"
     assert journal.load("bad-json")["raw_sha256"] == sha256_bytes(b"not-json")
     assert journal.consumed_cost() == 0
@@ -506,7 +673,8 @@ def test_budget_uses_persisted_consumption_and_effort_is_sent(tmp_path: Path) ->
         api_key="test-only", session=session, journal=journal,
     )
     with pytest.raises(LiveShadowDisabled, match="budget"):
-        client.invoke(call_id="new", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"})
+        client.invoke(call_id="new", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
+                      token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}))
     assert session.calls == 0
 
 
@@ -518,7 +686,8 @@ def test_responses_body_contains_explicit_reasoning_effort(tmp_path: Path) -> No
         max_budget_usd=Decimal("1"), authorization="I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED",
         api_key="test-only", session=session, max_output_tokens=512,
     )
-    client.invoke(call_id="body", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"})
+    client.invoke(call_id="body", role="ANALYST", ticker="X", effort="high", prompt="p", schema={"type": "object"},
+                  token_preflight=_preflight(client, role="ANALYST", effort="high", prompt="p", schema={"type": "object"}))
     body = session.last_kwargs["json"]
     assert body["reasoning"] == {"effort": "high"}
     assert body["max_output_tokens"] == 512
@@ -690,6 +859,26 @@ def test_membership_and_factorial_contrasts_are_arm_specific() -> None:
     assert scorecard["financial_outcomes"]["by_arm"]["A"]["selection"]["D5"]["n"] == 0
     assert scorecard["financial_outcomes"]["by_arm"]["B"]["selection"]["D5"]["n"] == 1
     assert scorecard["financial_outcomes"]["factorial_contrasts"]["D5"]["B-A"]["mean_pct"] == 4.0
+
+
+def test_total_tokens_are_consistent_in_scorecard_without_reasoning_double_count() -> None:
+    scorecard = build_scorecard({
+        "calls": [{
+            "role": "ANALYST", "effort": "high", "status": "SUCCEEDED",
+            "input_tokens": 10, "output_tokens": 20, "reasoning_tokens": 7,
+            "total_tokens": 30, "cost_usd": "0.001", "duration_seconds": 0,
+        }],
+        "arms": [],
+    })
+    call_type = scorecard["costs_by_call_type"]["analyst_high"]
+    assert call_type["input_tokens"] == 10
+    assert call_type["output_tokens"] == 20
+    assert call_type["reasoning_tokens"] == 7
+    assert call_type["total_tokens"] == 30
+    assert scorecard["token_totals"] == {
+        "input_tokens": 10, "output_tokens": 20,
+        "reasoning_tokens": 7, "total_tokens": 30,
+    }
 
 
 def test_blind_adjudication_does_not_assign_fact_scores() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -97,9 +98,12 @@ def _call_record(*, plan_item: dict[str, Any], record: TickerInput, response: An
     return result
 
 
-def _invoke(client: Any, kwargs: dict[str, Any], journal: CallJournal) -> Any:
+def _invoke(client: Any, kwargs: dict[str, Any], journal: CallJournal,
+            token_preflight: dict[str, Any] | None = None) -> Any:
     if "checkpoint" in inspect.signature(client.invoke).parameters:
         kwargs["checkpoint"] = journal.record_http_response
+    if "token_preflight" in inspect.signature(client.invoke).parameters:
+        kwargs["token_preflight"] = token_preflight
     return client.invoke(**kwargs)
 
 
@@ -108,20 +112,50 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
     request_hash = sha256_json(request_payload(role=item["role"], ticker=record.ticker,
                                                 effort=item["effort"], prompt=prompt, schema=schema,
                                                 max_output_tokens=getattr(client, "max_output_tokens", MAX_OUTPUT_TOKENS)))
-    metadata = {"record_id": record.record_id, "role": item["role"], "ticker": record.ticker,
-                "effort": item["effort"], "prompt_hash": sha256_bytes(prompt.encode("utf-8")),
-                "schema_hash": sha256_json(schema)}
-    reservation = (
-        client.estimate_max_cost(
+    token_preflight = None
+    existing = journal.load(item["call_id"])
+    if existing is not None:
+        if existing.get("request_hash") != request_hash:
+            raise JournalError(f"request hash conflict for {item['call_id']}")
+        if existing.get("status") in {"SUCCEEDED", "FAILED", "INDETERMINATE", "SKIPPED_DEPENDENCY"}:
+            if existing.get("status") == "INDETERMINATE":
+                raise JournalError(f"call {item['call_id']} is INDETERMINATE; explicit resolution required")
+            saved = existing.get("result")
+            if isinstance(saved, dict):
+                return saved
+            raise JournalError(f"terminal journal record lacks result: {item['call_id']}")
+        # Revalidate ownership before any provider token-count request. A
+        # stale claim becomes INDETERMINATE and is never retried implicitly.
+        existing = journal.start(
+            call_id=item["call_id"], request_hash=request_hash,
+            metadata=existing.get("metadata") or {}, reservation_usd=Decimal("0"),
+        )
+        token_preflight = (existing.get("metadata") or {}).get("token_preflight")
+        if getattr(client, "is_live_shadow", False) and not token_preflight:
+            journal.finalize(
+                call_id=item["call_id"], status="INDETERMINATE",
+                error_type="RECOVERY", error="started call lacks token preflight evidence",
+            )
+            raise JournalError(f"call {item['call_id']} requires explicit indeterminate resolution")
+        reservation = Decimal(str(existing.get("reserved_usd") or "0"))
+    elif hasattr(client, "prepare_reservation"):
+        token_preflight = client.prepare_reservation(
             role=item["role"],
             effort=item["effort"],
             prompt=prompt,
             schema=schema,
         )
-        if hasattr(client, "estimate_max_cost") else 0
-    )
-    existing = journal.start(call_id=item["call_id"], request_hash=request_hash, metadata=metadata,
-                             reservation_usd=reservation)
+        reservation = Decimal(str(token_preflight["reservation_usd"]))
+    elif getattr(client, "is_live_shadow", False):
+        raise LiveShadowDisabled("LIVE SHADOW client lacks provider token preflight")
+    else:
+        reservation = 0
+    metadata = {"record_id": record.record_id, "role": item["role"], "ticker": record.ticker,
+                "effort": item["effort"], "prompt_hash": sha256_bytes(prompt.encode("utf-8")),
+                "schema_hash": sha256_json(schema), "token_preflight": token_preflight}
+    if existing is None:
+        existing = journal.start(call_id=item["call_id"], request_hash=request_hash, metadata=metadata,
+                                 reservation_usd=reservation)
     if existing.get("status") in {"SUCCEEDED", "FAILED", "INDETERMINATE", "SKIPPED_DEPENDENCY"}:
         if existing.get("status") == "INDETERMINATE":
             raise JournalError(f"call {item['call_id']} is INDETERMINATE; explicit resolution required")
@@ -135,9 +169,11 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
         raise JournalError(f"call {item['call_id']} requires explicit indeterminate resolution")
     try:
         response = _invoke(client, {"call_id": item["call_id"], "role": item["role"], "ticker": record.ticker,
-                                    "effort": item["effort"], "prompt": prompt, "schema": schema}, journal)
+                                    "effort": item["effort"], "prompt": prompt, "schema": schema}, journal,
+                           token_preflight)
         saved = _call_record(plan_item=item, record=record, response=response, prompt=prompt,
                              schema=schema, request_hash=request_hash)
+        saved["token_preflight"] = token_preflight
         journal.finalize(call_id=item["call_id"], status="SUCCEEDED", result=saved)
         return saved
     except ProviderCallError as exc:
@@ -151,6 +187,7 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
         saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
                              request_hash=request_hash, status=exc.call_status, error_type=exc.error_type,
                              error=str(exc), accounting=accounting)
+        saved["token_preflight"] = token_preflight
         saved["raw_sha256"] = exc.raw_sha256 or (journal.load(item["call_id"]) or {}).get("raw_sha256")
         journal.finalize(call_id=item["call_id"], status=exc.call_status, result=saved,
                          error_type=exc.error_type, error=str(exc))
@@ -165,12 +202,14 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
                              request_hash=request_hash, status="FAILED", error_type="PRECONDITION",
                              error=str(exc),
                              accounting={"cost_usd": "0", "cost_unknown": False})
+        saved["token_preflight"] = token_preflight
         journal.finalize(call_id=item["call_id"], status="FAILED", result=saved,
                          error_type="PRECONDITION", error=str(exc))
         return saved
     except ResponseValidationError as exc:
         saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
                              request_hash=request_hash, status="FAILED", error_type="SCHEMA", error=str(exc))
+        saved["token_preflight"] = token_preflight
         journal.finalize(call_id=item["call_id"], status="FAILED", result=saved, error_type="SCHEMA", error=str(exc))
         return saved
     except Exception as exc:
@@ -185,6 +224,7 @@ def _execute_call(*, client: Any, journal: CallJournal, item: dict[str, Any], re
             })
         saved = _call_record(plan_item=item, record=record, response=None, prompt=prompt, schema=schema,
                              request_hash=request_hash, status=status, error_type=error_type, error=type(exc).__name__)
+        saved["token_preflight"] = token_preflight
         journal.finalize(call_id=item["call_id"], status=status, result=saved, error_type=error_type, error=type(exc).__name__)
         if status == "INDETERMINATE":
             raise JournalError(f"call {item['call_id']} may have been billed; retry blocked") from exc

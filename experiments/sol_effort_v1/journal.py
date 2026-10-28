@@ -12,7 +12,7 @@ import sqlite3
 import uuid
 from typing import Any, Mapping
 
-from .canonical import sha256_bytes
+from .canonical import canonical_text, sha256_bytes
 
 
 class JournalError(RuntimeError):
@@ -28,6 +28,11 @@ class BudgetExceeded(JournalError):
 
 
 TERMINAL_STATES = {"SUCCEEDED", "FAILED", "INDETERMINATE", "SKIPPED_DEPENDENCY"}
+RECONCILIATION_SOURCES = {
+    "OPENAI_BILLING_EXPORT",
+    "OPENAI_INVOICE",
+    "OPENAI_SUPPORT_CASE",
+}
 
 
 def _now() -> str:
@@ -114,6 +119,27 @@ class CallJournal:
                     error_type TEXT,
                     error TEXT
                 );
+                CREATE TABLE IF NOT EXISTS cost_reconciliations (
+                    reconciliation_id TEXT PRIMARY KEY,
+                    call_id TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    previous_cost_usd TEXT,
+                    reconciled_cost_usd TEXT NOT NULL,
+                    released_reservation_usd TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
+                    evidence_sha256 TEXT NOT NULL,
+                    FOREIGN KEY(call_id) REFERENCES calls(call_id)
+                );
+                CREATE TRIGGER IF NOT EXISTS cost_reconciliations_no_update
+                BEFORE UPDATE ON cost_reconciliations
+                BEGIN
+                    SELECT RAISE(ABORT, 'cost reconciliation history is append-only');
+                END;
+                CREATE TRIGGER IF NOT EXISTS cost_reconciliations_no_delete
+                BEFORE DELETE ON cost_reconciliations
+                BEGIN
+                    SELECT RAISE(ABORT, 'cost reconciliation history is append-only');
+                END;
                 """
             )
 
@@ -238,29 +264,85 @@ class CallJournal:
             c.commit()
         return self.load(call_id) or {}
 
+    @staticmethod
+    def _reconciliation_evidence(evidence: Mapping[str, Any] | None) -> tuple[dict[str, str], str]:
+        if not isinstance(evidence, Mapping):
+            raise JournalError("structured reconciliation evidence is required")
+        required = {
+            "source_type", "external_reference", "document_sha256",
+            "evidence_timestamp_utc", "reason", "verified_by",
+        }
+        if set(evidence) != required:
+            raise JournalError("reconciliation evidence fields are missing or unexpected")
+        normalized = {key: str(evidence[key]).strip() for key in sorted(required)}
+        if normalized["source_type"] not in RECONCILIATION_SOURCES:
+            raise JournalError("reconciliation source is not an accepted provider evidence type")
+        if len(normalized["external_reference"]) < 6:
+            raise JournalError("reconciliation external reference is not verifiable")
+        checksum = normalized["document_sha256"].lower()
+        if len(checksum) != 64 or any(character not in "0123456789abcdef" for character in checksum):
+            raise JournalError("reconciliation document checksum must be SHA-256")
+        normalized["document_sha256"] = checksum
+        try:
+            timestamp = datetime.fromisoformat(
+                normalized["evidence_timestamp_utc"].replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise JournalError("reconciliation evidence timestamp is invalid") from exc
+        if timestamp.tzinfo is None:
+            raise JournalError("reconciliation evidence timestamp must include a timezone")
+        if len(normalized["reason"]) < 10 or len(normalized["verified_by"]) < 3:
+            raise JournalError("reconciliation reason or verifier is insufficient")
+        evidence_json = canonical_text(normalized)
+        return normalized, sha256_bytes(evidence_json.encode("utf-8"))
+
     def reconcile_cost(self, *, call_id: str, cost_usd: Decimal,
+                       evidence: Mapping[str, Any] | None = None,
                        accounting: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """Release an indeterminate reservation only after explicit evidence."""
+        """Release an indeterminate reservation only with provider evidence."""
         if cost_usd < 0:
             raise JournalError("reconciled cost cannot be negative")
+        normalized_evidence, evidence_sha256 = self._reconciliation_evidence(evidence)
         with self._connection() as c:
             c.execute("BEGIN IMMEDIATE")
             row = c.execute("SELECT * FROM calls WHERE call_id=?", (call_id,)).fetchone()
             if row is None:
                 c.rollback()
                 raise JournalError(f"call was not started: {call_id}")
+            previous = c.execute(
+                "SELECT * FROM cost_reconciliations WHERE call_id=?", (call_id,)
+            ).fetchone()
+            if previous is not None:
+                if (_decimal(previous["reconciled_cost_usd"]) == cost_usd
+                        and previous["evidence_sha256"] == evidence_sha256):
+                    c.commit()
+                    return self.load(call_id) or {}
+                c.rollback()
+                raise JournalError(f"reconciliation already exists for {call_id}")
             if row["status"] != "INDETERMINATE":
                 c.rollback()
                 raise JournalError("only INDETERMINATE calls require explicit reconciliation")
-            if row["cost_unknown"] == 0 and row["cost_usd"] is not None:
-                if _decimal(row["cost_usd"]) != cost_usd:
-                    c.rollback()
-                    raise JournalError(f"reconciled cost conflicts for {call_id}")
-                c.commit()
-                return self.load(call_id) or {}
+            if row["cost_unknown"] == 0:
+                c.rollback()
+                raise JournalError("reconciliation requires an unknown provider cost")
             merged = dict(json.loads(row["accounting_json"] or "{}"))
             merged.update(dict(accounting or {}))
-            merged.update({"cost_usd": str(cost_usd), "cost_unknown": False})
+            merged.update({
+                "cost_usd": str(cost_usd),
+                "cost_unknown": False,
+                "reconciliation_evidence_sha256": evidence_sha256,
+            })
+            released_reservation = str(row["reserved_usd"])
+            c.execute(
+                """INSERT INTO cost_reconciliations(
+                   reconciliation_id,call_id,created_at,previous_cost_usd,
+                   reconciled_cost_usd,released_reservation_usd,evidence_json,
+                   evidence_sha256) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    uuid.uuid4().hex, call_id, _now(), row["cost_usd"], str(cost_usd),
+                    released_reservation, canonical_text(normalized_evidence), evidence_sha256,
+                ),
+            )
             c.execute(
                 """UPDATE calls SET accounting_json=?,cost_usd=?,cost_unknown=0,
                    reserved_usd='0' WHERE call_id=?""",
@@ -268,6 +350,24 @@ class CallJournal:
             )
             c.commit()
         return self.load(call_id) or {}
+
+    def reconciliations(self, call_id: str | None = None) -> list[dict[str, Any]]:
+        with self._connection() as c:
+            if call_id is None:
+                rows = list(c.execute(
+                    "SELECT * FROM cost_reconciliations ORDER BY created_at,reconciliation_id"
+                ))
+            else:
+                rows = list(c.execute(
+                    "SELECT * FROM cost_reconciliations WHERE call_id=? ORDER BY created_at,reconciliation_id",
+                    (call_id,),
+                ))
+        values = []
+        for row in rows:
+            value = dict(row)
+            value["evidence"] = json.loads(value.pop("evidence_json"))
+            values.append(value)
+        return values
 
     def finalize(self, *, call_id: str, status: str, result: Mapping[str, Any] | None = None,
                  error_type: str | None = None, error: str | None = None) -> dict[str, Any]:

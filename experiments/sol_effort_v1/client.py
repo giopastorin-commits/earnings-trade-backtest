@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from decimal import ROUND_CEILING
 import json
@@ -11,7 +12,13 @@ from time import perf_counter
 from typing import Any, Callable, Mapping
 
 from .canonical import canonical_bytes, canonical_text, sha256_bytes, sha256_json
-from .config import API_URL, AUTHORIZATION_SENTINEL, MODEL, Effort
+from .config import (
+    API_URL,
+    AUTHORIZATION_SENTINEL,
+    MODEL,
+    TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL,
+    Effort,
+)
 from .schema import validate_object
 
 
@@ -22,10 +29,20 @@ OUTPUT_RATE = Decimal("20.00")
 MAX_OUTPUT_TOKENS = 4096
 SERVICE_TIER = "default"
 VALIDATOR_VERSION = "schema-v1"
-PRICING_VERSION = "local-gpt-5.6-sol-rates-v1"
-BUDGET_ESTIMATOR_VERSION = "utf8-request-bytes-margin-v1"
+PRICING_VERSION = "openai-gpt-5.6-sol-standard-2026-10-28"
+PRICING_RATES_PER_MILLION = {
+    "input_usd": str(INPUT_RATE),
+    "cached_input_usd": str(CACHED_INPUT_RATE),
+    "cache_write_usd": str(CACHE_WRITE_RATE),
+    "output_usd": str(OUTPUT_RATE),
+}
+BUDGET_ESTIMATOR_VERSION = "provider-input-token-preflight-v1"
 INPUT_TOKEN_SAFETY_MULTIPLIER = Decimal("1.25")
 REQUEST_OVERHEAD_TOKENS = 256
+RESERVATION_SAFETY_MULTIPLIER = Decimal("1.10")
+SHORT_CONTEXT_INPUT_LIMIT = 272_000
+PRICING_VALID_THROUGH = date(2026, 11, 21)
+INPUT_TOKEN_URL = "https://api.openai.com/v1/responses/input_tokens"
 
 
 def build_request_body(*, role: str, effort: Effort, prompt: str,
@@ -102,14 +119,10 @@ def calculate_cost(
 
 
 def prudent_input_token_bound(request_body: Mapping[str, Any]) -> int:
-    """Return a deliberately conservative input-token reservation bound.
+    """Return an offline-only estimate; never authorize a LIVE request.
 
-    The provider tokenizer is not installed in this isolated checkout. A
-    UTF-8 byte count is therefore used as the base bound for the complete
-    request body (including the schema), then enlarged by a versioned margin
-    and fixed request overhead. This is a reservation guard, not a claim that
-    the provider's tokenizer or pricing can never differ from the local
-    contract.
+    This remains available for DRY RUN reporting. LIVE reservations require
+    the provider input-token preflight and never use this estimate.
     """
     byte_length = len(canonical_bytes(request_body))
     if byte_length <= 0:
@@ -118,6 +131,27 @@ def prudent_input_token_bound(request_body: Mapping[str, Any]) -> int:
         rounding=ROUND_CEILING
     )
     return int(with_margin) + REQUEST_OVERHEAD_TOKENS
+
+
+def calculate_prudent_reservation(input_tokens: int, max_output_tokens: int) -> Decimal:
+    if input_tokens < 1:
+        raise LiveShadowDisabled("provider input-token count must be positive")
+    if input_tokens > SHORT_CONTEXT_INPUT_LIMIT:
+        raise LiveShadowDisabled(
+            f"LIVE SHADOW rejects inputs above {SHORT_CONTEXT_INPUT_LIMIT} tokens"
+        )
+    if date.today() > PRICING_VALID_THROUGH:
+        raise LiveShadowDisabled("configured model pricing requires revalidation")
+    # Cache writes are the highest configured input-side rate. Reserving all
+    # counted input at that rate is conservative even when caching is absent.
+    prudent_input_rate = max(INPUT_RATE, CACHED_INPUT_RATE, CACHE_WRITE_RATE)
+    base = (
+        Decimal(input_tokens) * prudent_input_rate
+        + Decimal(max_output_tokens) * OUTPUT_RATE
+    ) / Decimal(1_000_000)
+    return (base * RESERVATION_SAFETY_MULTIPLIER).quantize(
+        Decimal("0.000001"), rounding=ROUND_CEILING
+    )
 
 
 def _sample(schema: Mapping[str, Any], seed: str) -> Any:
@@ -233,6 +267,8 @@ class OpenAIResponsesClient:
         self, *, max_budget_usd: Decimal, authorization: str,
         api_key: str | None = None, session: Any | None = None,
         max_output_tokens: int = MAX_OUTPUT_TOKENS, journal: Any | None = None,
+        token_preflight_authorization: str = "",
+        token_count_session: Any | None = None,
     ) -> None:
         if authorization != AUTHORIZATION_SENTINEL:
             raise LiveShadowDisabled(
@@ -253,8 +289,10 @@ class OpenAIResponsesClient:
         if not self.api_key:
             raise LiveShadowDisabled("OPENAI_API_KEY is not configured")
         self.session = session
+        self.token_preflight_authorization = token_preflight_authorization
+        self.token_count_session = token_count_session
 
-    def estimate_max_cost(
+    def offline_estimate_max_cost(
         self, *, role: str, effort: Effort, prompt: str,
         schema: Mapping[str, Any],
     ) -> Decimal:
@@ -266,21 +304,90 @@ class OpenAIResponsesClient:
             max_output_tokens=self.max_output_tokens,
         )
         input_bound = prudent_input_token_bound(body)
-        # Cached input is priced at full input rate in the reservation. The
-        # full output limit includes reasoning tokens under the usage contract.
-        return calculate_cost(input_bound, 0, 0, self.max_output_tokens)
+        return calculate_prudent_reservation(input_bound, self.max_output_tokens)
+
+    def prepare_reservation(
+        self, *, role: str, effort: Effort, prompt: str,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if self.token_preflight_authorization != TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL:
+            raise LiveShadowDisabled(
+                "LIVE SHADOW requires explicit input-token preflight authorization"
+            )
+        body = build_request_body(
+            role=role,
+            effort=effort,
+            prompt=prompt,
+            schema=schema,
+            max_output_tokens=self.max_output_tokens,
+        )
+        request_hash = sha256_json(body)
+        session = self.token_count_session
+        if session is None:
+            if self.session is None:
+                import requests
+                self.session = requests.Session()
+            session = self.session
+        response = session.post(
+            INPUT_TOKEN_URL,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=300,
+        )
+        if int(response.status_code) >= 400:
+            raise LiveShadowDisabled(
+                f"input-token preflight failed with HTTP {response.status_code}"
+            )
+        raw = bytes(response.content)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LiveShadowDisabled("input-token preflight returned invalid JSON") from exc
+        if payload.get("object") != "response.input_tokens":
+            raise LiveShadowDisabled("input-token preflight returned an unexpected object")
+        try:
+            input_tokens = int(payload["input_tokens"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LiveShadowDisabled("input-token preflight lacks a valid count") from exc
+        reservation = calculate_prudent_reservation(
+            input_tokens, self.max_output_tokens
+        )
+        return {
+            "model": MODEL,
+            "request_hash": request_hash,
+            "input_tokens": input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "reservation_usd": str(reservation),
+            "pricing_version": PRICING_VERSION,
+            "pricing_rates_per_million": dict(PRICING_RATES_PER_MILLION),
+            "pricing_valid_through": PRICING_VALID_THROUGH.isoformat(),
+            "estimator_version": BUDGET_ESTIMATOR_VERSION,
+            "count_response_sha256": sha256_bytes(raw),
+            "counted_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
 
     def invoke(
         self, *, call_id: str, role: str, ticker: str, effort: Effort,
         prompt: str, schema: Mapping[str, Any], checkpoint: Callable[..., Any] | None = None,
+        token_preflight: Mapping[str, Any] | None = None,
     ) -> ProviderResponse:
         if self.journal is not None:
             self.total_cost = max(self.total_cost, self.journal.consumed_cost())
         if self.total_cost >= self.max_budget_usd:
             raise LiveShadowDisabled("LIVE SHADOW budget exhausted before next call")
-        worst_case = self.estimate_max_cost(
-            role=role, effort=effort, prompt=prompt, schema=schema,
-        )
+        body = build_request_body(role=role, effort=effort, prompt=prompt,
+                                  schema=schema, max_output_tokens=self.max_output_tokens)
+        request_hash = sha256_json(body)
+        if not isinstance(token_preflight, Mapping):
+            raise LiveShadowDisabled("generation requires a verified input-token preflight")
+        if token_preflight.get("request_hash") != request_hash:
+            raise LiveShadowDisabled("generation request differs from token-counted request")
+        if token_preflight.get("model") != MODEL:
+            raise LiveShadowDisabled("token preflight model does not match generation model")
+        worst_case = Decimal(str(token_preflight.get("reservation_usd")))
         if self.total_cost + worst_case > self.max_budget_usd:
             raise LiveShadowDisabled(
                 "LIVE SHADOW budget preflight rejected the next call"
@@ -288,9 +395,6 @@ class OpenAIResponsesClient:
         if self.session is None:
             import requests
             self.session = requests.Session()
-        body = build_request_body(role=role, effort=effort, prompt=prompt,
-                                  schema=schema, max_output_tokens=self.max_output_tokens)
-        request_hash = sha256_json(body)
         started = perf_counter()
         response = self.session.post(
             API_URL,

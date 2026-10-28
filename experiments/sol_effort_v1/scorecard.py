@@ -102,9 +102,15 @@ def build_scorecard(results: Mapping[str, Any]) -> dict[str, Any]:
     costs: dict[str, dict[str, Any]] = defaultdict(lambda: {
         "calls": 0, "cost_usd": 0.0, "input_tokens": 0, "cached_input_tokens": 0,
         "cache_write_tokens": 0, "output_tokens": 0, "visible_output_tokens": 0,
-        "reasoning_tokens": 0, "latencies": [], "failures": 0,
+        "reasoning_tokens": 0, "total_tokens": 0, "latencies": [], "failures": 0,
             "unknown_cost_calls": 0,
     })
+    experiment_tokens = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+    }
     for call in calls:
         key = f"{call['role'].lower()}_{call['effort']}"
         entry = costs[key]
@@ -113,8 +119,17 @@ def build_scorecard(results: Mapping[str, Any]) -> dict[str, Any]:
             entry["unknown_cost_calls"] += 1
         else:
             entry["cost_usd"] += float(call.get("cost_usd") or 0)
+        normalized_total = int(
+            call.get("total_tokens")
+            if call.get("total_tokens") is not None
+            else int(call.get("input_tokens") or 0) + int(call.get("output_tokens") or 0)
+        )
         for field in ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens", "visible_output_tokens", "reasoning_tokens"):
             entry[field] += int(call.get(field) or 0)
+        entry["total_tokens"] += normalized_total
+        for field in ("input_tokens", "output_tokens", "reasoning_tokens"):
+            experiment_tokens[field] += int(call.get(field) or 0)
+        experiment_tokens["total_tokens"] += normalized_total
         entry["latencies"].append(float(call.get("duration_seconds") or 0))
         if call.get("status") != "SUCCEEDED":
             entry["failures"] += 1
@@ -179,6 +194,7 @@ def build_scorecard(results: Mapping[str, Any]) -> dict[str, Any]:
             "skipped_dependency_calls": sum(item.get("status") == "SKIPPED_DEPENDENCY" for item in calls),
         },
         "costs_by_call_type": dict(costs),
+        "token_totals": experiment_tokens,
         "decisions_by_arm": {key: dict(value) for key, value in decisions.items()},
         "decision_differences_vs_A": differences,
         "factorial_contrasts_require_numeric_metric": True,

@@ -41,13 +41,19 @@ From the repository root:
 
 The default mode is dry-run. It performs no model call. Mock is fully offline
 and deterministic. Live-shadow requires the authorization sentinel, a
-positive budget, and OPENAI_API_KEY; it is never the default.
+positive budget, OPENAI_API_KEY, and a separate explicit authorization for
+the provider input-token preflight; it is never the default. The token-count
+preflight is itself a provider API request and must be authorized.
 
-LIVE budget reservations use the complete canonical request body, including
-the response schema, a versioned UTF-8 byte-based conservative bound, explicit
-request overhead, the configured maximum output (including reasoning), and
-full-price input assumptions even when caching might apply. This is a local
-reservation guard, not an absolute provider billing cap. HTTP errors and
+LIVE budget reservations use a provider token-count preflight on the exact
+subsequent Responses request body, including prompt, schema, model parameters,
+and maximum output. Generation is blocked if the request hash changes after
+counting, if the count is unavailable, if input exceeds 272,000 tokens, if
+versioned pricing is stale, or if the shared journal cannot reserve the amount
+atomically. Maximum output includes reasoning tokens; input is reserved at the
+highest configured input-side rate plus an explicit safety margin. Offline
+UTF-8 estimates are informational only and never authorize a LIVE request.
+This guard is not an absolute provider billing cap. HTTP errors and
 timeouts whose billing state cannot be proven are recorded as INDETERMINATE;
 their reservation remains active until an explicit cost reconciliation.
 

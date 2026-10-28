@@ -10,6 +10,7 @@ Effort = Literal["medium", "high"]
 MODEL = "gpt-5.6-sol"
 API_URL = "https://api.openai.com/v1/responses"
 AUTHORIZATION_SENTINEL = "I_UNDERSTAND_LIVE_SHADOW_IS_PAID_AND_ISOLATED"
+TOKEN_PREFLIGHT_AUTHORIZATION_SENTINEL = "I_AUTHORIZE_OPENAI_INPUT_TOKEN_PREFLIGHT"
 
 
 @dataclass(frozen=True)
