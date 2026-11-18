@@ -319,9 +319,10 @@ The only price-derived Phase 1 fields are those returned by
 ## 12. Output rows, eligibility, and exclusions
 
 `h2_v2_1_inputs_dev.csv` and `h2_v2_1_inputs_prosp_batch1.csv` contain one
-row for every valid-timing initial candidate assigned to that sample, including
-rows later found ineligible. INTRADAY/UNKNOWN rows are not present in these two
-files.
+row for every valid-timing event that passed the EX-99 selection rule and was
+assigned to that sample, including rows later found ineligible. `NO_EX99`,
+INTRADAY, and UNKNOWN rows are not present in these two files and remain only in
+the exclusions file.
 
 The fixed leading columns are:
 
