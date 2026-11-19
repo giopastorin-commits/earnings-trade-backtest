@@ -9,3 +9,4 @@ pypdf>=6.19.0,<7
 truststore>=0.10.4,<1
 alpaca-trade-api>=3.2.0
 filelock>=3.12.0
+exchange-calendars==4.13.2
