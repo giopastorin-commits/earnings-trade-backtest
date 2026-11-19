@@ -750,6 +750,29 @@ def _deduplicate_filings(rows: Sequence[Mapping[str, object]]) -> list[dict[str,
     )
 
 
+def cache_complete_submission_or_defer(
+    client: SecCacheClient,
+    url: str,
+    relative_path: Path,
+    deferred: list[tuple[str, Path]],
+) -> None:
+    """Cache one complete submission, deferring only an exhausted transient read."""
+
+    try:
+        client.get(url, relative_path)
+    except H2Phase1Error:
+        deferred.append((url, relative_path))
+
+
+def retry_deferred_complete_submissions(
+    client: SecCacheClient, deferred: Sequence[tuple[str, Path]],
+) -> None:
+    """Require every deferred resource before the corpus can be sealed."""
+
+    for url, relative_path in deferred:
+        client.get(url, relative_path)
+
+
 def acquire_sec_corpus(
     root: str | Path, *, cutoff: datetime | None = None,
 ) -> dict[str, object]:
@@ -764,6 +787,7 @@ def acquire_sec_corpus(
     run_started = run_started.astimezone(UTC)
     registry = load_registry(DEFAULT_REGISTRY)
     issuers_index: list[dict[str, object]] = []
+    deferred_complete_submissions: list[tuple[str, Path]] = []
 
     for issuer in sorted(registry.supported, key=lambda item: item.ticker):
         ticker = issuer.ticker
@@ -803,7 +827,14 @@ def acquire_sec_corpus(
                 accession = str(filing["accessionNumber"])
                 submission_url = complete_submission_url(cik, accession)
                 submission_rel = Path("complete_submissions") / ticker / f"{accession}.txt"
-                client.get(submission_url, submission_rel)
+                # A single transient Archives failure must not prevent the
+                # remaining issuers from entering the resumable cache.  The
+                # exact same resource is retried before any index or manifest
+                # is written, so an incomplete corpus cannot be sealed.
+                cache_complete_submission_or_defer(
+                    client, submission_url, submission_rel,
+                    deferred_complete_submissions,
+                )
                 row["complete_submission_relative_path"] = submission_rel.as_posix()
                 row["complete_submission_url"] = submission_url
             relevant.append(row)
@@ -814,6 +845,8 @@ def acquire_sec_corpus(
             "companyfacts_relative_path": companyfacts_rel.as_posix(),
             "filings": relevant,
         })
+
+    retry_deferred_complete_submissions(client, deferred_complete_submissions)
 
     index = {
         "schema_name": "trinity.h2-v2-1-sec-corpus-index",

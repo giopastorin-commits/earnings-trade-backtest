@@ -275,6 +275,39 @@ def test_phase1_schema_and_module_have_no_outcomes_or_predictions():
     assert "build_experimental_dataset" not in source
 
 
+def test_complete_submission_transient_failure_is_deferred_then_required():
+    class StubClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, relative_path):
+            self.calls += 1
+            if self.calls == 1:
+                raise phase1.H2Phase1Error("transient")
+            return b"complete submission"
+
+    client = StubClient()
+    deferred = []
+    relative_path = Path("complete_submissions/TST/0001.txt")
+    phase1.cache_complete_submission_or_defer(
+        client, "https://www.sec.gov/example.txt", relative_path, deferred,
+    )
+    assert deferred == [("https://www.sec.gov/example.txt", relative_path)]
+    phase1.retry_deferred_complete_submissions(client, deferred)
+    assert client.calls == 2
+
+
+def test_unavailable_deferred_submission_prevents_corpus_seal():
+    class FailingClient:
+        def get(self, url, relative_path):
+            raise phase1.H2Phase1Error("still unavailable")
+
+    with pytest.raises(phase1.H2Phase1Error, match="still unavailable"):
+        phase1.retry_deferred_complete_submissions(
+            FailingClient(), [("https://www.sec.gov/example.txt", Path("missing.txt"))],
+        )
+
+
 def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
     sec_root = tmp_path / "sec"
     cache = sec_root / "cache"
