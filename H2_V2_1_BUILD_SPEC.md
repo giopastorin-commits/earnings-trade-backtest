@@ -97,6 +97,47 @@ trimmed and upper-cased. The selected exhibit is:
 No filename heuristic overrides the `TYPE` rule. The selected document type,
 filename, source URL, raw SHA-256, and document ordinal are recorded.
 
+### Amendment 2026-11-19T19:58:29.815+01:00 — multiple share classes
+
+This dated amendment was committed before recalculating or rebuilding any
+Phase 1 output after the duplicate-share-class condition was discovered.  It
+supersedes any earlier implementation behavior that emitted one copy of an
+SEC event for every supported security of the same issuer.
+
+1. An accession number is one event across the entire build.  Event and
+   historical-pairing rows are deduplicated globally by accession number; the
+   same filing text and H2 value must never be repeated for multiple share
+   classes.
+2. For each CIK, the event ticker is the first ticker in the root `tickers`
+   array of that CIK's cached SEC submissions JSON that is present in
+   `REGISTRY.supported`.  If the first array member is not supported, selection
+   proceeds in the SEC-provided order until the first supported ticker.  No
+   alphabetical, price, volume, liquidity, coverage, or other data-based rule
+   may override this order.  The build fails closed if the SEC array has no
+   supported ticker.
+3. The selected ticker is used for every release of that CIK in DEV,
+   PROSP_BATCH1, and the history from 2025-01-01 used for pairing.  Pairing is
+   therefore performed once per issuer, under the same selected ticker.
+4. The committed `h2_v2_1_share_class_resolution.json` records every CIK with
+   more than one supported registry ticker, the complete SEC `tickers` array
+   in its original order, the selected ticker, all non-selected supported
+   tickers, the cached submissions source path and SHA-256, and the
+   `retrieved_at_utc` acquisition timestamp from that source's cache metadata.
+5. For each relevant accession and each non-selected supported class, the
+   exclusions CSV contains a row whose `ticker` is the non-selected class,
+   whose reason is `DUPLICATE_SHARE_CLASS`, and whose detail identifies the CIK
+   and selected ticker.  This applies to historical releases as well as DEV
+   and PROSP releases.  These rows audit security aliases: they are reported
+   separately and never count as candidate events or as excluded events in
+   sample eligibility counts.
+6. Price coverage is evaluated only for the SEC-selected ticker.  Insufficient
+   coverage yields `PRICE_COVERAGE`; it never triggers substitution of another
+   share class.
+
+The Phase 1 report separately gives duplicate-share-class alias-row and unique
+accession counts for DEV, PROSP_BATCH1, and historical pairing input, and
+identifies whether the condition occurs in each scope.
+
 ## 5. Timing classification and descriptive release period
 
 `release_at` is converted to `America/New_York`. The XNYS calendar comes from
@@ -359,7 +400,7 @@ reason is lost. Reasons are from this closed set:
 `NO_EX99`, `TIMING_INTRADAY`, `TIMING_UNKNOWN`, `OUTSIDE_SAMPLE_WINDOW`,
 `FISCAL_PERIOD_UNKNOWN`, `PAIRING_FALLBACK`, `PAIRING_NO_MATCH`,
 `PAIRING_AMBIGUOUS`, `TEXT_UNAVAILABLE`, `H2_UNAVAILABLE`, `PRICE_COVERAGE`,
-`SIGMA_PRE_60_MISSING`.
+`SIGMA_PRE_60_MISSING`, `DUPLICATE_SHARE_CLASS`.
 
 `FISCAL_PERIOD_UNKNOWN` is auditable but is not a second exclusion when the
 same row is already classified as pairing fallback/no-match/ambiguous; all
@@ -419,6 +460,10 @@ versions, and deviations. It reports only these permitted counts:
 - `sigma_pre_60 == 0`;
 - final primary-eligible rows;
 - distinct ISO reference weeks in PROSP_BATCH1.
+
+`DUPLICATE_SHARE_CLASS` audit rows and unique accessions are shown separately
+for DEV, PROSP_BATCH1, and historical pairing input.  They do not enter the
+candidate-event or excluded-event counts above.
 
 No means, quantiles, distributions, correlations, regressions, price summaries,
 H2 summaries, covariate summaries, outcome summaries, models, or predictions are
