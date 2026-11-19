@@ -138,6 +138,18 @@ The Phase 1 report separately gives duplicate-share-class alias-row and unique
 accession counts for DEV, PROSP_BATCH1, and historical pairing input, and
 identifies whether the condition occurs in each scope.
 
+#### Registry-field clarification 2026-11-19T20:08:11.833+01:00
+
+The SEC array is compared to the `sec_ticker` field of supported registry
+records for the same CIK, because that is the registry's explicit SEC symbol
+(for example SEC `BF-B` maps to canonical event ticker `BF.B`).  The selected
+event ticker written to outputs is the corresponding canonical registry
+`ticker`.  This is an identity mapping supplied by the frozen registry, not a
+symbol heuristic or a price-based substitution.  The share-class resolution
+manifest records both the selected SEC ticker and the selected canonical
+ticker.  The build fails closed on a missing, conflicting, or non-unique
+registry mapping.
+
 ## 5. Timing classification and descriptive release period
 
 `release_at` is converted to `America/New_York`. The XNYS calendar comes from
