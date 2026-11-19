@@ -527,6 +527,12 @@ class SecCacheClient:
     def __init__(self, root: str | Path, session: requests.Session | None = None) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt" and session is None:
+            try:
+                import truststore
+                truststore.inject_into_ssl()
+            except ImportError:
+                pass
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate"})
         self.throttle = RequestThrottle()
