@@ -72,6 +72,7 @@ EXCLUSION_REASONS = frozenset({
     "H2_UNAVAILABLE",
     "PRICE_COVERAGE",
     "SIGMA_PRE_60_MISSING",
+    "DUPLICATE_SHARE_CLASS",
 })
 
 INPUT_COLUMNS = (
@@ -136,6 +137,15 @@ class FiscalPeriod:
     source_form: str | None
     source_report_date: str | None
     source_acceptance_at: str | None
+
+
+@dataclass(frozen=True)
+class ShareClassPlan:
+    cik: str
+    selected_ticker: str
+    issuer: Mapping[str, object]
+    sec_tickers: tuple[str, ...]
+    nonselected_supported_tickers: tuple[str, ...]
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -893,6 +903,128 @@ def verify_sec_corpus(root: str | Path) -> tuple[dict[str, object], dict[str, ob
     return manifest, index
 
 
+def resolve_share_class_plans(
+    sec_root: str | Path,
+    issuers: Sequence[Mapping[str, object]],
+    supported_by_ticker: Mapping[str, str],
+) -> tuple[list[ShareClassPlan], dict[str, object]]:
+    """Resolve one SEC-selected security per CIK without consulting prices."""
+
+    sec_base = Path(sec_root)
+    supported = {
+        str(ticker).strip().upper(): str(cik)
+        for ticker, cik in supported_by_ticker.items()
+    }
+    by_cik: dict[str, list[Mapping[str, object]]] = {}
+    indexed_pairs: set[tuple[str, str]] = set()
+    for issuer in issuers:
+        ticker = str(issuer.get("ticker") or "").strip().upper()
+        cik = str(issuer.get("cik") or "")
+        if not ticker or not cik:
+            raise H2Phase1Error("SEC issuer index lacks ticker or CIK")
+        pair = (ticker, cik)
+        if pair in indexed_pairs:
+            raise H2Phase1Error(f"duplicate SEC issuer index identity: {ticker}/{cik}")
+        indexed_pairs.add(pair)
+        if supported.get(ticker) != cik:
+            raise H2Phase1Error(f"SEC index/registry identity mismatch: {ticker}/{cik}")
+        by_cik.setdefault(cik, []).append(issuer)
+
+    expected_pairs = {(ticker, cik) for ticker, cik in supported.items()}
+    if indexed_pairs != expected_pairs:
+        raise H2Phase1Error("SEC issuer index does not exactly match REGISTRY.supported")
+
+    plans: list[ShareClassPlan] = []
+    audit_cases: list[dict[str, object]] = []
+    for cik in sorted(by_cik):
+        group = sorted(by_cik[cik], key=lambda item: str(item.get("ticker") or ""))
+        arrays: list[tuple[str, ...]] = []
+        accession_sets: list[frozenset[str]] = []
+        for issuer in group:
+            ticker = str(issuer["ticker"]).upper()
+            submissions_path = sec_base / "cache" / "submissions" / ticker / f"CIK{cik}.json"
+            submissions = _json_object(
+                submissions_path.read_bytes(), f"{ticker} cached SEC submissions",
+            )
+            raw_tickers = submissions.get("tickers")
+            if not isinstance(raw_tickers, list) or not raw_tickers \
+                    or not all(isinstance(value, str) and value.strip() for value in raw_tickers):
+                raise H2Phase1Error(f"SEC submissions tickers array is invalid: CIK {cik}")
+            arrays.append(tuple(raw_tickers))
+            filings = issuer.get("filings")
+            if not isinstance(filings, list):
+                raise H2Phase1Error(f"SEC issuer filings are invalid: {ticker}/{cik}")
+            accession_sets.append(frozenset(
+                str(filing.get("accessionNumber"))
+                for filing in filings if isinstance(filing, Mapping)
+                and filing.get("accessionNumber")
+            ))
+        if any(value != arrays[0] for value in arrays[1:]):
+            raise H2Phase1Error(f"SEC ticker arrays disagree across cached classes: CIK {cik}")
+        if any(value != accession_sets[0] for value in accession_sets[1:]):
+            raise H2Phase1Error(f"SEC filing sets disagree across cached classes: CIK {cik}")
+
+        sec_tickers = arrays[0]
+        selected_ticker: str | None = None
+        for raw_ticker in sec_tickers:
+            candidate = raw_ticker.strip().upper()
+            if candidate in supported:
+                if supported[candidate] != cik:
+                    raise H2Phase1Error(
+                        f"SEC ticker/CIK conflicts with registry: {candidate}/{cik}",
+                    )
+                selected_ticker = candidate
+                break
+        if selected_ticker is None:
+            raise H2Phase1Error(f"no SEC-ordered supported ticker for CIK {cik}")
+        selected = next(
+            (issuer for issuer in group
+             if str(issuer.get("ticker") or "").upper() == selected_ticker),
+            None,
+        )
+        if selected is None:
+            raise H2Phase1Error(f"selected ticker absent from SEC issuer index: {selected_ticker}")
+        nonselected = tuple(
+            str(issuer["ticker"]).upper() for issuer in group
+            if str(issuer["ticker"]).upper() != selected_ticker
+        )
+        plans.append(ShareClassPlan(
+            cik=cik, selected_ticker=selected_ticker, issuer=selected,
+            sec_tickers=sec_tickers,
+            nonselected_supported_tickers=nonselected,
+        ))
+
+        if nonselected:
+            relative_source = Path("cache") / "submissions" / selected_ticker / f"CIK{cik}.json"
+            source_path = sec_base / relative_source
+            metadata_path = source_path.with_suffix(source_path.suffix + ".meta.json")
+            metadata = _json_object(
+                metadata_path.read_bytes(), f"{selected_ticker} submissions cache metadata",
+            )
+            source_sha = sha256_file(source_path)
+            if metadata.get("sha256") != source_sha:
+                raise H2Phase1Error(f"SEC submissions cache hash mismatch: {source_path}")
+            audit_cases.append({
+                "cik": cik,
+                "sec_tickers": list(sec_tickers),
+                "registry_supported_tickers": [str(issuer["ticker"]).upper() for issuer in group],
+                "selected_ticker": selected_ticker,
+                "nonselected_supported_tickers": list(nonselected),
+                "submissions_source_relative_path": relative_source.as_posix(),
+                "submissions_sha256": source_sha,
+                "acquired_at_utc": metadata.get("retrieved_at_utc"),
+            })
+
+    audit = {
+        "schema_name": "trinity.h2-v2-1-share-class-resolution",
+        "schema_version": "1",
+        "spec_id": SPEC_ID,
+        "selection_rule": "FIRST_SEC_TICKER_IN_REGISTRY_SUPPORTED",
+        "cases": audit_cases,
+    }
+    return plans, audit
+
+
 def _release_from_filing(
     *, ticker: str, filing: Mapping[str, object], all_filings: Sequence[Mapping[str, object]],
     companyfacts: Mapping[str, object], sec_root: Path, text_root: Path,
@@ -979,6 +1111,7 @@ def _pairing_record(release: Mapping[str, object]) -> dict[str, object]:
 
 def _exclusion_row(
     release: Mapping[str, object], reason: str, detail: str = "",
+    *, ticker_override: str | None = None,
 ) -> dict[str, object]:
     if reason not in EXCLUSION_REASONS:
         raise H2Phase1Error(f"unsupported exclusion reason: {reason}")
@@ -986,7 +1119,7 @@ def _exclusion_row(
     return {
         "sample": release.get("sample"),
         "release_period": release.get("release_period"),
-        "ticker": release.get("ticker"),
+        "ticker": ticker_override or release.get("ticker"),
         "current_release_id": release.get("release_id"),
         "release_at": release.get("release_at"),
         "event_timing": release.get("event_timing"),
@@ -1011,6 +1144,7 @@ def _price_manifest_commit_view(manifest: Mapping[str, object]) -> dict[str, obj
 def build_phase1_inputs(
     *, repo_root: str | Path, sec_root: str | Path, price_root: str | Path,
     text_root: str | Path, output_root: str | Path,
+    supported_by_ticker: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Build outcome-free input snapshots from verified immutable sources."""
 
@@ -1034,10 +1168,21 @@ def build_phase1_inputs(
     issuers = sec_index.get("issuers")
     if not isinstance(issuers, list):
         raise H2Phase1Error("SEC corpus index lacks issuers")
-    for issuer in issuers:
-        if not isinstance(issuer, Mapping):
-            raise H2Phase1Error("SEC issuer index entry is invalid")
-        ticker = str(issuer.get("ticker") or "")
+    if not all(isinstance(issuer, Mapping) for issuer in issuers):
+        raise H2Phase1Error("SEC issuer index entry is invalid")
+    if supported_by_ticker is None:
+        registry = load_registry(repo / "trinity" / "usa_issuer_registry_v2.fixture")
+        supported_by_ticker = {
+            record.ticker: record.sec_cik for record in registry.supported
+        }
+    plans, share_class_audit = resolve_share_class_plans(
+        sec_base, issuers, supported_by_ticker,
+    )
+    seen_accessions: dict[str, str] = {}
+    duplicate_share_class_row_count = 0
+    for plan in plans:
+        issuer = plan.issuer
+        ticker = plan.selected_ticker
         filings_value = issuer.get("filings")
         if not ticker or not isinstance(filings_value, list):
             raise H2Phase1Error("SEC issuer index is malformed")
@@ -1063,6 +1208,22 @@ def build_phase1_inputs(
         ]
         releases.sort(key=lambda item: (item["release_at"], item["release_id"]))
         by_id = {str(item["release_id"]): item for item in releases}
+        for release in releases:
+            accession = str(release["release_id"])
+            previous_cik = seen_accessions.get(accession)
+            if previous_cik is not None:
+                raise H2Phase1Error(
+                    f"accession appears under multiple issuer plans: {accession} "
+                    f"({previous_cik}, {plan.cik})",
+                )
+            seen_accessions[accession] = plan.cik
+            for alias in plan.nonselected_supported_tickers:
+                exclusions.append(_exclusion_row(
+                    release, "DUPLICATE_SHARE_CLASS",
+                    f"cik={plan.cik};selected_ticker={ticker}",
+                    ticker_override=alias,
+                ))
+                duplicate_share_class_row_count += 1
 
         for release in releases:
             accepted = release["release_at_dt"]
@@ -1217,6 +1378,8 @@ def build_phase1_inputs(
     (output / "h2_v2_1_price_source_manifest.json").write_bytes(
         canonical_json_bytes(_price_manifest_commit_view(price_manifest), newline=True),
     )
+    share_class_path = output / "h2_v2_1_share_class_resolution.json"
+    share_class_path.write_bytes(canonical_json_bytes(share_class_audit, newline=True))
     build_manifest = {
         "schema_name": "trinity.h2-v2-1-phase1-build",
         "schema_version": "1", "spec_id": SPEC_ID,
@@ -1227,6 +1390,8 @@ def build_phase1_inputs(
         "component_hashes": hashes,
         "csv_sha256": csv_hashes,
         "text_ensemble_sha256": text_manifest["ensemble_sha256"],
+        "share_class_resolution_sha256": sha256_file(share_class_path),
+        "duplicate_share_class_row_count": duplicate_share_class_row_count,
     }
     build_manifest_path = output / "h2_v2_1_build_manifest.json"
     build_manifest_path.write_bytes(canonical_json_bytes(build_manifest, newline=True))

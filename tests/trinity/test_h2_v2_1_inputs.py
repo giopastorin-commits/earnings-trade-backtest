@@ -308,9 +308,52 @@ def test_unavailable_deferred_submission_prevents_corpus_seal():
         )
 
 
+def test_share_class_resolution_uses_first_supported_sec_ticker(tmp_path):
+    sec_root = tmp_path / "sec"
+    cik = "0000000001"
+    tickers = ["BETA", "ALPHA", "NOT_SUPPORTED"]
+    issuers = []
+    for ticker in ("ALPHA", "BETA"):
+        path = sec_root / "cache" / "submissions" / ticker / f"CIK{cik}.json"
+        path.parent.mkdir(parents=True)
+        body = canonical_json_bytes({"tickers": tickers}, newline=True)
+        path.write_bytes(body)
+        path.with_suffix(".json.meta.json").write_bytes(canonical_json_bytes({
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "retrieved_at_utc": f"2026-11-19T12:00:0{len(issuers)}Z",
+        }, newline=True))
+        issuers.append({"ticker": ticker, "cik": cik, "filings": []})
+
+    plans, audit = phase1.resolve_share_class_plans(
+        sec_root, issuers, {"ALPHA": cik, "BETA": cik},
+    )
+    assert len(plans) == 1
+    assert plans[0].selected_ticker == "BETA"
+    assert plans[0].nonselected_supported_tickers == ("ALPHA",)
+    assert audit["cases"] == [{
+        "cik": cik,
+        "sec_tickers": tickers,
+        "registry_supported_tickers": ["ALPHA", "BETA"],
+        "selected_ticker": "BETA",
+        "nonselected_supported_tickers": ["ALPHA"],
+        "submissions_source_relative_path": "cache/submissions/BETA/CIK0000000001.json",
+        "submissions_sha256": hashlib.sha256(body).hexdigest(),
+        "acquired_at_utc": "2026-11-19T12:00:01Z",
+    }]
+
+
 def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
     sec_root = tmp_path / "sec"
     cache = sec_root / "cache"
+    for ticker in ("TST", "TSTB"):
+        submissions_path = cache / "submissions" / ticker / "CIK0000000001.json"
+        submissions_path.parent.mkdir(parents=True)
+        submissions_body = canonical_json_bytes({"tickers": ["TST", "TSTB"]}, newline=True)
+        submissions_path.write_bytes(submissions_body)
+        submissions_path.with_suffix(".json.meta.json").write_bytes(canonical_json_bytes({
+            "sha256": hashlib.sha256(submissions_body).hexdigest(),
+            "retrieved_at_utc": "2026-11-19T12:00:00Z",
+        }, newline=True))
     facts_path = cache / "companyfacts" / "TST" / "CIK0000000001.json"
     facts_path.parent.mkdir(parents=True)
     facts = {
@@ -346,9 +389,12 @@ def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
     ]
     index = {
         "schema_name": "trinity.h2-v2-1-sec-corpus-index", "schema_version": "1",
-        "issuers": [{"ticker": "TST", "cik": "0000000001",
-                     "companyfacts_relative_path": "companyfacts/TST/CIK0000000001.json",
-                     "filings": filings}],
+        "issuers": [
+            {"ticker": ticker, "cik": "0000000001",
+             "companyfacts_relative_path": "companyfacts/TST/CIK0000000001.json",
+             "filings": filings}
+            for ticker in ("TST", "TSTB")
+        ],
     }
     index_path = sec_root / "sec_corpus_index.json"
     index_path.write_bytes(canonical_json_bytes(index, newline=True))
@@ -389,6 +435,7 @@ def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
     result = build_phase1_inputs(
         repo_root=Path(phase1.__file__).resolve().parents[1], sec_root=sec_root,
         price_root=price_root, text_root=tmp_path / "texts", output_root=output,
+        supported_by_ticker={"TST": "0000000001", "TSTB": "0000000001"},
     )
     assert result["dev_candidate_count"] == 1
     with (output / "h2_v2_1_inputs_dev.csv").open(encoding="utf-8", newline="") as handle:
@@ -397,6 +444,20 @@ def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
     assert rows[0]["row_status"] == "INCLUDED"
     assert rows[0]["pairing_quality"] == "EXACT"
     assert rows[0]["sigma_status"] == "COMPLETE"
+    with (output / "h2_v2_1_exclusions.csv").open(encoding="utf-8", newline="") as handle:
+        exclusions = list(csv.DictReader(handle))
+    duplicate_rows = [
+        row for row in exclusions if row["reason"] == "DUPLICATE_SHARE_CLASS"
+    ]
+    assert len(duplicate_rows) == 2
+    assert {row["ticker"] for row in duplicate_rows} == {"TSTB"}
+    assert any(row["sample"] == "OUTSIDE" for row in duplicate_rows)
+    assert any(row["sample"] == "DEV" for row in duplicate_rows)
+    resolution = json.loads(
+        (output / "h2_v2_1_share_class_resolution.json").read_text(encoding="utf-8")
+    )
+    assert resolution["cases"][0]["selected_ticker"] == "TST"
+    assert result["duplicate_share_class_row_count"] == 2
     assert {
         "absolute_return_pct_20", "raw_return_pct_20", "excess_return_pct_20",
         "outcome_status_20", "pred_0", "pred_1",
