@@ -311,7 +311,7 @@ def test_unavailable_deferred_submission_prevents_corpus_seal():
 def test_share_class_resolution_uses_first_supported_sec_ticker(tmp_path):
     sec_root = tmp_path / "sec"
     cik = "0000000001"
-    tickers = ["BETA", "ALPHA", "NOT_SUPPORTED"]
+    tickers = ["BETA-SEC", "ALPHA-SEC", "NOT_SUPPORTED"]
     issuers = []
     for ticker in ("ALPHA", "BETA"):
         path = sec_root / "cache" / "submissions" / ticker / f"CIK{cik}.json"
@@ -326,14 +326,17 @@ def test_share_class_resolution_uses_first_supported_sec_ticker(tmp_path):
 
     plans, audit = phase1.resolve_share_class_plans(
         sec_root, issuers, {"ALPHA": cik, "BETA": cik},
+        {"ALPHA-SEC": "ALPHA", "BETA-SEC": "BETA"},
     )
     assert len(plans) == 1
+    assert plans[0].selected_sec_ticker == "BETA-SEC"
     assert plans[0].selected_ticker == "BETA"
     assert plans[0].nonselected_supported_tickers == ("ALPHA",)
     assert audit["cases"] == [{
         "cik": cik,
         "sec_tickers": tickers,
         "registry_supported_tickers": ["ALPHA", "BETA"],
+        "selected_sec_ticker": "BETA-SEC",
         "selected_ticker": "BETA",
         "nonselected_supported_tickers": ["ALPHA"],
         "submissions_source_relative_path": "cache/submissions/BETA/CIK0000000001.json",

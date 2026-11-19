@@ -142,6 +142,7 @@ class FiscalPeriod:
 @dataclass(frozen=True)
 class ShareClassPlan:
     cik: str
+    selected_sec_ticker: str
     selected_ticker: str
     issuer: Mapping[str, object]
     sec_tickers: tuple[str, ...]
@@ -907,6 +908,7 @@ def resolve_share_class_plans(
     sec_root: str | Path,
     issuers: Sequence[Mapping[str, object]],
     supported_by_ticker: Mapping[str, str],
+    sec_ticker_to_canonical: Mapping[str, str] | None = None,
 ) -> tuple[list[ShareClassPlan], dict[str, object]]:
     """Resolve one SEC-selected security per CIK without consulting prices."""
 
@@ -915,6 +917,14 @@ def resolve_share_class_plans(
         str(ticker).strip().upper(): str(cik)
         for ticker, cik in supported_by_ticker.items()
     }
+    if sec_ticker_to_canonical is None:
+        sec_ticker_to_canonical = {ticker: ticker for ticker in supported}
+    sec_to_canonical = {
+        str(sec_ticker).strip().upper(): str(ticker).strip().upper()
+        for sec_ticker, ticker in sec_ticker_to_canonical.items()
+    }
+    if not sec_to_canonical or any(ticker not in supported for ticker in sec_to_canonical.values()):
+        raise H2Phase1Error("SEC ticker mapping references an unsupported canonical ticker")
     by_cik: dict[str, list[Mapping[str, object]]] = {}
     indexed_pairs: set[tuple[str, str]] = set()
     for issuer in issuers:
@@ -965,17 +975,20 @@ def resolve_share_class_plans(
             raise H2Phase1Error(f"SEC filing sets disagree across cached classes: CIK {cik}")
 
         sec_tickers = arrays[0]
+        selected_sec_ticker: str | None = None
         selected_ticker: str | None = None
         for raw_ticker in sec_tickers:
-            candidate = raw_ticker.strip().upper()
-            if candidate in supported:
+            sec_candidate = raw_ticker.strip().upper()
+            candidate = sec_to_canonical.get(sec_candidate)
+            if candidate is not None:
                 if supported[candidate] != cik:
                     raise H2Phase1Error(
-                        f"SEC ticker/CIK conflicts with registry: {candidate}/{cik}",
+                        f"SEC ticker/CIK conflicts with registry: {sec_candidate}/{cik}",
                     )
+                selected_sec_ticker = sec_candidate
                 selected_ticker = candidate
                 break
-        if selected_ticker is None:
+        if selected_ticker is None or selected_sec_ticker is None:
             raise H2Phase1Error(f"no SEC-ordered supported ticker for CIK {cik}")
         selected = next(
             (issuer for issuer in group
@@ -989,7 +1002,8 @@ def resolve_share_class_plans(
             if str(issuer["ticker"]).upper() != selected_ticker
         )
         plans.append(ShareClassPlan(
-            cik=cik, selected_ticker=selected_ticker, issuer=selected,
+            cik=cik, selected_sec_ticker=selected_sec_ticker,
+            selected_ticker=selected_ticker, issuer=selected,
             sec_tickers=sec_tickers,
             nonselected_supported_tickers=nonselected,
         ))
@@ -1008,6 +1022,7 @@ def resolve_share_class_plans(
                 "cik": cik,
                 "sec_tickers": list(sec_tickers),
                 "registry_supported_tickers": [str(issuer["ticker"]).upper() for issuer in group],
+                "selected_sec_ticker": selected_sec_ticker,
                 "selected_ticker": selected_ticker,
                 "nonselected_supported_tickers": list(nonselected),
                 "submissions_source_relative_path": relative_source.as_posix(),
@@ -1145,6 +1160,7 @@ def build_phase1_inputs(
     *, repo_root: str | Path, sec_root: str | Path, price_root: str | Path,
     text_root: str | Path, output_root: str | Path,
     supported_by_ticker: Mapping[str, str] | None = None,
+    sec_ticker_to_canonical: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Build outcome-free input snapshots from verified immutable sources."""
 
@@ -1175,8 +1191,12 @@ def build_phase1_inputs(
         supported_by_ticker = {
             record.ticker: record.sec_cik for record in registry.supported
         }
+        sec_pairs = [(record.sec_ticker, record.ticker) for record in registry.supported]
+        sec_ticker_to_canonical = dict(sec_pairs)
+        if len(sec_ticker_to_canonical) != len(sec_pairs):
+            raise H2Phase1Error("REGISTRY.supported has a non-unique SEC ticker mapping")
     plans, share_class_audit = resolve_share_class_plans(
-        sec_base, issuers, supported_by_ticker,
+        sec_base, issuers, supported_by_ticker, sec_ticker_to_canonical,
     )
     seen_accessions: dict[str, str] = {}
     duplicate_share_class_row_count = 0
