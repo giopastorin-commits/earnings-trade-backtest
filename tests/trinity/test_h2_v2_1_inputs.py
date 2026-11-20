@@ -331,18 +331,141 @@ def test_share_class_resolution_uses_first_supported_sec_ticker(tmp_path):
     assert len(plans) == 1
     assert plans[0].selected_sec_ticker == "BETA-SEC"
     assert plans[0].selected_ticker == "BETA"
+    assert plans[0].resolution_method == "SEC_ORDER"
+    assert plans[0].resolution_reason is None
     assert plans[0].nonselected_supported_tickers == ("ALPHA",)
     assert audit["cases"] == [{
         "cik": cik,
         "sec_tickers": tickers,
         "registry_supported_tickers": ["ALPHA", "BETA"],
+        "resolution_method": "SEC_ORDER",
+        "reason": None,
         "selected_sec_ticker": "BETA-SEC",
         "selected_ticker": "BETA",
+        "registry_ticker_used": "BETA",
         "nonselected_supported_tickers": ["ALPHA"],
         "submissions_source_relative_path": "cache/submissions/BETA/CIK0000000001.json",
         "submissions_sha256": hashlib.sha256(body).hexdigest(),
         "acquired_at_utc": "2026-11-19T12:00:01Z",
     }]
+
+
+@pytest.mark.parametrize(
+    ("sec_tickers", "reason"),
+    [([], "SEC_TICKERS_EMPTY"), (["OLD", "OLD-WT"], "SEC_TICKERS_NO_REGISTRY_MATCH")],
+)
+def test_unique_cik_registry_fallback_is_audited(tmp_path, sec_tickers, reason):
+    sec_root = tmp_path / "sec"
+    cik = "0000000001"
+    path = sec_root / "cache" / "submissions" / "ONLY" / f"CIK{cik}.json"
+    path.parent.mkdir(parents=True)
+    body = canonical_json_bytes({"tickers": sec_tickers}, newline=True)
+    path.write_bytes(body)
+    path.with_suffix(".json.meta.json").write_bytes(canonical_json_bytes({
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "retrieved_at_utc": "2026-11-19T12:00:00Z",
+    }, newline=True))
+    plans, audit = phase1.resolve_share_class_plans(
+        sec_root, [{"ticker": "ONLY", "cik": cik, "filings": []}],
+        {"ONLY": cik}, {"ONLY-SEC": "ONLY"},
+    )
+    assert plans[0].selected_ticker == "ONLY"
+    assert plans[0].selected_sec_ticker is None
+    assert plans[0].resolution_method == "REGISTRY_UNIQUE_CIK_FALLBACK"
+    assert plans[0].resolution_reason == reason
+    assert audit["cases"][0]["sec_tickers"] == sec_tickers
+    assert audit["cases"][0]["registry_ticker_used"] == "ONLY"
+    assert audit["cases"][0]["reason"] == reason
+
+
+def test_unmatched_sec_tickers_with_multiple_registry_records_are_ambiguous(tmp_path):
+    sec_root = tmp_path / "sec"
+    cik = "0000000001"
+    issuers = []
+    for ticker in ("ONE", "TWO"):
+        path = sec_root / "cache" / "submissions" / ticker / f"CIK{cik}.json"
+        path.parent.mkdir(parents=True)
+        body = canonical_json_bytes({"tickers": ["UNMATCHED"]}, newline=True)
+        path.write_bytes(body)
+        path.with_suffix(".json.meta.json").write_bytes(canonical_json_bytes({
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "retrieved_at_utc": "2026-11-19T12:00:00Z",
+        }, newline=True))
+        issuers.append({"ticker": ticker, "cik": cik, "filings": []})
+    plans, audit = phase1.resolve_share_class_plans(
+        sec_root, issuers, {"ONE": cik, "TWO": cik},
+        {"ONE-SEC": "ONE", "TWO-SEC": "TWO"},
+    )
+    assert plans[0].selected_ticker is None
+    assert plans[0].resolution_method == "AMBIGUOUS_TICKER_MAPPING"
+    assert plans[0].resolution_reason == "SEC_TICKERS_NO_REGISTRY_MATCH"
+    assert audit["cases"][0]["registry_ticker_used"] is None
+
+
+def test_ambiguous_ticker_mapping_is_excluded_without_analytical_inputs(tmp_path):
+    sec_root = tmp_path / "sec"
+    cache = sec_root / "cache"
+    cik = "0000000001"
+    filings = [{
+        "accessionNumber": "0001-26-000001", "form": "8-K", "items": "2.02,9.01",
+        "acceptanceDateTime": "2026-10-01T20:30:00Z",
+    }]
+    issuers = []
+    for ticker in ("ONE", "TWO"):
+        path = cache / "submissions" / ticker / f"CIK{cik}.json"
+        path.parent.mkdir(parents=True)
+        body = canonical_json_bytes({"tickers": ["UNMATCHED"]}, newline=True)
+        path.write_bytes(body)
+        path.with_suffix(".json.meta.json").write_bytes(canonical_json_bytes({
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "retrieved_at_utc": "2026-11-19T12:00:00Z",
+        }, newline=True))
+        issuers.append({"ticker": ticker, "cik": cik, "filings": filings})
+    index_path = sec_root / "sec_corpus_index.json"
+    index_path.write_bytes(canonical_json_bytes({"issuers": issuers}, newline=True))
+    sec_files = file_inventory(sec_root, exclude_names=frozenset({"sec_acquisition_manifest.json"}))
+    (sec_root / "sec_acquisition_manifest.json").write_bytes(canonical_json_bytes({
+        "schema_name": "trinity.h2-v2-1-sec-acquisition",
+        "index_sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+        "files": sec_files,
+        "ensemble_sha256": hashlib.sha256(canonical_json_bytes(sec_files)).hexdigest(),
+    }, newline=True))
+
+    price_root = tmp_path / "prices"
+    price_root.mkdir()
+    price_files = file_inventory(price_root, exclude_names=frozenset({"price_ensemble_manifest.json"}))
+    (price_root / "price_ensemble_manifest.json").write_bytes(canonical_json_bytes({
+        "schema_name": "trinity.h2-v2-1-price-ensemble",
+        "schema_version": "1", "spec_id": phase1.SPEC_ID,
+        "provider": "SYNTHETIC", "snapshot_id": "SYNTHETIC",
+        "issuer_snapshot_sha256": "a" * 64, "target_session": "2026-11-17",
+        "acquisition_started_at_utc": "synthetic",
+        "acquisition_completed_at_utc": "synthetic", "endpoint": "synthetic",
+        "parameters": {}, "adjustment_policy": {},
+        "spy_normalized_sha256": "b" * 64,
+        "files": price_files,
+        "ensemble_sha256": hashlib.sha256(canonical_json_bytes(price_files)).hexdigest(),
+    }, newline=True))
+
+    output = tmp_path / "output"
+    text_root = tmp_path / "texts"
+    result = build_phase1_inputs(
+        repo_root=Path(phase1.__file__).resolve().parents[1], sec_root=sec_root,
+        price_root=price_root, text_root=text_root, output_root=output,
+        supported_by_ticker={"ONE": cik, "TWO": cik},
+        sec_ticker_to_canonical={"ONE-SEC": "ONE", "TWO-SEC": "TWO"},
+    )
+    with (output / "h2_v2_1_exclusions.csv").open(encoding="utf-8", newline="") as handle:
+        exclusions = list(csv.DictReader(handle))
+    assert len(exclusions) == 1
+    assert exclusions[0]["reason"] == "AMBIGUOUS_TICKER_MAPPING"
+    assert exclusions[0]["ticker"] == ""
+    assert not any(text_root.rglob("*.txt"))
+    resolution = json.loads(
+        (output / "h2_v2_1_share_class_resolution.json").read_text(encoding="utf-8")
+    )
+    assert resolution["cases"][0]["event_counts"]["DEV"] == 1
+    assert result["dev_candidate_count"] == 0
 
 
 def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
@@ -460,6 +583,10 @@ def test_synthetic_end_to_end_build_is_outcome_free(tmp_path):
         (output / "h2_v2_1_share_class_resolution.json").read_text(encoding="utf-8")
     )
     assert resolution["cases"][0]["selected_ticker"] == "TST"
+    assert resolution["cases"][0]["event_counts"] == {
+        "DEV": 1, "HISTORICAL_PAIRING": 1, "OUTSIDE_WINDOW": 0,
+        "PROSP_BATCH1": 0, "UNASSIGNED": 0,
+    }
     assert result["duplicate_share_class_row_count"] == 2
     assert {
         "absolute_return_pct_20", "raw_return_pct_20", "excess_return_pct_20",

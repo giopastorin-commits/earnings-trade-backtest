@@ -73,6 +73,7 @@ EXCLUSION_REASONS = frozenset({
     "PRICE_COVERAGE",
     "SIGMA_PRE_60_MISSING",
     "DUPLICATE_SHARE_CLASS",
+    "AMBIGUOUS_TICKER_MAPPING",
 })
 
 INPUT_COLUMNS = (
@@ -142,11 +143,13 @@ class FiscalPeriod:
 @dataclass(frozen=True)
 class ShareClassPlan:
     cik: str
-    selected_sec_ticker: str
-    selected_ticker: str
+    selected_sec_ticker: str | None
+    selected_ticker: str | None
     issuer: Mapping[str, object]
     sec_tickers: tuple[str, ...]
     nonselected_supported_tickers: tuple[str, ...]
+    resolution_method: str
+    resolution_reason: str | None
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -957,7 +960,7 @@ def resolve_share_class_plans(
                 submissions_path.read_bytes(), f"{ticker} cached SEC submissions",
             )
             raw_tickers = submissions.get("tickers")
-            if not isinstance(raw_tickers, list) or not raw_tickers \
+            if not isinstance(raw_tickers, list) \
                     or not all(isinstance(value, str) and value.strip() for value in raw_tickers):
                 raise H2Phase1Error(f"SEC submissions tickers array is invalid: CIK {cik}")
             arrays.append(tuple(raw_tickers))
@@ -977,39 +980,60 @@ def resolve_share_class_plans(
         sec_tickers = arrays[0]
         selected_sec_ticker: str | None = None
         selected_ticker: str | None = None
+        resolution_method = "SEC_ORDER"
+        resolution_reason: str | None = None
         for raw_ticker in sec_tickers:
             sec_candidate = raw_ticker.strip().upper()
             candidate = sec_to_canonical.get(sec_candidate)
             if candidate is not None:
                 if supported[candidate] != cik:
-                    raise H2Phase1Error(
-                        f"SEC ticker/CIK conflicts with registry: {sec_candidate}/{cik}",
-                    )
+                    continue
                 selected_sec_ticker = sec_candidate
                 selected_ticker = candidate
                 break
-        if selected_ticker is None or selected_sec_ticker is None:
-            raise H2Phase1Error(f"no SEC-ordered supported ticker for CIK {cik}")
-        selected = next(
-            (issuer for issuer in group
-             if str(issuer.get("ticker") or "").upper() == selected_ticker),
-            None,
-        )
-        if selected is None:
-            raise H2Phase1Error(f"selected ticker absent from SEC issuer index: {selected_ticker}")
-        nonselected = tuple(
-            str(issuer["ticker"]).upper() for issuer in group
-            if str(issuer["ticker"]).upper() != selected_ticker
-        )
+        if selected_ticker is None:
+            resolution_reason = (
+                "SEC_TICKERS_EMPTY" if not sec_tickers
+                else "SEC_TICKERS_NO_REGISTRY_MATCH"
+            )
+            if len(group) == 1:
+                selected_ticker = str(group[0]["ticker"]).upper()
+                resolution_method = "REGISTRY_UNIQUE_CIK_FALLBACK"
+            else:
+                resolution_method = "AMBIGUOUS_TICKER_MAPPING"
+
+        if selected_ticker is None:
+            selected = group[0]  # metadata source only; no security is selected
+            nonselected = tuple(str(issuer["ticker"]).upper() for issuer in group)
+        else:
+            selected = next(
+                (issuer for issuer in group
+                 if str(issuer.get("ticker") or "").upper() == selected_ticker),
+                None,
+            )
+            if selected is None:
+                raise H2Phase1Error(
+                    f"selected ticker absent from SEC issuer index: {selected_ticker}",
+                )
+            nonselected = tuple(
+                str(issuer["ticker"]).upper() for issuer in group
+                if str(issuer["ticker"]).upper() != selected_ticker
+            )
         plans.append(ShareClassPlan(
             cik=cik, selected_sec_ticker=selected_sec_ticker,
             selected_ticker=selected_ticker, issuer=selected,
             sec_tickers=sec_tickers,
             nonselected_supported_tickers=nonselected,
+            resolution_method=resolution_method,
+            resolution_reason=resolution_reason,
         ))
 
-        if nonselected:
-            relative_source = Path("cache") / "submissions" / selected_ticker / f"CIK{cik}.json"
+        if nonselected or resolution_method != "SEC_ORDER":
+            source_ticker = (
+                selected_ticker if selected_ticker is not None
+                else str(group[0]["ticker"]).upper()
+            )
+            relative_source = Path("cache") / "submissions" / source_ticker / f"CIK{cik}.json"
             source_path = sec_base / relative_source
             metadata_path = source_path.with_suffix(source_path.suffix + ".meta.json")
             metadata = _json_object(
@@ -1022,8 +1046,11 @@ def resolve_share_class_plans(
                 "cik": cik,
                 "sec_tickers": list(sec_tickers),
                 "registry_supported_tickers": [str(issuer["ticker"]).upper() for issuer in group],
+                "resolution_method": resolution_method,
+                "reason": resolution_reason,
                 "selected_sec_ticker": selected_sec_ticker,
                 "selected_ticker": selected_ticker,
+                "registry_ticker_used": selected_ticker,
                 "nonselected_supported_tickers": list(nonselected),
                 "submissions_source_relative_path": relative_source.as_posix(),
                 "submissions_sha256": source_sha,
@@ -1034,21 +1061,46 @@ def resolve_share_class_plans(
         "schema_name": "trinity.h2-v2-1-share-class-resolution",
         "schema_version": "1",
         "spec_id": SPEC_ID,
-        "selection_rule": "FIRST_SEC_TICKER_IN_REGISTRY_SUPPORTED",
+        "selection_rule": "SEC_ORDER_THEN_UNIQUE_CIK_REGISTRY_FALLBACK",
         "cases": audit_cases,
     }
     return plans, audit
+
+
+def _release_identity_from_filing(
+    *, ticker: str, filing: Mapping[str, object],
+) -> dict[str, object]:
+    """Build timing/sample identity without reading text, prices, or facts."""
+
+    accession = str(filing.get("accessionNumber") or "")
+    accepted = parse_utc_datetime(filing.get("acceptanceDateTime"))
+    if not accession or accepted is None:
+        raise H2Phase1Error(f"release lacks accession or aware acceptance time: {ticker}")
+    resolution = classify_and_resolve(filing.get("acceptanceDateTime"))
+    return {
+        "ticker": ticker,
+        "release_id": accession,
+        "release_at": utc_text(accepted),
+        "release_at_dt": accepted,
+        "acceptanceDateTime": filing.get("acceptanceDateTime"),
+        "event_timing": resolution.timing,
+        "timing_ambiguous": resolution.ambiguous,
+        "reference_resolution": resolution.reference_resolution,
+        "reference_session_date": resolution.reference_session,
+        "release_local_date": resolution.local_date,
+        "release_period": descriptive_release_period(resolution.local_date),
+        "sample": assign_sample(accepted, resolution),
+    }
 
 
 def _release_from_filing(
     *, ticker: str, filing: Mapping[str, object], all_filings: Sequence[Mapping[str, object]],
     companyfacts: Mapping[str, object], sec_root: Path, text_root: Path,
 ) -> dict[str, object]:
-    accession = str(filing.get("accessionNumber") or "")
-    accepted = parse_utc_datetime(filing.get("acceptanceDateTime"))
-    if not accession or accepted is None:
-        raise H2Phase1Error(f"release lacks accession or aware acceptance time: {ticker}")
-    resolution = classify_and_resolve(filing.get("acceptanceDateTime"))
+    identity = _release_identity_from_filing(ticker=ticker, filing=filing)
+    accession = str(identity["release_id"])
+    accepted = identity["release_at_dt"]
+    assert isinstance(accepted, datetime)
     relative = filing.get("complete_submission_relative_path")
     selected: SelectedExhibit | None = None
     normalized: str | None = None
@@ -1072,18 +1124,7 @@ def _release_from_filing(
     periodic = latest_periodic_before(all_filings, accepted)
     fiscal = successor_fiscal_period(periodic, companyfacts)
     return {
-        "ticker": ticker,
-        "release_id": accession,
-        "release_at": utc_text(accepted),
-        "release_at_dt": accepted,
-        "acceptanceDateTime": filing.get("acceptanceDateTime"),
-        "event_timing": resolution.timing,
-        "timing_ambiguous": resolution.ambiguous,
-        "reference_resolution": resolution.reference_resolution,
-        "reference_session_date": resolution.reference_session,
-        "release_local_date": resolution.local_date,
-        "release_period": descriptive_release_period(resolution.local_date),
-        "sample": assign_sample(accepted, resolution),
+        **identity,
         "fiscal_year": fiscal.fiscal_year,
         "fiscal_quarter": fiscal.fiscal_quarter,
         "period_type": fiscal.period_type,
@@ -1134,7 +1175,7 @@ def _exclusion_row(
     return {
         "sample": release.get("sample"),
         "release_period": release.get("release_period"),
-        "ticker": ticker_override or release.get("ticker"),
+        "ticker": release.get("ticker") if ticker_override is None else ticker_override,
         "current_release_id": release.get("release_id"),
         "release_at": release.get("release_at"),
         "event_timing": release.get("event_timing"),
@@ -1142,6 +1183,18 @@ def _exclusion_row(
         "reason": reason,
         "detail": detail,
     }
+
+
+def resolution_event_scope(release: Mapping[str, object]) -> str:
+    accepted = release.get("release_at_dt")
+    if not isinstance(accepted, datetime):
+        raise H2Phase1Error("resolution audit release lacks acceptance time")
+    if accepted < DEV_RELEASE_START:
+        return "HISTORICAL_PAIRING"
+    sample = str(release.get("sample") or "")
+    if sample in {"DEV", "PROSP_BATCH1", "UNASSIGNED"}:
+        return sample
+    return "OUTSIDE_WINDOW"
 
 
 def _price_manifest_commit_view(manifest: Mapping[str, object]) -> dict[str, object]:
@@ -1198,36 +1251,54 @@ def build_phase1_inputs(
     plans, share_class_audit = resolve_share_class_plans(
         sec_base, issuers, supported_by_ticker, sec_ticker_to_canonical,
     )
+    audit_cases = share_class_audit.get("cases")
+    if not isinstance(audit_cases, list):
+        raise H2Phase1Error("share-class resolution audit is malformed")
+    audit_by_cik: dict[str, dict[str, object]] = {}
+    for case in audit_cases:
+        if not isinstance(case, dict) or not isinstance(case.get("cik"), str):
+            raise H2Phase1Error("share-class resolution case is malformed")
+        case["event_counts"] = {
+            "HISTORICAL_PAIRING": 0, "DEV": 0, "PROSP_BATCH1": 0,
+            "UNASSIGNED": 0, "OUTSIDE_WINDOW": 0,
+        }
+        audit_by_cik[str(case["cik"])] = case
     seen_accessions: dict[str, str] = {}
     duplicate_share_class_row_count = 0
     for plan in plans:
         issuer = plan.issuer
         ticker = plan.selected_ticker
         filings_value = issuer.get("filings")
-        if not ticker or not isinstance(filings_value, list):
+        if not isinstance(filings_value, list):
             raise H2Phase1Error("SEC issuer index is malformed")
         filings = [dict(item) for item in filings_value if isinstance(item, Mapping)]
-        facts_rel = issuer.get("companyfacts_relative_path")
-        if not isinstance(facts_rel, str):
-            raise H2Phase1Error(f"companyfacts path missing: {ticker}")
-        companyfacts = _json_object(
-            (sec_base / "cache" / Path(facts_rel)).read_bytes(), f"{ticker} companyfacts",
-        )
         release_filings = [
             filing for filing in filings
             if filing.get("form") == "8-K" and has_item_202(filing.get("items"))
             and (parse_utc_datetime(filing.get("acceptanceDateTime")) or datetime.min.replace(tzinfo=UTC))
             >= SEC_HISTORY_START
         ]
-        releases = [
-            _release_from_filing(
-                ticker=ticker, filing=filing, all_filings=filings,
-                companyfacts=companyfacts, sec_root=sec_base, text_root=text_base,
+        if ticker is None:
+            releases = [
+                _release_identity_from_filing(ticker="", filing=filing)
+                for filing in release_filings
+            ]
+        else:
+            facts_rel = issuer.get("companyfacts_relative_path")
+            if not isinstance(facts_rel, str):
+                raise H2Phase1Error(f"companyfacts path missing: {ticker}")
+            companyfacts = _json_object(
+                (sec_base / "cache" / Path(facts_rel)).read_bytes(), f"{ticker} companyfacts",
             )
-            for filing in release_filings
-        ]
+            releases = [
+                _release_from_filing(
+                    ticker=ticker, filing=filing, all_filings=filings,
+                    companyfacts=companyfacts, sec_root=sec_base, text_root=text_base,
+                )
+                for filing in release_filings
+            ]
         releases.sort(key=lambda item: (item["release_at"], item["release_id"]))
-        by_id = {str(item["release_id"]): item for item in releases}
+        audit_case = audit_by_cik.get(plan.cik)
         for release in releases:
             accession = str(release["release_id"])
             previous_cik = seen_accessions.get(accession)
@@ -1237,6 +1308,24 @@ def build_phase1_inputs(
                     f"({previous_cik}, {plan.cik})",
                 )
             seen_accessions[accession] = plan.cik
+            if audit_case is not None:
+                counts = audit_case.get("event_counts")
+                assert isinstance(counts, dict)
+                scope = resolution_event_scope(release)
+                counts[scope] = int(counts[scope]) + 1
+
+        if ticker is None:
+            registry_tickers = ",".join(plan.nonselected_supported_tickers)
+            for release in releases:
+                exclusions.append(_exclusion_row(
+                    release, "AMBIGUOUS_TICKER_MAPPING",
+                    f"cik={plan.cik};registry_tickers={registry_tickers}",
+                    ticker_override="",
+                ))
+            continue
+
+        by_id = {str(item["release_id"]): item for item in releases}
+        for release in releases:
             for alias in plan.nonselected_supported_tickers:
                 exclusions.append(_exclusion_row(
                     release, "DUPLICATE_SHARE_CLASS",
