@@ -191,6 +191,28 @@ def test_api_usage_actual_schema_with_sufficient_credits_allows_acquisition(tmp_
     assert evidence["response_headers"]["api_credits_left"] == 7
 
 
+def test_explicit_provider_symbol_override_keeps_canonical_storage(tmp_path):
+    client, session = _client([
+        _Response(_usage(daily_usage=200)),
+        _Response(_payload("PSKY")),
+    ])
+    root = tmp_path / "snapshot"
+    manifest = acquire_snapshot(
+        target_session=TARGET, output_root=root, run_id="psky-override",
+        client=client, registry_path=_registry(tmp_path / "registry.json", ("SKYD",)),
+        provider_symbol_overrides={"SKYD": "PSKY"},
+        now=lambda: datetime(2026, 10, 9, tzinfo=timezone.utc),
+    )
+    entry = manifest["tickers"][0]
+    assert session.calls[1][1]["params"]["symbol"] == "PSKY"
+    assert manifest["provider_symbol_overrides"] == {"SKYD": "PSKY"}
+    assert entry["canonical_ticker"] == "SKYD"
+    assert entry["requested_provider_symbol"] == "PSKY"
+    assert entry["provider_symbol"] == "PSKY"
+    assert (root / "normalized" / "SKYD.json").is_file()
+    assert not (root / "normalized" / "PSKY.json").exists()
+
+
 def test_insufficient_api_usage_fails_before_any_ticker_request(tmp_path):
     client, session = _client([_Response(_usage(daily_usage=251))])
     root = tmp_path / "snapshot"

@@ -50,7 +50,8 @@ PROSP_REFERENCE_START = date(2026, 10, 21)
 PROSP_REFERENCE_END = date(2026, 11, 17)
 PRICE_TARGET_SESSION = date(2026, 11, 17)
 PRICE_HISTORY_START = date(2025, 8, 24)
-PRICE_RUN_ID = "H2V21_PHASE1_20261118_A1"
+PRICE_RUN_ID = "H2V21_PHASE1_20261120_A2_PSKY"
+PRICE_PROVIDER_SYMBOL_OVERRIDES = {"SKYD": "PSKY"}
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
 
@@ -670,6 +671,7 @@ def acquire_price_ensemble(root: str | Path) -> dict[str, object]:
     snapshot = acquire_snapshot(
         target_session=PRICE_TARGET_SESSION, output_root=issuer_root,
         run_id=PRICE_RUN_ID, client=client,
+        provider_symbol_overrides=PRICE_PROVIDER_SYMBOL_OVERRIDES,
     )
     benchmark_root = base / "benchmark"
     benchmark_root.mkdir(parents=True, exist_ok=True)
@@ -713,6 +715,7 @@ def acquire_price_ensemble(root: str | Path) -> dict[str, object]:
             "provider_adjust": "none", "split_adjusted": False,
             "dividend_adjusted": False,
         },
+        "provider_symbol_overrides": dict(PRICE_PROVIDER_SYMBOL_OVERRIDES),
         "spy_normalized_sha256": sha256_bytes(spy_bytes),
         "files": inventory,
         "ensemble_sha256": ensemble_sha256,
@@ -1198,7 +1201,7 @@ def resolution_event_scope(release: Mapping[str, object]) -> str:
 
 
 def _price_manifest_commit_view(manifest: Mapping[str, object]) -> dict[str, object]:
-    return {
+    result = {
         key: manifest[key]
         for key in (
             "schema_name", "schema_version", "spec_id", "provider", "snapshot_id",
@@ -1207,6 +1210,8 @@ def _price_manifest_commit_view(manifest: Mapping[str, object]) -> dict[str, obj
             "spy_normalized_sha256", "files", "ensemble_sha256",
         )
     }
+    result["provider_symbol_overrides"] = manifest.get("provider_symbol_overrides", {})
+    return result
 
 
 def build_phase1_inputs(

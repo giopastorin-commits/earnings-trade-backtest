@@ -468,6 +468,7 @@ def _is_wbd_artifact(ticker: str, row: Mapping[str, Any]) -> bool:
 
 def normalize_response(
     ticker: str, raw: bytes, *, target_session: date,
+    expected_provider_symbol: str | None = None,
 ) -> NormalizedCapture:
     try:
         payload = json.loads(raw)
@@ -484,10 +485,12 @@ def normalize_response(
         raise PriceSnapshotError(f"{ticker}: Twelve Data response has no values")
     meta = payload.get("meta")
     returned_symbol = str(meta.get("symbol") if isinstance(meta, dict) else ticker).upper()
-    if returned_symbol != ticker:
+    expected_symbol = str(expected_provider_symbol or ticker).upper()
+    if returned_symbol != expected_symbol:
         return NormalizedCapture(
             returned_symbol, "SYMBOL_MAPPING_REQUIRED", (), (),
-            f"provider returned symbol {returned_symbol} for canonical {ticker}",
+            f"provider returned symbol {returned_symbol}; expected {expected_symbol} "
+            f"for canonical {ticker}",
         )
     bars: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -590,6 +593,7 @@ def acquire_snapshot(
     *, target_session: date, output_root: str | Path, run_id: str,
     client: TwelveDataClient | None = None,
     registry_path: str | Path = DEFAULT_REGISTRY,
+    provider_symbol_overrides: Mapping[str, str] | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> dict[str, Any]:
     root = Path(output_root)
@@ -600,6 +604,13 @@ def acquire_snapshot(
     normalized_root.mkdir(parents=True, exist_ok=True)
     registry = load_registry(registry_path)
     records = registry.supported
+    overrides = {
+        str(ticker).strip().upper(): str(symbol).strip().upper()
+        for ticker, symbol in (provider_symbol_overrides or {}).items()
+    }
+    supported_tickers = {record.ticker for record in records}
+    if any(ticker not in supported_tickers or not symbol for ticker, symbol in overrides.items()):
+        raise PriceSnapshotError("invalid provider symbol override")
     provider = client or TwelveDataClient()
     usage = provider.fetch_api_usage()
     minimum_required = required_daily_credits(len(records))
@@ -619,17 +630,21 @@ def acquire_snapshot(
     entries: list[dict[str, Any]] = []
     for index, issuer in enumerate(records):
         ticker = issuer.ticker
+        provider_symbol = overrides.get(ticker, ticker)
         attempts: Sequence[Mapping[str, Any]] = ()
         raw: bytes | None = None
         error: str | None = None
-        normalized = NormalizedCapture(ticker, "PROVIDER_FAILURE", (), (), None)
+        normalized = NormalizedCapture(provider_symbol, "PROVIDER_FAILURE", (), (), None)
         try:
             capture = provider.fetch(
-                ticker, start_date=history_start, target_session=target_session,
+                provider_symbol, start_date=history_start, target_session=target_session,
                 remaining_tickers=len(records) - index,
             )
             raw, attempts = capture.raw, capture.attempts
-            normalized = normalize_response(ticker, raw, target_session=target_session)
+            normalized = normalize_response(
+                ticker, raw, target_session=target_session,
+                expected_provider_symbol=provider_symbol,
+            )
         except DailyQuotaExhausted as exc:
             _persist_credit_evidence(root, usage, provider, required=minimum_required)
             _persist_acquisition_failure(root, {
@@ -647,13 +662,13 @@ def acquire_snapshot(
             raw, attempts, error = exc.raw, exc.attempts, str(exc)
         except (PriceSnapshotError, TypeError, ValueError) as exc:
             error = str(exc)
-            normalized = NormalizedCapture(ticker, "INVALID_DATA", (), (), error)
+            normalized = NormalizedCapture(provider_symbol, "INVALID_DATA", (), (), error)
         configured_secret = getattr(provider, "api_key", None)
         if raw is not None and isinstance(configured_secret, str) \
                 and configured_secret.encode("utf-8") in raw:
             raw = None
             error = f"{ticker}: provider response contained configured secret; raw not persisted"
-            normalized = NormalizedCapture(ticker, "INVALID_DATA", (), (), error)
+            normalized = NormalizedCapture(provider_symbol, "INVALID_DATA", (), (), error)
         if raw is not None:
             _atomic_write(raw_root / f"{ticker}.json", raw)
         bars_value = list(normalized.bars)
@@ -661,6 +676,7 @@ def acquire_snapshot(
         _atomic_write(normalized_root / f"{ticker}.json", bars_bytes)
         entries.append({
             "canonical_ticker": ticker,
+            "requested_provider_symbol": provider_symbol,
             "provider_symbol": normalized.provider_symbol,
             "classification": normalized.classification,
             "first_date": bars_value[0]["date"] if bars_value else None,
@@ -701,6 +717,7 @@ def acquire_snapshot(
         "acquisition_started_at_utc": utc_timestamp(acquired_at),
         "acquisition_completed_at_utc": utc_timestamp(completed_at),
         "canonical_ticker_count": len(records),
+        "provider_symbol_overrides": dict(sorted(overrides.items())),
         "active_complete_count": counts["ACTIVE_COMPLETE"],
         "explicit_exception_count": counts["CORPORATE_ACTION_NO_LONGER_TRADING"],
         "provider_failure_count": counts["PROVIDER_FAILURE"],
