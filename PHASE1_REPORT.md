@@ -1,10 +1,15 @@
 # H2 V2.1 — Phase 1 input build report
 
-**Status:** Phase 1 completed; Phase 2 not started  
-**Branch:** `research/h2-v2-1-build-inputs`  
-**Starting commit:** `bee6463372e541519aae88cd98481bba27839875`  
-**Final analytical-code commit:** `421396a3c773c9131ca9dcedc8c18b47b42419f0`  
-**Immutable input-snapshot commit:** `546ea38f7376adf9480a0da07048ed8ecc561ea3`  
+**Status:** Phase 1 completed; Phase 2 not started
+
+**Branch:** `research/h2-v2-1-build-inputs`
+
+**Starting commit:** `bee6463372e541519aae88cd98481bba27839875`
+
+**Final analytical-code commit:** `421396a3c773c9131ca9dcedc8c18b47b42419f0`
+
+**Immutable input-snapshot commit:** `546ea38f7376adf9480a0da07048ed8ecc561ea3`
+
 **Build completed:** `2026-11-20T14:45:15.451Z`
 
 This report covers only the construction and sealing of the H2 V2.1 Phase 1
