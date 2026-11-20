@@ -150,6 +150,37 @@ manifest records both the selected SEC ticker and the selected canonical
 ticker.  The build fails closed on a missing, conflicting, or non-unique
 registry mapping.
 
+#### Missing-SEC-ticker fallback 2026-11-20T09:46:32.021+01:00
+
+This fallback applies only when no element of the SEC submissions `tickers`
+array maps through `sec_ticker` to a supported registry record for the same
+CIK.  It covers both an empty SEC array and a non-empty array with no registry
+match.
+
+1. If exactly one `REGISTRY.supported` record has that CIK, its canonical
+   `ticker` is used for the event.  The resolution manifest records the CIK,
+   complete SEC array (including an empty array), canonical registry ticker,
+   cached-submissions acquisition timestamp, and reason
+   `SEC_TICKERS_EMPTY` or `SEC_TICKERS_NO_REGISTRY_MATCH`.
+2. If more than one supported registry record has that CIK, no ticker is
+   selected.  Every release of that CIK, including historical pairing input,
+   is written once to exclusions with reason `AMBIGUOUS_TICKER_MAPPING` and is
+   not processed for text, H2, pairing, covariates, or sample eligibility.
+3. The rule applies identically to DEV, PROSP_BATCH1, unassigned events, and
+   history from 2025-01-01.  The report gives, for each fallback CIK, unique
+   event counts by DEV, PROSP_BATCH1, UNASSIGNED, outside-window, and historical
+   pairing scope.
+4. A registry fallback never authorizes joining or substituting time series.
+   In particular, CIK `0002041610` uses only canonical ticker `PSKY` prices;
+   PARA or any predecessor ticker is forbidden.  Insufficient PSKY history
+   yields `PRICE_COVERAGE`.
+5. Pairing remains confined to releases of the exact same CIK.  Releases of a
+   predecessor CIK are never admitted as prior releases, including for PSKY.
+
+The resolution manifest distinguishes the normal SEC-order rule, unique-CIK
+registry fallback, and ambiguous mapping.  No rule consults price availability,
+volume, liquidity, H2, or any other analytical value.
+
 ## 5. Timing classification and descriptive release period
 
 `release_at` is converted to `America/New_York`. The XNYS calendar comes from
@@ -412,7 +443,8 @@ reason is lost. Reasons are from this closed set:
 `NO_EX99`, `TIMING_INTRADAY`, `TIMING_UNKNOWN`, `OUTSIDE_SAMPLE_WINDOW`,
 `FISCAL_PERIOD_UNKNOWN`, `PAIRING_FALLBACK`, `PAIRING_NO_MATCH`,
 `PAIRING_AMBIGUOUS`, `TEXT_UNAVAILABLE`, `H2_UNAVAILABLE`, `PRICE_COVERAGE`,
-`SIGMA_PRE_60_MISSING`, `DUPLICATE_SHARE_CLASS`.
+`SIGMA_PRE_60_MISSING`, `DUPLICATE_SHARE_CLASS`,
+`AMBIGUOUS_TICKER_MAPPING`.
 
 `FISCAL_PERIOD_UNKNOWN` is auditable but is not a second exclusion when the
 same row is already classified as pairing fallback/no-match/ambiguous; all
