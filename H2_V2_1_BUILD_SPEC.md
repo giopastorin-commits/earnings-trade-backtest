@@ -858,3 +858,66 @@ Before the first `adjust=splits` download, tests must cover:
 9. deterministic artifacts and output hashes; and
 10. absence of calls/imports to `calculate_event_outcomes`,
     `build_experimental_dataset`, or the outcome engine.
+
+## 18. Amendment 2026-11-20T20:00:54.3094290+01:00 — event-level split coverage
+
+This amendment is committed before any Phase 1.1-B CSV regeneration. It adds
+an event-level coverage gate to section 17 and prevails wherever a common-date
+factor could otherwise be calculated from an incomplete adjusted series.
+
+For every DEV or PROSP_BATCH1 input event with valid
+`price_window_start` and `reference_session_date`, define the inclusive set of
+unadjusted source dates:
+
+`D_none = {d in adjust=none : price_window_start <= d <= reference_session_date}`
+
+The event is split-verifiable exactly when all of the following hold:
+
+1. `D_none` is non-empty;
+2. the unadjusted series contains the event's `price_window_start` and
+   `reference_session_date`; and
+3. the `adjust=splits` series contains every date in `D_none`.
+
+The coverage comparison reads both sources through the event ticker's latest
+DEV/PROSP reference boundary and never decodes a later row. It compares dates
+only; it does not inspect or summarize prices, returns, H2, or covariates.
+
+If any required date is absent from `adjust=splits`, the event is not used for
+factor-based split classification. It receives exclusion reason
+`SPLIT_CHECK_UNAVAILABLE`, becomes `row_status=EXCLUDED`, and retains all
+pre-existing reasons. Its exclusion detail records only the source status,
+last adjusted date available at or before the ticker cutoff, and the missing
+required dates. No alternate source, symbol, predecessor series, interpolation,
+imputation, or estimate is permitted.
+
+`CORPORATE_ACTION_SPLIT` may be asserted only for an event that passes this
+coverage gate. For a passing event, the interval rule remains strictly:
+
+`price_window_start < detected_split_date <= reference_session_date`
+
+The lower-bound date is required for coverage even though a factor change on
+that date is outside the exclusion interval; it supplies a valid baseline for
+the next common-date factor comparison.
+
+Phase 1.1-B additionally commits
+`h2_v2_1_split_coverage_audit.json`. For every ticker whose adjusted-source
+classification is not `ACTIVE_COMPLETE`, the audit records:
+
+- canonical and provider symbol;
+- provider classification;
+- last adjusted date available in the normalized source;
+- each DEV/PROSP accession and sample;
+- its `price_window_start` and reference session;
+- whether the event is split-verifiable; and
+- the missing-date count and dates when it is not verifiable.
+
+The Phase 1.1-B report reproduces this audit for KVUE and every other
+non-`ACTIVE_COMPLETE` ticker, including the last adjusted date, DEV/PROSP
+events, and verifiability. Permitted event counts add
+`SPLIT_CHECK_UNAVAILABLE` by sample and the resulting primary-eligible rows.
+No values of either close series are written to the audit or report.
+
+Synthetic tests must cover complete coverage, a missing interior adjusted
+date, a missing reference date, preservation of existing reasons, precedence
+over `CORPORATE_ACTION_SPLIT`, bounded reads with a malformed future sentinel,
+and the non-`ACTIVE_COMPLETE` ticker audit.
