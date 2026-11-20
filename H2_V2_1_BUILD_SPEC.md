@@ -665,3 +665,196 @@ PROSP_BATCH1, only the number of unique events newly carrying
 `CORPORATE_ACTION_SPLIT` and the resulting primary-eligible count. It may also
 report acquisition-status counts as source-provenance metadata. It must not
 summarize split ratios, H2, covariates, prices, returns, or outcomes.
+
+## 17. Amendment 2026-11-20T18:49:21.9071987+01:00 — Phase 1.1-B split-adjustment factors
+
+This amendment supersedes section 16 in full. The `/splits` endpoint and every
+normalization or credit rule specific to it are no longer authorized. The
+failed section-16 A1 attempt made exactly one `/api_usage` request, acquired no
+split data, and is not a source for Phase 1.1-B.
+
+Before this amendment, the official Twelve Data documentation was checked and
+confirmed both conditions required to proceed:
+
+- `/time_series` supports `adjust=splits` (along with `all`, `dividends`, and
+  `none`); and
+- `/time_series` costs **1 API credit per symbol**.
+
+Documentation checked:
+`https://twelvedata.com/docs/ai/ai-data-assistant` and
+`https://support.twelvedata.com/en/articles/5615854-credits`.
+
+No `adjust=splits` data was requested before this amendment was committed.
+
+### 17.1 Frozen universe, request, and multi-day acquisition
+
+The canonical ticker universe remains the 458-ticker sorted union defined in
+section 16.1, derived from the Phase 1 snapshot commit
+`546ea38f7376adf9480a0da07048ed8ecc561ea3`. The provider symbol equals the
+canonical ticker except for the already frozen `SKYD -> PSKY` override. No
+SKYD, PARA, predecessor, alternate symbol, or alternate provider may replace
+PSKY.
+
+Each ticker is requested from the same endpoint and with the same parameters
+as price snapshot A2, changing only `adjust` from `none` to `splits`:
+
+`GET https://api.twelvedata.com/time_series`
+
+| Parameter | Frozen value |
+| --- | --- |
+| `symbol` | the frozen provider symbol |
+| `interval` | `1day` |
+| `start_date` | `2025-08-24` |
+| `end_date` | `2026-11-18` |
+| `outputsize` | `5000` |
+| `adjust` | `splits` |
+
+The immutable completed snapshot root is:
+
+`C:\Users\giopa\h2-v2-1-phase1-private\split_adjusted_prices\TWELVEDATA_2026-11-17_ADJUST_SPLITS_H2V21_PHASE1_1_B_A1`
+
+The Basic-plan daily cap may require acquisition over multiple UTC days. A
+multi-day run is allowed only as a resumable acquisition with the exact frozen
+parameters above:
+
+1. Before every daily batch, `/api_usage` is called and the batch size is no
+   larger than available daily credits minus the frozen 32-credit reserve.
+2. Every completed ticker file is written once. A resume verifies its path,
+   parameters, provider symbol, byte length, and SHA-256 and never replaces it.
+3. Each request records its own UTC acquisition timestamp. The checkpoint
+   records completed and remaining canonical tickers and is not an eligible
+   source snapshot.
+4. A resume with different parameters, ticker universe, parent snapshot, or
+   an unexpected pre-existing file fails closed.
+5. Only after all 458 tickers have a terminal recorded response is the sorted
+   inventory sealed with per-file SHA-256 values and an ensemble SHA-256. The
+   final snapshot is then read-only. Provider failures are recorded without
+   symbol substitution.
+
+At one credit per symbol, a one-day acquisition requires 490 available daily
+credits (458 ticker credits plus the 32-credit reserve). A partial daily batch
+does not change the request parameters and does not become an analytical
+snapshot.
+
+The final manifest records endpoint, full parameter template, canonical and
+provider symbols, UTC acquisition time per response, raw and normalized file
+hashes, retry metadata, checkpoint lineage, acquisition start/end timestamps,
+the sorted inventory, and the ensemble hash. Raw licensed price files and
+credentials remain outside Git.
+
+### 17.2 Frozen unadjusted comparator
+
+The unadjusted comparator is only the already sealed A2 price ensemble:
+
+- snapshot ID:
+  `TWELVEDATA_2026-11-17_RUN_H2V21_PHASE1_20261120_A2_PSKY`;
+- `adjust=none`;
+- ensemble SHA-256:
+  `8dd59aae14c92f9d8dd9a6c055c166157e8b49b0d6ce0b48591080277ec7a54f`.
+
+No unadjusted series is re-downloaded, repaired, joined, or replaced. Both
+sources must pass their existing hash verification before and after the
+Phase 1.1-B screen.
+
+### 17.3 Bounded factor detection
+
+For each canonical ticker, define the Phase 1.1 cutoff as the latest valid
+`reference_session_date` among that ticker's DEV and PROSP_BATCH1 input rows.
+If a ticker has more than one event, only that latest reference is used as the
+read boundary for detecting its factor changes.
+
+Both `adjust=none` and `adjust=splits` series are read through bounded JSONL
+readers that stop immediately after the ticker cutoff. No later row is decoded
+or returned. A ticker with no input row having both a valid
+`price_window_start` and reference session has no Phase 1.1 interval to screen;
+its provider response remains in the acquisition manifest, but no split
+classification is asserted for that ticker.
+
+On the ascending intersection of dates present in both bounded series, define
+with deterministic decimal arithmetic:
+
+`r_t = close_splits_t / close_none_t`
+
+For each common date after the first common date, it is a detected split date
+exactly when:
+
+`abs((r_t / r_previous_common_date) - 1) > 0.01`
+
+The threshold is strict: equality to 0.01 is not a detection. A zero,
+non-finite, missing, duplicate, or otherwise invalid required close fails the
+ticker screen; it is never imputed. The detection artifact records only the
+canonical ticker, provider symbol, detected date, previous common date, and
+the decimal factor-change ratio `r_t / r_previous_common_date`. It does not
+record or report the close values and does not calculate an unadjusted return
+or price jump.
+
+The detection artifact is deterministically sorted by `(ticker, date,
+previous_common_date, factor_change_ratio)` and receives a SHA-256. Detection
+after a PROSP event's reference is deferred to its separately authorized
+outcome phase.
+
+### 17.4 Event exclusion and Phase 2 boundary
+
+For each DEV or PROSP_BATCH1 input event with valid boundaries, add
+`CORPORATE_ACTION_SPLIT` exactly when a detected date for its canonical ticker
+falls in:
+
+`price_window_start < detected_split_date <= reference_session_date`
+
+The lower bound is excluded and the reference bound is included. All matching
+dates and their factor-change ratios are recorded in deterministic order in
+the exclusion detail. The row becomes `EXCLUDED`; existing exclusion reasons
+are preserved. Events without a defined interval retain their existing
+reasons and receive no asserted split classification.
+
+For an authorized Phase 2 DEV run, and later for an authorized PROSP outcome
+batch, apply the same factor method with bounded reads through D20 and exclude
+when:
+
+`reference_session_date < detected_split_date <= D20_session_date`
+
+The reference bound is excluded and D20 is included. Phase 1.1-B neither
+computes D20 nor calls the outcome engine. A Phase 2 batch must first prove
+that both immutable series cover its D20 boundary.
+
+### 17.5 Scope limits and output
+
+The factor method is designed to detect adjustments represented by Twelve
+Data under `adjust=splits`, including split and reverse-split factor changes.
+It does not infer an action from a discontinuity in the unadjusted price
+series. If spin-offs or extraordinary distributions are not represented in
+the provider's split-adjustment factor, their absence is a known limitation.
+Ordinary dividends do not cause an exclusion and remain a known limitation:
+future outcomes are price returns, not total returns.
+
+Phase 1.1-B writes to a new, non-overwriting directory:
+
+`research/h2_v2_1_phase1_1_split_factors`
+
+It regenerates `h2_v2_1_inputs_dev.csv`,
+`h2_v2_1_inputs_prosp_batch1.csv`, and `h2_v2_1_exclusions.csv`, and commits a
+source manifest, detection artifact, and build manifest. No outcome, model,
+prediction, D20 value, post-reference price, or return column is added.
+
+The report records all source/output hashes, the count of unique events newly
+carrying `CORPORATE_ACTION_SPLIT` by DEV and PROSP_BATCH1, the resulting
+primary-eligible counts, and the complete detected list of
+`ticker / date / factor-change ratio`. No price, return, H2, or covariate
+summary is permitted.
+
+### 17.6 Required synthetic tests
+
+Before the first `adjust=splits` download, tests must cover:
+
+1. exact request parity with A2 except `adjust=splits`;
+2. one-credit accounting, daily batching, safe resume, and hash refusal on a
+   changed completed file;
+3. the `SKYD -> PSKY` request with no fallback;
+4. bounded reads of both series through the latest ticker reference;
+5. common-date alignment and deterministic decimal factor calculation;
+6. strict threshold behavior below, equal to, and above 0.01;
+7. lower-exclusive and reference-inclusive event intervals;
+8. multiple events for one ticker and preservation of existing reasons;
+9. deterministic artifacts and output hashes; and
+10. absence of calls/imports to `calculate_event_outcomes`,
+    `build_experimental_dataset`, or the outcome engine.
