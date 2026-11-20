@@ -532,3 +532,135 @@ H2 summaries, covariate summaries, outcome summaries, models, or predictions are
 permitted. Phase 1 stops after committing and pushing the specification, code,
 tests, input CSVs, exclusions, manifests/hashes, and report on
 `research/h2-v2-1-build-inputs`.
+
+## 16. Amendment 2026-11-20T16:23:34.6062791+01:00 — Phase 1.1 corporate-action split screen
+
+This amendment is frozen and committed before the first request for split
+data. It extends the Phase 1 input snapshot with a provider-reported corporate
+action screen, without calculating an outcome, return, model, or prediction.
+All Phase 1 prohibitions and the price-read boundary remain in force.
+
+### 16.1 Frozen acquisition universe and provider contract
+
+The split-acquisition universe is the sorted union of canonical event tickers
+from:
+
+1. `h2_v2_1_inputs_dev.csv`;
+2. `h2_v2_1_inputs_prosp_batch1.csv`; and
+3. `h2_v2_1_exclusions.csv` rows whose `sample` is `DEV` or
+   `PROSP_BATCH1`, excluding `DUPLICATE_SHARE_CLASS` alias rows.
+
+Empty tickers are rejected. The resulting frozen universe contains **458
+canonical tickers**. It is derived from the input snapshot committed at
+`546ea38f7376adf9480a0da07048ed8ecc561ea3`; the manifest records the sorted
+canonical ticker list and its canonical-JSON SHA-256.
+
+The provider is the same provider as the price snapshot, `TWELVE_DATA`. Each
+canonical ticker is requested separately from:
+
+`GET https://api.twelvedata.com/splits?symbol={provider_symbol}`
+
+The provider symbol equals the canonical ticker except for the already frozen
+override `SKYD -> PSKY`. No request for SKYD, PARA, or another predecessor is
+permitted for canonical SKYD. No alternate symbol or provider may replace a
+failed response.
+
+The official endpoint cost recorded before acquisition is 20 API credits per
+symbol. The implementation checks provider API usage before the first split
+request and requires at least **9,160 available daily credits** for the 458
+symbols. If the guard fails, no split request is made and no partial snapshot
+is eligible. A later retry must use a new empty run directory.
+
+The `/splits` endpoint returns the available history for one symbol and does
+not use a client-supplied date range in this contract. Raw responses are
+preserved unchanged. Normalized rows are filtered locally to split date from
+**2025-08-24 through 2026-11-20 inclusive**, where 2026-11-20 is the frozen
+“today” date for this Phase 1.1 run. The normalized schema preserves, when
+present, `date`, `description`, `ratio`, `from_factor`, `to_factor`, and any
+provider-reported action/type field. Rows are sorted deterministically by
+date and their canonical JSON representation.
+
+The immutable snapshot root is:
+
+`C:\Users\giopa\h2-v2-1-phase1-private\splits\TWELVEDATA_SPLITS_2025-08-24_2026-11-20_H2V21_PHASE1_1_A1`
+
+It must be new and empty. The manifest records endpoint, request parameters,
+canonical and provider symbols, acquisition start/end timestamps in UTC,
+response classification/error, raw and normalized file SHA-256 values, the
+complete sorted inventory, and an ensemble SHA-256. Raw files and credentials
+remain outside Git. The snapshot is made read-only after sealing and its
+hashes must verify before and after the regenerated input build.
+
+### 16.2 Phase 1/2 pre-reference exclusion
+
+For every DEV or PROSP_BATCH1 input row with both a valid
+`price_window_start` and `reference_session_date`, add exclusion reason
+`CORPORATE_ACTION_SPLIT` if at least one normalized provider action has an
+effective/split date in the interval:
+
+`price_window_start < split_date <= reference_session_date`
+
+The lower bound is strictly excluded and the reference-session bound is
+included. The decision uses only ticker identity, the provider action date,
+and the two already committed calendar dates. It never uses a price, return,
+H2 value, covariate value, price jump, volume, or any other data-dependent
+signal. A matching row becomes `row_status=EXCLUDED`; the exclusions CSV gains
+one `CORPORATE_ACTION_SPLIT` row per affected accession, with all matching
+action dates recorded in deterministic order in `detail`. An already excluded
+row retains all existing reasons and also receives this reason.
+
+If either boundary is missing, the interval is not defined and no split
+classification is asserted; the row retains its existing missing-price or
+other exclusion reasons. Events that exist only as `NO_EX99`, INTRADAY, or
+UNKNOWN exclusion rows are not reintroduced into the input CSVs.
+
+Phase 1.1 creates a new, non-overwriting output directory
+`research/h2_v2_1_phase1_1_split`. The regenerated CSVs preserve the Phase 1
+column order and add no outcome, model, prediction, or future-price column.
+Their manifest binds the Phase 1 parent snapshot commit and hashes, the split
+ensemble hash, and all regenerated file hashes.
+
+### 16.3 Post-reference rule reserved for Phase 2
+
+For DEV in Phase 2, and for PROSP only when its outcome batch is authorized
+later, exclude an event with `CORPORATE_ACTION_SPLIT` if a provider action date
+falls in:
+
+`reference_session_date < split_date <= D20_session_date`
+
+The reference-session bound is strictly excluded and D20 is included. D20 is
+the XNYS session selected by the frozen outcome-engine horizon rule. Phase 1.1
+does not calculate D20 outcomes and does not invoke the outcome engine. A
+Phase 2 batch may apply this rule only if its immutable split snapshot covers
+the batch's entire D20 interval; otherwise it must acquire and seal a later
+snapshot before calculating outcomes. The decision is calendar-only and may
+not inspect returns.
+
+### 16.4 Other corporate actions and dividends
+
+Every row returned by the Twelve Data `/splits` endpoint is screened under the
+same interval rules, including provider-reported split and reverse-split rows.
+If that endpoint explicitly reports a spin-off or extraordinary distribution,
+it is screened identically and the provider description/type is preserved.
+No such action may be inferred from a price or volume discontinuity.
+
+The `/splits` endpoint may not provide a complete spin-off or extraordinary-
+distribution calendar. Any absence is a known limitation, not evidence that
+no such action occurred. Ordinary dividends do not cause an exclusion and are
+a separate known limitation: future outcomes are price returns, not total
+returns.
+
+### 16.5 Tests, report, and permitted counts
+
+Before real split acquisition, synthetic tests must cover both interval
+boundaries, split and reverse-split rows, multiple action dates, no match,
+provider failure without substitution, the SKYD-to-PSKY request mapping,
+deterministic hashing, and preservation of existing reasons. They must also
+prove that Phase 1.1 imports or calls neither `calculate_event_outcomes` nor
+`build_experimental_dataset`.
+
+The Phase 1.1 report records source and output hashes and, per DEV and
+PROSP_BATCH1, only the number of unique events newly carrying
+`CORPORATE_ACTION_SPLIT` and the resulting primary-eligible count. It may also
+report acquisition-status counts as source-provenance metadata. It must not
+summarize split ratios, H2, covariates, prices, returns, or outcomes.
