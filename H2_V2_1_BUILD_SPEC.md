@@ -567,9 +567,10 @@ failed response.
 
 The official endpoint cost recorded before acquisition is 20 API credits per
 symbol. The implementation checks provider API usage before the first split
-request and requires at least **9,160 available daily credits** for the 458
-symbols. If the guard fails, no split request is made and no partial snapshot
-is eligible. A later retry must use a new empty run directory.
+request and requires at least **9,192 available daily credits**: 9,160 for the
+458 symbols plus the already frozen 32-credit safety reserve. If the guard
+fails, no split request is made and no partial snapshot is eligible. A later
+retry must use a new empty run directory.
 
 The `/splits` endpoint returns the available history for one symbol and does
 not use a client-supplied date range in this contract. Raw responses are
