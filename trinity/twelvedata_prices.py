@@ -334,12 +334,14 @@ class TwelveDataClient:
 
     def fetch(
         self, symbol: str, *, start_date: date, target_session: date,
-        remaining_tickers: int | None = None,
+        remaining_tickers: int | None = None, adjust: str = ADJUSTMENT,
     ) -> ProviderCapture:
+        if adjust not in {"all", "splits", "dividends", "none"}:
+            raise PriceSnapshotError(f"unsupported Twelve Data adjustment mode: {adjust}")
         params = {
             "symbol": symbol,
             "interval": INTERVAL,
-            "adjust": ADJUSTMENT,
+            "adjust": adjust,
             "start_date": start_date.isoformat(),
             "end_date": exclusive_end_date(target_session).isoformat(),
             "outputsize": 5000,

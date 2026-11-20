@@ -22,10 +22,10 @@ from trinity.h2_v2_1_inputs import (  # noqa: E402
     verify_price_ensemble,
     verify_sec_corpus,
 )
-from trinity.twelvedata_splits import (  # noqa: E402
-    acquire_split_snapshot,
-    apply_split_screen,
-    verify_split_snapshot,
+from trinity.twelvedata_split_factors import (  # noqa: E402
+    acquire_split_adjusted_snapshot,
+    apply_split_factor_screen,
+    verify_split_adjusted_snapshot,
 )
 
 
@@ -56,17 +56,18 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--text-root", type=Path, required=True)
     build.add_argument("--output-root", type=Path, required=True)
 
-    splits = subparsers.add_parser("acquire-splits")
-    splits.add_argument("--phase1-root", type=Path, required=True)
-    splits.add_argument("--split-root", type=Path, required=True)
+    split_factors = subparsers.add_parser("acquire-split-factors")
+    split_factors.add_argument("--phase1-root", type=Path, required=True)
+    split_factors.add_argument("--snapshot-root", type=Path, required=True)
 
-    verify_splits = subparsers.add_parser("verify-splits")
-    verify_splits.add_argument("--split-root", type=Path, required=True)
+    verify_split_factors = subparsers.add_parser("verify-split-factors")
+    verify_split_factors.add_argument("--snapshot-root", type=Path, required=True)
 
-    apply_splits = subparsers.add_parser("apply-splits")
-    apply_splits.add_argument("--phase1-root", type=Path, required=True)
-    apply_splits.add_argument("--split-root", type=Path, required=True)
-    apply_splits.add_argument("--output-root", type=Path, required=True)
+    apply_split_factors = subparsers.add_parser("apply-split-factors")
+    apply_split_factors.add_argument("--phase1-root", type=Path, required=True)
+    apply_split_factors.add_argument("--price-root", type=Path, required=True)
+    apply_split_factors.add_argument("--snapshot-root", type=Path, required=True)
+    apply_split_factors.add_argument("--output-root", type=Path, required=True)
     return parser
 
 
@@ -106,27 +107,29 @@ def main(argv: list[str] | None = None) -> int:
             "price_ensemble_sha256": price.get("ensemble_sha256"),
             "sec_ensemble_sha256": sec.get("ensemble_sha256"),
         }
-    elif args.command == "acquire-splits":
-        manifest = acquire_split_snapshot(
-            parent_root=args.phase1_root, output_root=args.split_root,
+    elif args.command == "acquire-split-factors":
+        manifest = acquire_split_adjusted_snapshot(
+            parent_root=args.phase1_root, output_root=args.snapshot_root,
         )
         result = {
             key: manifest.get(key)
             for key in (
+                "complete", "completed_ticker_count", "remaining_ticker_count",
                 "acquisition_started_at_utc", "acquisition_completed_at_utc",
-                "canonical_ticker_count", "ensemble_sha256", "manifest_file_sha256",
+                "canonical_ticker_count", "ensemble_sha256",
+                "manifest_file_sha256", "checkpoint_sha256",
             )
         }
-    elif args.command == "verify-splits":
-        manifest = verify_split_snapshot(args.split_root)
+    elif args.command == "verify-split-factors":
+        manifest = verify_split_adjusted_snapshot(args.snapshot_root)
         result = {
             "canonical_ticker_count": manifest.get("canonical_ticker_count"),
             "ensemble_sha256": manifest.get("ensemble_sha256"),
         }
-    elif args.command == "apply-splits":
-        result = apply_split_screen(
-            parent_root=args.phase1_root, split_root=args.split_root,
-            output_root=args.output_root,
+    elif args.command == "apply-split-factors":
+        result = apply_split_factor_screen(
+            parent_root=args.phase1_root, none_price_root=args.price_root,
+            adjusted_root=args.snapshot_root, output_root=args.output_root,
         )
     else:
         result = build_phase1_inputs(
