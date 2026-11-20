@@ -171,15 +171,33 @@ match.
    event counts by DEV, PROSP_BATCH1, UNASSIGNED, outside-window, and historical
    pairing scope.
 4. A registry fallback never authorizes joining or substituting time series.
-   In particular, CIK `0002041610` uses only canonical ticker `PSKY` prices;
-   PARA or any predecessor ticker is forbidden.  Insufficient PSKY history
-   yields `PRICE_COVERAGE`.
+   In particular, CIK `0002041610` uses only the explicitly required PSKY
+   price series; PARA or any predecessor ticker is forbidden.  Insufficient
+   PSKY history yields `PRICE_COVERAGE`.
 5. Pairing remains confined to releases of the exact same CIK.  Releases of a
    predecessor CIK are never admitted as prior releases, including for PSKY.
 
 The resolution manifest distinguishes the normal SEC-order rule, unique-CIK
 registry fallback, and ambiguous mapping.  No rule consults price availability,
 volume, liquidity, H2, or any other analytical value.
+
+#### PSKY provider-symbol clarification 2026-11-20T10:34:04.071+01:00
+
+The frozen registry record for CIK `0002041610` has canonical event ticker
+`SKYD` but the approved price-series identity is `PSKY`.  Accordingly:
+
+- event rows retain canonical registry ticker `SKYD`;
+- the Twelve Data request for that canonical event ticker uses provider symbol
+  `PSKY`, and the source manifest records the explicit `SKYD -> PSKY` override;
+- normalized/bounded storage may remain keyed by canonical ticker `SKYD`, but
+  its raw response, returned provider symbol, and hashes must all derive only
+  from the PSKY request;
+- no SKYD, PARA, or other predecessor price series may be concatenated,
+  substituted, or used to fill PSKY coverage;
+- the earlier A1 price ensemble, which requested SKYD, is not eligible for the
+  final build.  A new complete immutable 518-ticker-plus-SPY ensemble is
+  acquired from Twelve Data with the same 2026-11-17 target and fixed request
+  parameters.  No file from A1 is reused or mixed into the new ensemble.
 
 ## 5. Timing classification and descriptive release period
 
