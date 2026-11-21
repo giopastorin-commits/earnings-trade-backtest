@@ -1,6 +1,6 @@
 # H2 V2.1 — Phase 1 input build report
 
-**Status:** Phase 1 completed; Phase 2 not started
+**Status:** Phase 1 and Phase 1.1-B completed; Phase 2 not started
 
 **Branch:** `research/h2-v2-1-build-inputs`
 
@@ -9,6 +9,12 @@
 **Final analytical-code commit:** `421396a3c773c9131ca9dcedc8c18b47b42419f0`
 
 **Immutable input-snapshot commit:** `546ea38f7376adf9480a0da07048ed8ecc561ea3`
+
+**Phase 1.1-B specification amendment commit:** `730ebbd66561eeec090b0184f40c18de469a2b46`
+
+**Phase 1.1-B analytical-code commit:** `dd493a3152c3bf0ad5bd25082698dd21eac57ea9`
+
+**Phase 1.1-B input-snapshot commit:** `259af4f1b9b8f7df6fa6e5d33c9167cd002ee05c`
 
 **Build completed:** `2026-11-20T14:45:15.451Z`
 
@@ -70,10 +76,10 @@ Candidate events are unique accessions in the corresponding input CSV unioned
 with same-sample non-alias exclusion rows. `DUPLICATE_SHARE_CLASS` rows are not
 candidate events and are excluded from these counts.
 
-| Sample | Candidate events | EXACT | FALLBACK | NO_MATCH | AMBIGUOUS | sigma_pre_60 missing | sigma_pre_60 == 0 | Final primary-eligible |
+| Sample | Candidate events | EXACT | FALLBACK | NO_MATCH | AMBIGUOUS | sigma_pre_60 missing | sigma_pre_60 == 0 | Final primary-eligible after Phase 1.1-B |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | DEV | 90 | 81 | 3 | 0 | 0 | 0 | 0 | 81 |
-| PROSP_BATCH1 | 389 | 355 | 33 | 0 | 0 | 1 | 0 | 354 |
+| PROSP_BATCH1 | 389 | 355 | 33 | 0 | 0 | 1 | 0 | 353 |
 
 The prospective batch contains **5 distinct ISO reference weeks**.
 
@@ -105,6 +111,8 @@ may therefore refer to the same event.
 | `PAIRING_NO_MATCH` | 0 | 0 | 0 | 0 | 0 |
 | `PAIRING_AMBIGUOUS` | 0 | 0 | 0 | 0 | 0 |
 | `AMBIGUOUS_TICKER_MAPPING` | 0 | 0 | 0 | 0 | 0 |
+| `CORPORATE_ACTION_SPLIT` | 0 | 1 | 0 | 0 | 1 |
+| `SPLIT_CHECK_UNAVAILABLE` | 0 | 0 | 0 | 0 | 0 |
 
 ## 4. Multiple share classes and missing SEC ticker fallback
 
@@ -217,7 +225,119 @@ SHA-256 is recorded in the delivery message after the commit is created.
    committed manifests and ensemble hashes bind the external artifacts. No
    raw price, `.env`, credential or API key is committed.
 
-## 8. Stop condition
+## 8. Phase 1.1-B split-factor source and coverage gate
+
+Section 17 of the specification replaced the earlier `/splits` proposal before
+the successful source acquisition. The source is one immutable Twelve Data
+`time_series` snapshot with the same request parameters as A2 except
+`adjust=splits`. It was acquired outside the repository and was never mixed
+with another provider or snapshot.
+
+| Field | Recorded value |
+| --- | --- |
+| Endpoint | `https://api.twelvedata.com/time_series` |
+| Parameters | `interval=1day`, `start_date=2025-08-24`, `end_date=2026-11-18`, `outputsize=5000`, `adjust=splits` |
+| Canonical ticker count | 458 |
+| Acquisition start | `2026-11-20T18:03:49.642519Z` |
+| Acquisition end | `2026-11-21T11:13:41.052306Z` |
+| External snapshot path | `C:\Users\giopa\h2-v2-1-phase1-private\split_adjusted_prices\TWELVEDATA_2026-11-17_ADJUST_SPLITS_H2V21_PHASE1_1_B_A1` |
+| Checkpoint SHA-256 | `b80a7e929e0b4c2fe4be625db559240cbe8327faaf9aeece61229261488523c3` |
+| Adjusted-source ensemble SHA-256 | `44dc22079a57f4e60a07822c259503377bd80f72a04929bffc25db9a802c50d2` |
+| Adjusted-source manifest SHA-256 | `3e787e32d049f9ef882948635e63efb42d3ad07c47a86df364dbef5a00a2b5d3` |
+| Unadjusted A2 comparator ensemble | `8dd59aae14c92f9d8dd9a6c055c166157e8b49b0d6ce0b48591080277ec7a54f` |
+
+The event-level gate required every unadjusted source date from
+`price_window_start` through `reference_session_date`, inclusive, to exist in
+the adjusted series. Both readers stopped at the ticker's latest applicable
+reference before decoding later rows. `CORPORATE_ACTION_SPLIT` was eligible
+only after this gate passed.
+
+| Result | DEV | PROSP_BATCH1 |
+| --- | ---: | ---: |
+| `SPLIT_CHECK_UNAVAILABLE` | 0 | 0 |
+| `CORPORATE_ACTION_SPLIT` | 0 | 1 |
+| Final primary-eligible | 81 | 353 |
+
+The one newly excluded event is accession `0001755672-26-000031`, ticker
+`CTVA`, sample `PROSP_BATCH1`, reference session `2026-11-11`. The detected
+factor change used by the deterministic interval rule is dated `2026-10-01`.
+No return or unadjusted-price discontinuity was used.
+
+### Non-`ACTIVE_COMPLETE` adjusted sources
+
+| Canonical / provider | Classification | Last adjusted date | Sample and accession | Window / reference | Verifiable |
+| --- | --- | --- | --- | --- | --- |
+| `KVUE` / `KVUE` | `ACTIVE_MISSING_LATEST` | `2026-10-30` | PROSP_BATCH1 `0001944048-26-000167` | `2026-08-05` / `2026-10-29` | yes; every required date is present |
+| `SKYD` / `PSKY` | `PROVIDER_FAILURE` | not available | PROSP_BATCH1 `0002041610-26-000062` | `price_window_start` unavailable / `2026-11-09` | no; not screenable because the earlier A2 build already excluded it as `PRICE_COVERAGE` |
+
+SKYD/PSKY receives no substitute source, predecessor series, interpolation or
+estimate. Because no valid `price_window_start` exists, it is outside the
+event-level split gate defined by the dated amendment; its existing
+`PRICE_COVERAGE` exclusion is retained. KVUE is verifiable for its event even
+though the provider classification is not `ACTIVE_COMPLETE`, because its
+adjusted series extends beyond that event's reference.
+
+### Detected factor changes
+
+These are adjustment-factor changes, not returns. The table reproduces the
+complete deterministic artifact; only the CTVA row falls inside an otherwise
+eligible event's `(price_window_start, reference_session_date]` interval.
+
+| Ticker | Date | Factor-change ratio |
+| --- | --- | ---: |
+| AMCR | 2026-01-15 | 0.2000000090702951959317549175399055 |
+| BDX | 2026-02-10 | 1.272000022080139252078216439951681 |
+| BKNG | 2026-04-06 | 25 |
+| CMCSA | 2026-01-05 | 1.066999938595128787687239706556957 |
+| CTVA | 2026-10-01 | 6.665001489217976019728061072528777 |
+| CVNA | 2026-05-08 | 5 |
+| DD | 2025-11-03 | 2.389999994145744043733633695692263 |
+| DD | 2026-06-24 | 0.3333333464276366356117527024115411 |
+| FDX | 2026-06-01 | 1.240999999758882817290320278364965 |
+| HON | 2025-10-30 | 1.060999945414623628851725433676985 |
+| HON | 2026-06-29 | 0.9534999888106133693255181455921931 |
+| KLAC | 2026-06-12 | 10.00000004146555870693801728284487 |
+| MNST | 2026-08-11 | 2 |
+| NFLX | 2025-11-17 | 10.00000026974293498296123794024295 |
+| NOW | 2025-12-18 | 4.999999872186505451245542504377611 |
+| SPGI | 2026-07-01 | 1.05700001038157478107854180400625 |
+| TPL | 2025-12-23 | 2.999999966974899834045569156062389 |
+
+## 9. Phase 1.1-B committed file hashes and verification
+
+| File | SHA-256 |
+| --- | --- |
+| `H2_V2_1_BUILD_SPEC.md` | `581c10dc0c3bad2be43248db62f124dbeb219c9f557a72b69dca8ab419716f2d` |
+| `scripts/h2_v2_1_build_inputs.py` | `f7cda72104df9d14ceb6a7b0b78d1bee8fea61935eb8f3625070d2882ccd9f85` |
+| `trinity/h2_v2_1_inputs.py` | `6d499801c5cb179346825e2c81a3940acef0c0b3114974a8f179b4781646f694` |
+| `trinity/twelvedata_split_factors.py` | `c90507cab0a779840c8efc35cb12191dc311c931fb87772ab78a24b7d0a02c33` |
+| `tests/trinity/test_twelvedata_split_factors.py` | `a5f69ebbd35e03ba430ebc6c62aa3e86f1c37ae891229e4402b590e389c32af1` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_inputs_dev.csv` | `e1f3e7671422ece25cc6a0ffba9c4bbca4e11ad84d7e080bc349932466817501` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_inputs_prosp_batch1.csv` | `2a01fb5d0cbf8b110779bd61d2f94116877dde15fbef1dd4a91d757d3e9a1493` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_exclusions.csv` | `fe4359ee0547d31a50714933c77f1751e88061df1d32c22c2a96e13a803b1288` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_detected_split_factors.csv` | `09a59b329d22945939d7da932972804a0b377e1f76456efe59616ab99cea8eb3` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_split_coverage_audit.json` | `ff2eff874ccffd75f186d58999e96394c373125915d222b3d759644074d009bb` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_split_adjusted_source_manifest.json` | `3e787e32d049f9ef882948635e63efb42d3ad07c47a86df364dbef5a00a2b5d3` |
+| `research/h2_v2_1_phase1_1_split_factors/h2_v2_1_phase1_1_b_manifest.json` | `7e35f4c589cda27ee220ee8d0f9733f994c685c893f8a0d97b37943141ae3b5e` |
+
+Verification results:
+
+- immutable adjusted-source verification: 458 ticker entries and ensemble
+  hash reproduced successfully;
+- relevant outcome-free suite: **89 passed**;
+- new synthetic cases cover complete coverage, an interior adjusted date
+  missing, reference date missing, reason preservation, precedence over
+  `CORPORATE_ACTION_SPLIT`, malformed future sentinel, determinism and the
+  non-`ACTIVE_COMPLETE` audit;
+- the wider `tests/trinity` run was stopped after prolonged execution because
+  it includes unrelated integrations and outcome-engine areas; it had already
+  reported failures/errors outside this Phase 1.1-B change. No claim of a
+  clean complete-tree run is made.
+
+No outcome column or outcome-engine dependency occurs in the Phase 1.1-B
+artifacts. Raw licensed prices remain outside Git.
+
+## 10. Stop condition
 
 Phase 1 ends with the committed input snapshot and hashes above. Phase 2 was
 not started: there are no model estimates, forecasts, regressions, outcome
