@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 import hashlib
 import json
 from pathlib import Path
+import re
 import stat
 from typing import Any, Callable, Mapping, Sequence
 
@@ -20,7 +21,6 @@ from trinity.h2_v2_1_inputs import (
     file_inventory,
     input_sort_key,
     normalized_json_to_jsonl,
-    read_bars_through_reference,
     sha256_file,
     verify_price_ensemble,
     write_deterministic_csv,
@@ -55,6 +55,7 @@ SNAPSHOT_SCHEMA = "trinity.h2-v2-1-split-adjusted-snapshot"
 SCREEN_SCHEMA = "trinity.h2-v2-1-phase1-1-b-split-factor-screen"
 SCHEMA_VERSION = "1"
 SPLIT_REASON = "CORPORATE_ACTION_SPLIT"
+UNAVAILABLE_REASON = "SPLIT_CHECK_UNAVAILABLE"
 FACTOR_COLUMNS = (
     "ticker", "provider_symbol", "date", "previous_common_date",
     "factor_change_ratio",
@@ -386,7 +387,20 @@ def _seal_snapshot(
     inventory = file_inventory(
         root, exclude_names=frozenset({"split_adjusted_snapshot_manifest.json"}),
     )
-    entries = sorted(checkpoint["entries"], key=lambda item: item["canonical_ticker"])
+    entries = []
+    for source_entry in sorted(
+        checkpoint["entries"], key=lambda item: item["canonical_ticker"],
+    ):
+        entry = dict(source_entry)
+        normalized = json.loads(
+            (root / "normalized" / f"{entry['canonical_ticker']}.json").read_bytes()
+        )
+        if not isinstance(normalized, list):
+            raise SplitFactorError("split-adjusted normalized source is not an array")
+        dates = [str(item.get("date") or "") for item in normalized if isinstance(item, dict)]
+        entry["first_valid_date"] = dates[0] if dates else None
+        entry["last_valid_date"] = dates[-1] if dates else None
+        entries.append(entry)
     manifest: dict[str, Any] = {
         "schema_name": SNAPSHOT_SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -454,6 +468,19 @@ def verify_split_adjusted_snapshot(root: str | Path) -> dict[str, Any]:
                 raise SplitFactorError(f"split-adjusted raw hash mismatch: {ticker}")
         if not (base / "bounded_jsonl" / f"{ticker}.jsonl").is_file():
             raise SplitFactorError(f"split-adjusted bounded JSONL is missing: {ticker}")
+        try:
+            normalized_rows = json.loads(normalized.read_bytes())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SplitFactorError(f"invalid split-adjusted normalized file: {ticker}") from exc
+        if not isinstance(normalized_rows, list):
+            raise SplitFactorError(f"invalid split-adjusted normalized rows: {ticker}")
+        dates = [
+            str(item.get("date") or "")
+            for item in normalized_rows if isinstance(item, dict)
+        ]
+        if entry.get("first_valid_date") != (dates[0] if dates else None) \
+                or entry.get("last_valid_date") != (dates[-1] if dates else None):
+            raise SplitFactorError(f"split-adjusted date metadata mismatch: {ticker}")
     actual = file_inventory(
         base, exclude_names=frozenset({"split_adjusted_snapshot_manifest.json"}),
     )
@@ -466,23 +493,63 @@ def verify_split_adjusted_snapshot(root: str | Path) -> dict[str, Any]:
     return manifest
 
 
-def _valid_cutoffs(parent: Path) -> dict[str, date]:
+def _event_intervals(parent: Path) -> list[dict[str, Any]]:
     rows = _read_csv(parent / "h2_v2_1_inputs_dev.csv")
     rows.extend(_read_csv(parent / "h2_v2_1_inputs_prosp_batch1.csv"))
-    result: dict[str, date] = {}
+    result: list[dict[str, Any]] = []
     for row in rows:
         lower = str(row.get("price_window_start") or "").strip()
         upper = str(row.get("reference_session_date") or "").strip()
-        if not lower or not upper:
+        lower_date = _parse_date(lower)
+        upper_date = _parse_date(upper)
+        if lower_date is not None and upper_date is not None and lower_date > upper_date:
+            raise SplitFactorError("Phase 1 price window starts after its reference")
+        result.append({
+            "key": (str(row.get("sample") or ""), str(row.get("current_release_id") or "")),
+            "sample": str(row.get("sample") or ""),
+            "current_release_id": str(row.get("current_release_id") or ""),
+            "ticker": str(row.get("ticker") or ""),
+            "price_window_start": lower_date,
+            "reference_session_date": upper_date,
+        })
+    return result
+
+
+def _valid_cutoffs(parent: Path) -> dict[str, date]:
+    result: dict[str, date] = {}
+    for event in _event_intervals(parent):
+        cutoff = event["reference_session_date"]
+        if cutoff is None or event["price_window_start"] is None:
             continue
-        try:
-            date.fromisoformat(lower)
-            cutoff = date.fromisoformat(upper)
-        except ValueError as exc:
-            raise SplitFactorError("invalid Phase 1 interval date") from exc
-        ticker = str(row.get("ticker") or "")
+        ticker = event["ticker"]
         if ticker not in result or cutoff > result[ticker]:
             result[ticker] = cutoff
+    return result
+
+
+_DATE_PREFIX = re.compile(br'^\{"date":"(\d{4}-\d{2}-\d{2})"')
+
+
+def _read_bars_at_or_before(path: Path, cutoff: date) -> list[dict[str, object]]:
+    """Decode only rows at or before cutoff; an absent cutoff is not an error."""
+
+    result: list[dict[str, object]] = []
+    previous: date | None = None
+    with path.open("rb") as handle:
+        for line in handle:
+            match = _DATE_PREFIX.match(line)
+            if match is None:
+                raise PriceCoverageError("price JSONL row lacks the required leading date")
+            row_date = date.fromisoformat(match.group(1).decode("ascii"))
+            if previous is not None and row_date <= previous:
+                raise PriceCoverageError("price sessions are not strictly ascending")
+            if row_date > cutoff:
+                break
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise PriceCoverageError("price JSONL row is not an object")
+            result.append(row)
+            previous = row_date
     return result
 
 
@@ -507,6 +574,16 @@ def detect_split_factors(
     *, parent_root: str | Path, none_price_root: str | Path,
     adjusted_root: str | Path,
 ) -> list[dict[str, str]]:
+    return _analyze_split_factor_sources(
+        parent_root=parent_root, none_price_root=none_price_root,
+        adjusted_root=adjusted_root,
+    )["detections"]
+
+
+def _analyze_split_factor_sources(
+    *, parent_root: str | Path, none_price_root: str | Path,
+    adjusted_root: str | Path,
+) -> dict[str, Any]:
     parent = Path(parent_root)
     none_root = Path(none_price_root)
     adjusted = Path(adjusted_root)
@@ -519,16 +596,20 @@ def detect_split_factors(
         entry["canonical_ticker"]: entry
         for entry in adjusted_manifest["entries"]
     }
+    events = _event_intervals(parent)
+    events_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        events_by_ticker.setdefault(event["ticker"], []).append(event)
     detections: list[dict[str, str]] = []
     for ticker, cutoff in sorted(_valid_cutoffs(parent).items()):
         entry = entries.get(ticker)
         if entry is None:
             raise SplitFactorError(f"missing adjusted response metadata: {ticker}")
         try:
-            none_bars = read_bars_through_reference(
+            none_bars = _read_bars_at_or_before(
                 none_root / "bounded_jsonl" / f"{ticker}.jsonl", cutoff,
             )
-            split_bars = read_bars_through_reference(
+            split_bars = _read_bars_at_or_before(
                 adjusted / "bounded_jsonl" / f"{ticker}.jsonl", cutoff,
             )
         except (OSError, PriceCoverageError, ValueError) as exc:
@@ -557,13 +638,94 @@ def detect_split_factors(
                             "factor_change_ratio": _decimal_text(factor_change),
                         })
                 previous_day, previous_ratio = day, ratio
-    return sorted(
+    detections = sorted(
         detections,
         key=lambda row: (
             row["ticker"], row["date"], row["previous_common_date"],
             row["factor_change_ratio"],
         ),
     )
+
+    coverage: dict[tuple[str, str], dict[str, Any]] = {}
+    for ticker, ticker_events in sorted(events_by_ticker.items()):
+        entry = entries.get(ticker)
+        if entry is None:
+            raise SplitFactorError(f"missing adjusted response metadata: {ticker}")
+        valid = [
+            event for event in ticker_events
+            if event["price_window_start"] is not None
+            and event["reference_session_date"] is not None
+        ]
+        none_dates: set[date] = set()
+        split_dates: set[date] = set()
+        bounded_last_adjusted: str | None = None
+        if valid:
+            cutoff = max(event["reference_session_date"] for event in valid)
+            try:
+                none_bars = _read_bars_at_or_before(
+                    none_root / "bounded_jsonl" / f"{ticker}.jsonl", cutoff,
+                )
+                split_bars = _read_bars_at_or_before(
+                    adjusted / "bounded_jsonl" / f"{ticker}.jsonl", cutoff,
+                )
+            except (OSError, PriceCoverageError, ValueError) as exc:
+                raise SplitFactorError(
+                    f"bounded split-factor coverage unavailable for {ticker}: {exc}"
+                ) from exc
+            none_dates = {date.fromisoformat(str(row["date"])) for row in none_bars}
+            split_dates = {date.fromisoformat(str(row["date"])) for row in split_bars}
+            bounded_last_adjusted = max(split_dates).isoformat() if split_dates else None
+        for event in ticker_events:
+            lower = event["price_window_start"]
+            upper = event["reference_session_date"]
+            required: list[date] = []
+            bounds_present = False
+            if lower is not None and upper is not None:
+                required = sorted(day for day in none_dates if lower <= day <= upper)
+                bounds_present = lower in none_dates and upper in none_dates
+            missing = sorted(set(required) - split_dates)
+            verifiable = bool(required) and bounds_present and not missing
+            source_status = str(entry.get("classification") or "UNKNOWN")
+            if lower is None or upper is None:
+                source_status = "INPUT_INTERVAL_UNAVAILABLE"
+            elif not bounds_present:
+                source_status = "UNADJUSTED_BOUNDARY_MISSING"
+            coverage[event["key"]] = {
+                "sample": event["sample"],
+                "current_release_id": event["current_release_id"],
+                "ticker": ticker,
+                "price_window_start": lower.isoformat() if lower else None,
+                "reference_session_date": upper.isoformat() if upper else None,
+                "screenable": lower is not None and upper is not None,
+                "verifiable": verifiable,
+                "source_status": source_status,
+                "provider_classification": entry.get("classification"),
+                "last_adjusted_date": entry.get("last_valid_date") or bounded_last_adjusted,
+                "missing_adjusted_dates": [day.isoformat() for day in missing],
+            }
+
+    non_active: list[dict[str, Any]] = []
+    for ticker, entry in sorted(entries.items()):
+        if entry.get("classification") == "ACTIVE_COMPLETE":
+            continue
+        ticker_coverage = [
+            coverage[event["key"]]
+            for event in events_by_ticker.get(ticker, [])
+        ]
+        non_active.append({
+            "canonical_ticker": ticker,
+            "provider_symbol": entry.get("requested_provider_symbol"),
+            "classification": entry.get("classification"),
+            "last_adjusted_date": entry.get("last_valid_date") or (
+                ticker_coverage[0].get("last_adjusted_date") if ticker_coverage else None
+            ),
+            "events": ticker_coverage,
+        })
+    return {
+        "detections": detections,
+        "coverage": coverage,
+        "non_active_tickers": non_active,
+    }
 
 
 def _parse_date(value: object) -> date | None:
@@ -586,10 +748,12 @@ def apply_split_factor_screen(
     if output.exists() and any(output.iterdir()):
         raise SplitFactorError(f"Phase 1.1-B output must be new and empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
-    detections = detect_split_factors(
+    analysis = _analyze_split_factor_sources(
         parent_root=parent, none_price_root=none_price_root,
         adjusted_root=adjusted_root,
     )
+    detections = analysis["detections"]
+    coverage = analysis["coverage"]
     factor_path = output / "h2_v2_1_detected_split_factors.csv"
     write_deterministic_csv(factor_path, detections, FACTOR_COLUMNS)
     by_ticker: dict[str, list[dict[str, str]]] = {}
@@ -599,6 +763,7 @@ def apply_split_factor_screen(
     prosp = _read_csv(parent / "h2_v2_1_inputs_prosp_batch1.csv")
     exclusions = _read_csv(parent / "h2_v2_1_exclusions.csv")
     added: list[dict[str, str]] = []
+    unavailable_added: list[dict[str, str]] = []
 
     def screen(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         screened: list[dict[str, str]] = []
@@ -606,17 +771,48 @@ def apply_split_factor_screen(
             row = dict(source)
             lower = _parse_date(row.get("price_window_start"))
             upper = _parse_date(row.get("reference_session_date"))
+            key = (
+                str(row.get("sample") or ""),
+                str(row.get("current_release_id") or ""),
+            )
+            event_coverage = coverage.get(key)
+            if event_coverage is None:
+                raise SplitFactorError(f"missing event coverage audit: {key}")
             matching = []
-            if lower is not None and upper is not None:
+            if event_coverage["verifiable"] and lower is not None and upper is not None:
                 matching = [
                     detection for detection in by_ticker.get(str(row.get("ticker") or ""), [])
                     if lower < date.fromisoformat(detection["date"]) <= upper
                 ]
-            if matching:
-                reasons = [
-                    reason for reason in str(row.get("exclusion_reasons") or "").split(";")
-                    if reason
-                ]
+            reasons = [
+                reason for reason in str(row.get("exclusion_reasons") or "").split(";")
+                if reason
+            ]
+            if event_coverage["screenable"] and not event_coverage["verifiable"]:
+                if UNAVAILABLE_REASON not in reasons:
+                    reasons.append(UNAVAILABLE_REASON)
+                row["exclusion_reasons"] = ";".join(reasons)
+                row["row_status"] = "EXCLUDED"
+                missing = ",".join(event_coverage["missing_adjusted_dates"]) or "NONE"
+                detail = (
+                    f"source_status={event_coverage['source_status']};"
+                    f"last_adjusted_date={event_coverage['last_adjusted_date'] or 'NONE'};"
+                    f"missing_required_dates={missing}"
+                )
+                exclusion = {
+                    "sample": str(row.get("sample") or ""),
+                    "release_period": str(row.get("release_period") or ""),
+                    "ticker": str(row.get("ticker") or ""),
+                    "current_release_id": str(row.get("current_release_id") or ""),
+                    "release_at": str(row.get("release_at") or ""),
+                    "event_timing": str(row.get("event_timing") or ""),
+                    "reference_session_date": str(row.get("reference_session_date") or ""),
+                    "reason": UNAVAILABLE_REASON,
+                    "detail": detail,
+                }
+                added.append(exclusion)
+                unavailable_added.append(exclusion)
+            elif matching:
                 if SPLIT_REASON not in reasons:
                     reasons.append(SPLIT_REASON)
                 row["exclusion_reasons"] = ";".join(reasons)
@@ -653,13 +849,40 @@ def apply_split_factor_screen(
     write_deterministic_csv(
         paths["exclusions"], sorted(exclusions, key=exclusion_sort_key), EXCLUSION_COLUMNS,
     )
+    coverage_audit = {
+        "schema_name": "trinity.h2-v2-1-split-coverage-audit",
+        "schema_version": "1",
+        "built_at_utc": utc_timestamp(now()),
+        "non_active_tickers": analysis["non_active_tickers"],
+        "unavailable_events": sorted(
+            [
+                item for item in coverage.values()
+                if item["screenable"] and not item["verifiable"]
+            ],
+            key=lambda item: (
+                item["sample"], item["ticker"], item["current_release_id"],
+            ),
+        ),
+    }
+    coverage_path = output / "h2_v2_1_split_coverage_audit.json"
+    coverage_path.write_bytes(canonical_json_bytes(coverage_audit, newline=True))
     adjusted_manifest = verify_split_adjusted_snapshot(adjusted_root)
     source_path = output / "h2_v2_1_split_adjusted_source_manifest.json"
     source_path.write_bytes(canonical_json_bytes(adjusted_manifest, newline=True))
     verify_price_ensemble(none_price_root)
     verify_split_adjusted_snapshot(adjusted_root)
-    counts = {
-        sample: len({row["current_release_id"] for row in added if row["sample"] == sample})
+    split_counts = {
+        sample: len({
+            row["current_release_id"] for row in added
+            if row["sample"] == sample and row["reason"] == SPLIT_REASON
+        })
+        for sample in ("DEV", "PROSP_BATCH1")
+    }
+    unavailable_counts = {
+        sample: len({
+            row["current_release_id"] for row in unavailable_added
+            if row["sample"] == sample
+        })
         for sample in ("DEV", "PROSP_BATCH1")
     }
     eligible = {
@@ -679,7 +902,9 @@ def apply_split_factor_screen(
         "detected_factors_sha256": sha256_file(factor_path),
         "detected_factor_count": len(detections),
         "csv_sha256": {name: sha256_file(path) for name, path in paths.items()},
-        "corporate_action_split_event_count": counts,
+        "split_coverage_audit_sha256": sha256_file(coverage_path),
+        "corporate_action_split_event_count": split_counts,
+        "split_check_unavailable_event_count": unavailable_counts,
         "primary_eligible_count": eligible,
         "interval_rule": "price_window_start < detected_split_date <= reference_session_date",
     }

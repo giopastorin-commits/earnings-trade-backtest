@@ -201,8 +201,14 @@ def _factor_sources(tmp_path: Path):
     adjusted_manifest = {
         "ensemble_sha256": "adjusted-ensemble",
         "entries": [
-            {"canonical_ticker": "A", "requested_provider_symbol": "A"},
-            {"canonical_ticker": "B", "requested_provider_symbol": "B"},
+            {
+                "canonical_ticker": "A", "requested_provider_symbol": "A",
+                "classification": "ACTIVE_COMPLETE", "last_valid_date": "2026-09-10",
+            },
+            {
+                "canonical_ticker": "B", "requested_provider_symbol": "B",
+                "classification": "ACTIVE_COMPLETE", "last_valid_date": "2026-09-10",
+            },
         ],
     }
     return none_root, adjusted_root, adjusted_manifest
@@ -280,7 +286,7 @@ def test_event_bounds_reasons_and_outputs_are_deterministic(monkeypatch, tmp_pat
     for name in (
         "h2_v2_1_inputs_dev.csv", "h2_v2_1_inputs_prosp_batch1.csv",
         "h2_v2_1_exclusions.csv", "h2_v2_1_detected_split_factors.csv",
-        "h2_v2_1_phase1_1_b_manifest.json",
+        "h2_v2_1_split_coverage_audit.json", "h2_v2_1_phase1_1_b_manifest.json",
     ):
         assert (tmp_path / "out1" / name).read_bytes() == (tmp_path / "out2" / name).read_bytes()
     rows = factors._read_csv(tmp_path / "out1" / "h2_v2_1_inputs_dev.csv")
@@ -295,6 +301,99 @@ def test_event_bounds_reasons_and_outputs_are_deterministic(monkeypatch, tmp_pat
     upper_exclusion = next(row for row in exclusions if row["current_release_id"] == "A-UPPER")
     assert "2026-09-05" in upper_exclusion["detail"]
     assert first["corporate_action_split_event_count"] == {"DEV": 2, "PROSP_BATCH1": 0}
+
+
+def test_incomplete_event_coverage_precedes_split_and_audits_nonactive(
+    monkeypatch, tmp_path,
+):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    write_deterministic_csv(
+        parent / "h2_v2_1_inputs_dev.csv",
+        [
+            _input_row(
+                "GAP", "GAP-1", row_status="EXCLUDED",
+                exclusion_reasons="PAIRING_FALLBACK",
+            ),
+            _input_row("KVUE", "KVUE-1"),
+        ],
+        INPUT_COLUMNS,
+    )
+    write_deterministic_csv(parent / "h2_v2_1_inputs_prosp_batch1.csv", [], INPUT_COLUMNS)
+    write_deterministic_csv(parent / "h2_v2_1_exclusions.csv", [], EXCLUSION_COLUMNS)
+    none_root = tmp_path / "none"
+    adjusted_root = tmp_path / "adjusted"
+    dates = ["2026-09-01", "2026-09-02", "2026-09-05", "2026-09-10"]
+    for ticker in ("GAP", "KVUE"):
+        _jsonl(
+            none_root / "bounded_jsonl" / f"{ticker}.jsonl",
+            [(day, "100") for day in dates], bad_future="2026-09-11",
+        )
+    # GAP has a factor jump but lacks an interior required date. It must not
+    # receive CORPORATE_ACTION_SPLIT because event-level coverage fails.
+    _jsonl(
+        adjusted_root / "bounded_jsonl" / "GAP.jsonl",
+        [("2026-09-01", "100"), ("2026-09-05", "200"), ("2026-09-10", "200")],
+        bad_future="2026-09-11",
+    )
+    # KVUE lacks the reference date. The malformed future sentinel proves it
+    # is not decoded while coverage is classified as unavailable.
+    _jsonl(
+        adjusted_root / "bounded_jsonl" / "KVUE.jsonl",
+        [("2026-09-01", "100"), ("2026-09-02", "100"), ("2026-09-05", "100")],
+        bad_future="2026-09-11",
+    )
+    (adjusted_root / "split_adjusted_snapshot_manifest.json").write_bytes(b"{}\n")
+    adjusted_manifest = {
+        "ensemble_sha256": "adjusted-ensemble",
+        "entries": [
+            {
+                "canonical_ticker": "GAP", "requested_provider_symbol": "GAP",
+                "classification": "ACTIVE_COMPLETE", "last_valid_date": "2026-09-10",
+            },
+            {
+                "canonical_ticker": "KVUE", "requested_provider_symbol": "KVUE",
+                "classification": "ACTIVE_MISSING_LATEST",
+                "last_valid_date": "2026-09-05",
+            },
+        ],
+    }
+    monkeypatch.setattr(factors, "verify_price_ensemble", lambda _root: {
+        "ensemble_sha256": factors.NONE_ENSEMBLE_SHA256,
+        "adjustment_policy": {"provider_adjust": "none"},
+    })
+    monkeypatch.setattr(
+        factors, "verify_split_adjusted_snapshot", lambda _root: adjusted_manifest,
+    )
+    result = factors.apply_split_factor_screen(
+        parent_root=parent, none_price_root=none_root, adjusted_root=adjusted_root,
+        output_root=tmp_path / "out",
+        now=lambda: datetime(2026, 11, 21, 1, tzinfo=timezone.utc),
+    )
+    rows = factors._read_csv(tmp_path / "out" / "h2_v2_1_inputs_dev.csv")
+    gap = next(row for row in rows if row["ticker"] == "GAP")
+    kvue = next(row for row in rows if row["ticker"] == "KVUE")
+    assert gap["exclusion_reasons"] == "PAIRING_FALLBACK;SPLIT_CHECK_UNAVAILABLE"
+    assert kvue["exclusion_reasons"] == "SPLIT_CHECK_UNAVAILABLE"
+    assert "CORPORATE_ACTION_SPLIT" not in gap["exclusion_reasons"]
+    assert result["corporate_action_split_event_count"] == {"DEV": 0, "PROSP_BATCH1": 0}
+    assert result["split_check_unavailable_event_count"] == {
+        "DEV": 2, "PROSP_BATCH1": 0,
+    }
+    exclusions = factors._read_csv(tmp_path / "out" / "h2_v2_1_exclusions.csv")
+    gap_exclusion = next(row for row in exclusions if row["ticker"] == "GAP")
+    assert "missing_required_dates=2026-09-02" in gap_exclusion["detail"]
+    kvue_exclusion = next(row for row in exclusions if row["ticker"] == "KVUE")
+    assert "last_adjusted_date=2026-09-05" in kvue_exclusion["detail"]
+    assert "missing_required_dates=2026-09-10" in kvue_exclusion["detail"]
+    audit = json.loads(
+        (tmp_path / "out" / "h2_v2_1_split_coverage_audit.json").read_text()
+    )
+    assert [item["canonical_ticker"] for item in audit["non_active_tickers"]] == ["KVUE"]
+    kvue_audit = audit["non_active_tickers"][0]
+    assert kvue_audit["last_adjusted_date"] == "2026-09-05"
+    assert kvue_audit["events"][0]["current_release_id"] == "KVUE-1"
+    assert kvue_audit["events"][0]["verifiable"] is False
 
 
 def test_factor_module_has_no_outcome_dependency():
