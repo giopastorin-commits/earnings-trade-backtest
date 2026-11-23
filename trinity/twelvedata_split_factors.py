@@ -13,6 +13,8 @@ import stat
 from typing import Any, Callable, Mapping, Sequence
 
 from trinity.h2_v2_1_inputs import (
+    BATCH1_PARAMETERS,
+    BatchParameters,
     EXCLUSION_COLUMNS,
     INPUT_COLUMNS,
     PriceCoverageError,
@@ -43,13 +45,8 @@ from trinity.twelvedata_prices import (
 
 ADJUSTED_MODE = "splits"
 HISTORY_START = date(2025, 8, 24)
-TARGET_SESSION = date(2026, 11, 17)
-REQUEST_END_DATE = date(2026, 11, 18)
 OUTPUTSIZE = 5000
-CANONICAL_TICKER_COUNT = 458
 PROVIDER_OVERRIDES = {"SKYD": "PSKY"}
-PARENT_SNAPSHOT_COMMIT = "546ea38f7376adf9480a0da07048ed8ecc561ea3"
-NONE_ENSEMBLE_SHA256 = "8dd59aae14c92f9d8dd9a6c055c166157e8b49b0d6ce0b48591080277ec7a54f"
 CHECKPOINT_SCHEMA = "trinity.h2-v2-1-split-factor-checkpoint"
 SNAPSHOT_SCHEMA = "trinity.h2-v2-1-split-adjusted-snapshot"
 SCREEN_SCHEMA = "trinity.h2-v2-1-phase1-1-b-split-factor-screen"
@@ -74,10 +71,12 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         raise SplitFactorError(f"invalid Phase 1 CSV: {path}") from exc
 
 
-def split_factor_universe(parent_root: str | Path) -> list[str]:
+def split_factor_universe(
+    parent_root: str | Path, batch: BatchParameters = BATCH1_PARAMETERS,
+) -> list[str]:
     base = Path(parent_root)
     rows = _read_csv(base / "h2_v2_1_inputs_dev.csv")
-    rows.extend(_read_csv(base / "h2_v2_1_inputs_prosp_batch1.csv"))
+    rows.extend(_read_csv(base / batch.input_filename))
     exclusions = _read_csv(base / "h2_v2_1_exclusions.csv")
     tickers = {
         str(row.get("ticker") or "").strip().upper()
@@ -86,32 +85,35 @@ def split_factor_universe(parent_root: str | Path) -> list[str]:
     tickers.update(
         str(row.get("ticker") or "").strip().upper()
         for row in exclusions
-        if row.get("sample") in {"DEV", "PROSP_BATCH1"}
+        if row.get("sample") in {"DEV", batch.batch_id}
         and row.get("reason") != "DUPLICATE_SHARE_CLASS"
     )
     if "" in tickers:
         raise SplitFactorError("split-factor universe contains an empty ticker")
     result = sorted(tickers)
-    if len(result) != CANONICAL_TICKER_COUNT:
+    if batch.expected_split_ticker_count is not None \
+            and len(result) != batch.expected_split_ticker_count:
         raise SplitFactorError(
-            f"split-factor universe mismatch: expected={CANONICAL_TICKER_COUNT} "
+            f"split-factor universe mismatch: expected={batch.expected_split_ticker_count} "
             f"actual={len(result)}"
         )
     return result
 
 
-def _configuration(tickers: Sequence[str]) -> dict[str, Any]:
+def _configuration(
+    tickers: Sequence[str], batch: BatchParameters = BATCH1_PARAMETERS,
+) -> dict[str, Any]:
     return {
         "endpoint": "https://api.twelvedata.com/time_series",
         "parameters": {
             "interval": INTERVAL,
             "start_date": HISTORY_START.isoformat(),
-            "end_date": REQUEST_END_DATE.isoformat(),
+            "end_date": batch.request_end_date.isoformat(),
             "outputsize": OUTPUTSIZE,
             "adjust": ADJUSTED_MODE,
             "symbol": "{provider_symbol}",
         },
-        "parent_snapshot_commit": PARENT_SNAPSHOT_COMMIT,
+        "parent_snapshot_commit": batch.parent_snapshot_commit,
         "canonical_tickers": list(tickers),
         "canonical_tickers_sha256": hashlib.sha256(canonical_bytes(list(tickers))).hexdigest(),
         "provider_symbol_overrides": dict(PROVIDER_OVERRIDES),
@@ -243,6 +245,7 @@ def sha256_file_value(value: object) -> str:
 
 def acquire_split_adjusted_snapshot(
     *, parent_root: str | Path, output_root: str | Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
     client: TwelveDataClient | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     seal_read_only: bool = True,
@@ -250,15 +253,15 @@ def acquire_split_adjusted_snapshot(
     root = Path(output_root)
     final_path = root / "split_adjusted_snapshot_manifest.json"
     if final_path.is_file():
-        manifest = verify_split_adjusted_snapshot(root)
+        manifest = verify_split_adjusted_snapshot(root, batch=batch)
         return {**manifest, "manifest_file_sha256": sha256_file(final_path)}
-    tickers = split_factor_universe(parent_root)
-    configuration = _configuration(tickers)
+    tickers = split_factor_universe(parent_root, batch)
+    configuration = _configuration(tickers, batch)
     if _checkpoint_path(root).is_file():
         checkpoint = _load_checkpoint(root, configuration)
-        for batch in checkpoint["batches"]:
-            if batch.get("status") == "RUNNING":
-                batch["status"] = "INTERRUPTED_BEFORE_TELEMETRY"
+        for previous_batch in checkpoint["batches"]:
+            if previous_batch.get("status") == "RUNNING":
+                previous_batch["status"] = "INTERRUPTED_BEFORE_TELEMETRY"
     else:
         if root.exists() and any(root.iterdir()):
             raise SplitFactorError(f"split-factor root is not a valid new/resume root: {root}")
@@ -276,14 +279,14 @@ def acquire_split_adjusted_snapshot(
     available = int(usage.daily_remaining)
     capacity = max(0, min(len(remaining), available - DAILY_CREDIT_RESERVE))
     batch_number = len(checkpoint["batches"]) + 1
-    batch: dict[str, Any] = {
+    acquisition_batch: dict[str, Any] = {
         "batch_number": batch_number,
         "started_at_utc": utc_timestamp(now()),
         "available_daily_credits": available,
         "planned_ticker_count": capacity,
         "status": "RUNNING",
     }
-    checkpoint["batches"].append(batch)
+    checkpoint["batches"].append(acquisition_batch)
     _write_checkpoint(root, checkpoint)
     stop_classification: str | None = None
 
@@ -298,12 +301,12 @@ def acquire_split_adjusted_snapshot(
         try:
             capture = provider.fetch(
                 provider_symbol, start_date=HISTORY_START,
-                target_session=TARGET_SESSION,
+                target_session=batch.price_target_session,
                 remaining_tickers=capacity - index, adjust=ADJUSTED_MODE,
             )
             raw, attempts = capture.raw, capture.attempts
             normalized = normalize_response(
-                ticker, raw, target_session=TARGET_SESSION,
+                ticker, raw, target_session=batch.price_target_session,
                 expected_provider_symbol=provider_symbol,
             )
             returned_provider_symbol = normalized.provider_symbol
@@ -336,7 +339,7 @@ def acquire_split_adjusted_snapshot(
             "request_parameters": {
                 "interval": INTERVAL,
                 "start_date": HISTORY_START.isoformat(),
-                "end_date": REQUEST_END_DATE.isoformat(),
+                "end_date": batch.request_end_date.isoformat(),
                 "outputsize": OUTPUTSIZE,
                 "adjust": ADJUSTED_MODE,
             },
@@ -357,7 +360,7 @@ def acquire_split_adjusted_snapshot(
         root, usage, provider, batch_number=batch_number,
     )
     completed_after = len(checkpoint["entries"])
-    batch.update({
+    acquisition_batch.update({
         "completed_at_utc": utc_timestamp(now()),
         "completed_ticker_count": completed_after - len(completed),
         "telemetry_file": telemetry_file,
@@ -425,7 +428,9 @@ def _seal_snapshot(
     return manifest
 
 
-def verify_split_adjusted_snapshot(root: str | Path) -> dict[str, Any]:
+def verify_split_adjusted_snapshot(
+    root: str | Path, batch: BatchParameters = BATCH1_PARAMETERS,
+) -> dict[str, Any]:
     base = Path(root)
     manifest_path = base / "split_adjusted_snapshot_manifest.json"
     try:
@@ -439,10 +444,12 @@ def verify_split_adjusted_snapshot(root: str | Path) -> dict[str, Any]:
     if not isinstance(configuration, dict):
         raise SplitFactorError("split-adjusted snapshot lacks configuration")
     tickers = configuration.get("canonical_tickers")
-    if not isinstance(tickers, list) or len(tickers) != CANONICAL_TICKER_COUNT \
-            or tickers != sorted(tickers) or len(set(tickers)) != len(tickers):
+    if not isinstance(tickers, list) or tickers != sorted(tickers) \
+            or len(set(tickers)) != len(tickers) \
+            or (batch.expected_split_ticker_count is not None
+                and len(tickers) != batch.expected_split_ticker_count):
         raise SplitFactorError("split-adjusted ticker universe is invalid")
-    expected_configuration = _configuration(tickers)
+    expected_configuration = _configuration(tickers, batch)
     if configuration != expected_configuration:
         raise SplitFactorError("split-adjusted request configuration mismatch")
     entries = manifest.get("entries")
@@ -454,7 +461,7 @@ def verify_split_adjusted_snapshot(root: str | Path) -> dict[str, Any]:
         ticker = entry["canonical_ticker"]
         if entry.get("request_parameters") != {
             "interval": INTERVAL, "start_date": HISTORY_START.isoformat(),
-            "end_date": REQUEST_END_DATE.isoformat(), "outputsize": OUTPUTSIZE,
+            "end_date": batch.request_end_date.isoformat(), "outputsize": OUTPUTSIZE,
             "adjust": ADJUSTED_MODE,
         }:
             raise SplitFactorError(f"split-adjusted parameters changed: {ticker}")
@@ -493,9 +500,11 @@ def verify_split_adjusted_snapshot(root: str | Path) -> dict[str, Any]:
     return manifest
 
 
-def _event_intervals(parent: Path) -> list[dict[str, Any]]:
+def _event_intervals(
+    parent: Path, batch: BatchParameters = BATCH1_PARAMETERS,
+) -> list[dict[str, Any]]:
     rows = _read_csv(parent / "h2_v2_1_inputs_dev.csv")
-    rows.extend(_read_csv(parent / "h2_v2_1_inputs_prosp_batch1.csv"))
+    rows.extend(_read_csv(parent / batch.input_filename))
     result: list[dict[str, Any]] = []
     for row in rows:
         lower = str(row.get("price_window_start") or "").strip()
@@ -515,9 +524,11 @@ def _event_intervals(parent: Path) -> list[dict[str, Any]]:
     return result
 
 
-def _valid_cutoffs(parent: Path) -> dict[str, date]:
+def _valid_cutoffs(
+    parent: Path, batch: BatchParameters = BATCH1_PARAMETERS,
+) -> dict[str, date]:
     result: dict[str, date] = {}
-    for event in _event_intervals(parent):
+    for event in _event_intervals(parent, batch):
         cutoff = event["reference_session_date"]
         if cutoff is None or event["price_window_start"] is None:
             continue
@@ -573,35 +584,41 @@ def _decimal_text(value: Decimal) -> str:
 def detect_split_factors(
     *, parent_root: str | Path, none_price_root: str | Path,
     adjusted_root: str | Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> list[dict[str, str]]:
     return _analyze_split_factor_sources(
         parent_root=parent_root, none_price_root=none_price_root,
-        adjusted_root=adjusted_root,
+        adjusted_root=adjusted_root, batch=batch,
     )["detections"]
 
 
 def _analyze_split_factor_sources(
     *, parent_root: str | Path, none_price_root: str | Path,
     adjusted_root: str | Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> dict[str, Any]:
     parent = Path(parent_root)
     none_root = Path(none_price_root)
     adjusted = Path(adjusted_root)
     none_manifest = verify_price_ensemble(none_root)
-    if none_manifest.get("ensemble_sha256") != NONE_ENSEMBLE_SHA256 \
+    if (batch.expected_none_ensemble_sha256 is not None
+        and none_manifest.get("ensemble_sha256") != batch.expected_none_ensemble_sha256) \
             or none_manifest.get("adjustment_policy", {}).get("provider_adjust") != ADJUSTMENT:
         raise SplitFactorError("unadjusted comparator is not the frozen A2 ensemble")
-    adjusted_manifest = verify_split_adjusted_snapshot(adjusted)
+    adjusted_manifest = verify_split_adjusted_snapshot(adjusted, batch=batch)
+    if batch.expected_split_ensemble_sha256 is not None \
+            and adjusted_manifest.get("ensemble_sha256") != batch.expected_split_ensemble_sha256:
+        raise SplitFactorError("split-adjusted ensemble SHA-256 mismatch")
     entries = {
         entry["canonical_ticker"]: entry
         for entry in adjusted_manifest["entries"]
     }
-    events = _event_intervals(parent)
+    events = _event_intervals(parent, batch)
     events_by_ticker: dict[str, list[dict[str, Any]]] = {}
     for event in events:
         events_by_ticker.setdefault(event["ticker"], []).append(event)
     detections: list[dict[str, str]] = []
-    for ticker, cutoff in sorted(_valid_cutoffs(parent).items()):
+    for ticker, cutoff in sorted(_valid_cutoffs(parent, batch).items()):
         entry = entries.get(ticker)
         if entry is None:
             raise SplitFactorError(f"missing adjusted response metadata: {ticker}")
@@ -741,6 +758,7 @@ def _parse_date(value: object) -> date | None:
 def apply_split_factor_screen(
     *, parent_root: str | Path, none_price_root: str | Path,
     adjusted_root: str | Path, output_root: str | Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
 ) -> dict[str, Any]:
     parent = Path(parent_root)
@@ -750,7 +768,7 @@ def apply_split_factor_screen(
     output.mkdir(parents=True, exist_ok=True)
     analysis = _analyze_split_factor_sources(
         parent_root=parent, none_price_root=none_price_root,
-        adjusted_root=adjusted_root,
+        adjusted_root=adjusted_root, batch=batch,
     )
     detections = analysis["detections"]
     coverage = analysis["coverage"]
@@ -760,7 +778,7 @@ def apply_split_factor_screen(
     for detection in detections:
         by_ticker.setdefault(detection["ticker"], []).append(detection)
     dev = _read_csv(parent / "h2_v2_1_inputs_dev.csv")
-    prosp = _read_csv(parent / "h2_v2_1_inputs_prosp_batch1.csv")
+    prosp = _read_csv(parent / batch.input_filename)
     exclusions = _read_csv(parent / "h2_v2_1_exclusions.csv")
     added: list[dict[str, str]] = []
     unavailable_added: list[dict[str, str]] = []
@@ -839,7 +857,7 @@ def apply_split_factor_screen(
     exclusions.extend(added)
     paths = {
         "dev": output / "h2_v2_1_inputs_dev.csv",
-        "prosp": output / "h2_v2_1_inputs_prosp_batch1.csv",
+        "prosp": output / batch.input_filename,
         "exclusions": output / "h2_v2_1_exclusions.csv",
     }
     write_deterministic_csv(paths["dev"], sorted(dev_screened, key=input_sort_key), INPUT_COLUMNS)
@@ -866,35 +884,35 @@ def apply_split_factor_screen(
     }
     coverage_path = output / "h2_v2_1_split_coverage_audit.json"
     coverage_path.write_bytes(canonical_json_bytes(coverage_audit, newline=True))
-    adjusted_manifest = verify_split_adjusted_snapshot(adjusted_root)
+    adjusted_manifest = verify_split_adjusted_snapshot(adjusted_root, batch=batch)
     source_path = output / "h2_v2_1_split_adjusted_source_manifest.json"
     source_path.write_bytes(canonical_json_bytes(adjusted_manifest, newline=True))
     verify_price_ensemble(none_price_root)
-    verify_split_adjusted_snapshot(adjusted_root)
+    verify_split_adjusted_snapshot(adjusted_root, batch=batch)
     split_counts = {
         sample: len({
             row["current_release_id"] for row in added
             if row["sample"] == sample and row["reason"] == SPLIT_REASON
         })
-        for sample in ("DEV", "PROSP_BATCH1")
+        for sample in ("DEV", batch.batch_id)
     }
     unavailable_counts = {
         sample: len({
             row["current_release_id"] for row in unavailable_added
             if row["sample"] == sample
         })
-        for sample in ("DEV", "PROSP_BATCH1")
+        for sample in ("DEV", batch.batch_id)
     }
     eligible = {
         "DEV": sum(row.get("row_status") == "INCLUDED" for row in dev_screened),
-        "PROSP_BATCH1": sum(row.get("row_status") == "INCLUDED" for row in prosp_screened),
+        batch.batch_id: sum(row.get("row_status") == "INCLUDED" for row in prosp_screened),
     }
     manifest = {
         "schema_name": SCREEN_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "built_at_utc": utc_timestamp(now()),
-        "parent_snapshot_commit": PARENT_SNAPSHOT_COMMIT,
-        "none_ensemble_sha256": NONE_ENSEMBLE_SHA256,
+        "parent_snapshot_commit": batch.parent_snapshot_commit,
+        "none_ensemble_sha256": batch.expected_none_ensemble_sha256,
         "split_adjusted_ensemble_sha256": adjusted_manifest["ensemble_sha256"],
         "split_adjusted_manifest_sha256": sha256_file(
             Path(adjusted_root) / "split_adjusted_snapshot_manifest.json"

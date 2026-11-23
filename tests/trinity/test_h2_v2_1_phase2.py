@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from datetime import date, timedelta
 import inspect
 import json
@@ -10,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from trinity.h2_v2_1_inputs import ordered_bar_bytes
+from trinity.h2_v2_1_inputs import BATCH1_PARAMETERS
+from trinity.h2_v2_1_inputs import load_batch_parameters
 import trinity.h2_v2_1_phase2 as phase2
 
 
@@ -164,10 +167,15 @@ def test_models_and_predictions_are_deterministic_and_outcome_free(monkeypatch, 
 
     prosp = tmp_path / "prosp.csv"
     _write_csv(prosp, inputs[:3])
-    monkeypatch.setattr(phase2, "PROSP_SHA256", phase2.sha256_file(prosp))
+    batch = replace(
+        BATCH1_PARAMETERS,
+        expected_input_sha256=phase2.sha256_file(prosp),
+        expected_predictions_sha256=None,
+        expected_model_sha256=phase2.sha256_file(model1),
+    )
     predictions = tmp_path / "predictions.csv"
     result = phase2.build_predictions(
-        prosp_path=prosp, model_path=model1, output_path=predictions,
+        prosp_path=prosp, model_path=model1, output_path=predictions, batch=batch,
     )
     assert result["predicted_count"] == 3
     header = predictions.read_text().splitlines()[0]
@@ -186,9 +194,16 @@ def test_missing_dollar_volume_blanks_only_extended_predictions(monkeypatch, tmp
     inputs[0]["dollar_volume_pre_60"] = ""
     prosp = tmp_path / "prosp.csv"
     _write_csv(prosp, [inputs[0]])
-    monkeypatch.setattr(phase2, "PROSP_SHA256", phase2.sha256_file(prosp))
+    batch = replace(
+        BATCH1_PARAMETERS,
+        expected_input_sha256=phase2.sha256_file(prosp),
+        expected_predictions_sha256=None,
+        expected_model_sha256=phase2.sha256_file(model),
+    )
     predictions = tmp_path / "predictions.csv"
-    phase2.build_predictions(prosp_path=prosp, model_path=model, output_path=predictions)
+    phase2.build_predictions(
+        prosp_path=prosp, model_path=model, output_path=predictions, batch=batch,
+    )
     with predictions.open(newline="", encoding="utf-8") as handle:
         row = next(csv.DictReader(handle))
     assert row["pred_0x"] == ""
@@ -232,3 +247,25 @@ def test_last_completed_session_before_saturday_seal():
     assert phase2._last_completed_session(
         datetime(2026, 11, 21, 11, tzinfo=timezone.utc)
     ) == "2026-11-20"
+
+
+def test_parameterized_batch1_reproduces_frozen_predictions(tmp_path):
+    repo = Path(__file__).resolve().parents[2]
+    batch = load_batch_parameters(repo / "config" / "h2_v2_1_batch1.json")
+    frozen_input = (
+        repo / "research" / "h2_v2_1_phase1_1_split_factors"
+        / "h2_v2_1_inputs_prosp_batch1.csv"
+    )
+    model = repo / "research" / "h2_v2_1_phase2" / "h2_v2_1_model.json"
+    predictions = tmp_path / batch.predictions_filename
+    phase2.build_predictions(
+        prosp_path=frozen_input, model_path=model,
+        output_path=predictions, batch=batch,
+    )
+    verified = phase2.verify_batch_neutrality(
+        input_path=frozen_input, predictions_path=predictions, batch=batch,
+    )
+    assert verified == {
+        "input_sha256": "2a01fb5d0cbf8b110779bd61d2f94116877dde15fbef1dd4a91d757d3e9a1493",
+        "predictions_sha256": "5554daa42e1ffc09475badb044590017cc53763f1b31ba5f72f043166adf6534",
+    }

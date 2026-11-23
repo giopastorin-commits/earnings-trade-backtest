@@ -14,13 +14,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from trinity.h2_v2_1_phase2 import (  # noqa: E402
+    add_prosp_batch_to_seal,
     build_dev_outcomes,
     build_model,
     build_predictions,
     build_seal_manifest,
     run_part_a,
+    verify_batch_neutrality,
     verify_frozen_sources,
 )
+from trinity.h2_v2_1_inputs import load_batch_parameters  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -32,6 +35,24 @@ def _parser() -> argparse.ArgumentParser:
     seal.add_argument("--price-root", type=Path, required=True)
     seal.add_argument("--split-root", type=Path, required=True)
     seal.add_argument("--output-root", type=Path, required=True)
+    seal.add_argument("--batch-config", type=Path, required=True)
+    predict = subparsers.add_parser("predict-batch")
+    predict.add_argument("--prosp-input", type=Path, required=True)
+    predict.add_argument("--model", type=Path, required=True)
+    predict.add_argument("--output", type=Path, required=True)
+    predict.add_argument("--batch-config", type=Path, required=True)
+    seal_batch = subparsers.add_parser("seal-prosp-batch")
+    seal_batch.add_argument("--prosp-input", type=Path, required=True)
+    seal_batch.add_argument("--predictions", type=Path, required=True)
+    seal_batch.add_argument("--model", type=Path, required=True)
+    seal_batch.add_argument("--price-root", type=Path, required=True)
+    seal_batch.add_argument("--split-root", type=Path, required=True)
+    seal_batch.add_argument("--manifest", type=Path, required=True)
+    seal_batch.add_argument("--batch-config", type=Path, required=True)
+    neutrality = subparsers.add_parser("verify-batch-neutrality")
+    neutrality.add_argument("--prosp-input", type=Path, required=True)
+    neutrality.add_argument("--predictions", type=Path, required=True)
+    neutrality.add_argument("--batch-config", type=Path, required=True)
     part_a = subparsers.add_parser("part-a")
     part_a.add_argument("--dev-input", type=Path, required=True)
     part_a.add_argument("--outcomes", type=Path, required=True)
@@ -53,12 +74,46 @@ def main(argv: list[str] | None = None) -> int:
             "M1x_valid_reps": result["M1x"]["valid_reps"],
         }, indent=2, sort_keys=True))
         return 0
+    if args.command == "verify-batch-neutrality":
+        result = verify_batch_neutrality(
+            input_path=args.prosp_input, predictions_path=args.predictions,
+            batch=load_batch_parameters(args.batch_config),
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "predict-batch":
+        batch = load_batch_parameters(args.batch_config)
+        if args.output.exists():
+            raise SystemExit("prediction output already exists")
+        result = build_predictions(
+            prosp_path=args.prosp_input, model_path=args.model,
+            output_path=args.output, batch=batch,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if args.command == "seal-prosp-batch":
+        block = add_prosp_batch_to_seal(
+            manifest_path=args.manifest, prosp_path=args.prosp_input,
+            predictions_path=args.predictions, model_path=args.model,
+            price_root=args.price_root, split_root=args.split_root,
+            batch=load_batch_parameters(args.batch_config),
+        )
+        print(json.dumps({
+            "batch_id": block["batch_id"],
+            "input_sha256": block["input_sha256"],
+            "predictions_sha256": block["predictions_sha256"],
+            "s_seal": block["s_seal"],
+            "included_prediction_count": block["included_prediction_count"],
+            "d20_on_or_before_s_seal_count": block["d20_on_or_before_s_seal_count"],
+        }, indent=2, sort_keys=True))
+        return 0
+    batch = load_batch_parameters(args.batch_config)
     if args.output_root.exists() and any(args.output_root.iterdir()):
         raise SystemExit("Phase 2 output root must be new and empty")
     args.output_root.mkdir(parents=True, exist_ok=True)
     price_manifest, split_manifest = verify_frozen_sources(
         dev_path=args.dev_input, prosp_path=args.prosp_input,
-        price_root=args.price_root, split_root=args.split_root,
+        price_root=args.price_root, split_root=args.split_root, batch=batch,
     )
     price_manifest = dict(price_manifest)
     split_manifest = dict(split_manifest)
@@ -68,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     outcomes_path = args.output_root / "h2_v2_1_dev_outcomes.csv"
     model_path = args.output_root / "h2_v2_1_model.json"
-    predictions_path = args.output_root / "h2_v2_1_predictions_batch1.csv"
+    predictions_path = args.output_root / batch.predictions_filename
     outcome_summary = build_dev_outcomes(
         dev_path=args.dev_input, price_root=args.price_root,
         split_root=args.split_root, output_path=outcomes_path,
@@ -78,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     prediction_summary = build_predictions(
         prosp_path=args.prosp_input, model_path=model_path, output_path=predictions_path,
+        batch=batch,
     )
     manifest = build_seal_manifest(
         repo_root=REPO_ROOT, dev_path=args.dev_input, prosp_path=args.prosp_input,

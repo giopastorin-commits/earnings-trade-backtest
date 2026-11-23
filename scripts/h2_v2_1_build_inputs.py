@@ -18,6 +18,7 @@ from trinity.h2_v2_1_inputs import (  # noqa: E402
     acquire_price_ensemble,
     acquire_sec_corpus,
     build_phase1_inputs,
+    load_batch_parameters,
     parse_utc_datetime,
     verify_price_ensemble,
     verify_sec_corpus,
@@ -37,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
 
     prices = subparsers.add_parser("acquire-prices")
     prices.add_argument("--price-root", type=Path, required=True)
+    prices.add_argument("--batch-config", type=Path, required=True)
 
     sec = subparsers.add_parser("acquire-sec")
     sec.add_argument("--sec-root", type=Path, required=True)
@@ -55,19 +57,23 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--price-root", type=Path, required=True)
     build.add_argument("--text-root", type=Path, required=True)
     build.add_argument("--output-root", type=Path, required=True)
+    build.add_argument("--batch-config", type=Path, required=True)
 
     split_factors = subparsers.add_parser("acquire-split-factors")
     split_factors.add_argument("--phase1-root", type=Path, required=True)
     split_factors.add_argument("--snapshot-root", type=Path, required=True)
+    split_factors.add_argument("--batch-config", type=Path, required=True)
 
     verify_split_factors = subparsers.add_parser("verify-split-factors")
     verify_split_factors.add_argument("--snapshot-root", type=Path, required=True)
+    verify_split_factors.add_argument("--batch-config", type=Path, required=True)
 
     apply_split_factors = subparsers.add_parser("apply-split-factors")
     apply_split_factors.add_argument("--phase1-root", type=Path, required=True)
     apply_split_factors.add_argument("--price-root", type=Path, required=True)
     apply_split_factors.add_argument("--snapshot-root", type=Path, required=True)
     apply_split_factors.add_argument("--output-root", type=Path, required=True)
+    apply_split_factors.add_argument("--batch-config", type=Path, required=True)
     return parser
 
 
@@ -85,7 +91,9 @@ def _small_price_result(manifest: dict[str, object]) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "acquire-prices":
-        result = _small_price_result(acquire_price_ensemble(args.price_root))
+        result = _small_price_result(acquire_price_ensemble(
+            args.price_root, load_batch_parameters(args.batch_config),
+        ))
     elif args.command == "acquire-sec":
         cutoff: datetime | None = None
         if args.cutoff_utc:
@@ -108,8 +116,9 @@ def main(argv: list[str] | None = None) -> int:
             "sec_ensemble_sha256": sec.get("ensemble_sha256"),
         }
     elif args.command == "acquire-split-factors":
+        batch = load_batch_parameters(args.batch_config)
         manifest = acquire_split_adjusted_snapshot(
-            parent_root=args.phase1_root, output_root=args.snapshot_root,
+            parent_root=args.phase1_root, output_root=args.snapshot_root, batch=batch,
         )
         result = {
             key: manifest.get(key)
@@ -121,21 +130,25 @@ def main(argv: list[str] | None = None) -> int:
             )
         }
     elif args.command == "verify-split-factors":
-        manifest = verify_split_adjusted_snapshot(args.snapshot_root)
+        manifest = verify_split_adjusted_snapshot(
+            args.snapshot_root, batch=load_batch_parameters(args.batch_config),
+        )
         result = {
             "canonical_ticker_count": manifest.get("canonical_ticker_count"),
             "ensemble_sha256": manifest.get("ensemble_sha256"),
         }
     elif args.command == "apply-split-factors":
+        batch = load_batch_parameters(args.batch_config)
         result = apply_split_factor_screen(
             parent_root=args.phase1_root, none_price_root=args.price_root,
-            adjusted_root=args.snapshot_root, output_root=args.output_root,
+            adjusted_root=args.snapshot_root, output_root=args.output_root, batch=batch,
         )
     else:
+        batch = load_batch_parameters(args.batch_config)
         result = build_phase1_inputs(
             repo_root=args.repo_root, sec_root=args.sec_root,
             price_root=args.price_root, text_root=args.text_root,
-            output_root=args.output_root,
+            output_root=args.output_root, batch=batch,
         )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

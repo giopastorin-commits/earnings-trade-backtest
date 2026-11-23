@@ -46,11 +46,7 @@ SEC_MAX_ATTEMPTS = 3
 SEC_HISTORY_START = datetime(2025, 1, 1, tzinfo=timezone.utc)
 DEV_RELEASE_START = datetime(2026, 9, 21, tzinfo=timezone.utc)
 DEV_REFERENCE_END = date(2026, 10, 20)
-PROSP_REFERENCE_START = date(2026, 10, 21)
-PROSP_REFERENCE_END = date(2026, 11, 17)
-PRICE_TARGET_SESSION = date(2026, 11, 17)
 PRICE_HISTORY_START = date(2025, 8, 24)
-PRICE_RUN_ID = "H2V21_PHASE1_20261120_A2_PSKY"
 PRICE_PROVIDER_SYMBOL_OVERRIDES = {"SKYD": "PSKY"}
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
@@ -108,6 +104,90 @@ EXCLUSION_COLUMNS = (
 
 class H2Phase1Error(RuntimeError):
     """The Phase 1 contract cannot be satisfied."""
+
+
+@dataclass(frozen=True)
+class BatchParameters:
+    """Lot-specific boundaries and frozen hashes; no analytical choices."""
+
+    batch_id: str
+    batch_slug: str
+    prosp_reference_start: date
+    prosp_reference_end: date
+    price_target_session: date
+    price_run_id: str
+    expected_input_sha256: str | None = None
+    expected_predictions_sha256: str | None = None
+    expected_model_sha256: str | None = None
+    expected_none_ensemble_sha256: str | None = None
+    expected_split_ensemble_sha256: str | None = None
+    expected_split_ticker_count: int | None = None
+    parent_snapshot_commit: str | None = None
+
+    @property
+    def input_filename(self) -> str:
+        return f"h2_v2_1_inputs_prosp_{self.batch_slug}.csv"
+
+    @property
+    def predictions_filename(self) -> str:
+        return f"h2_v2_1_predictions_{self.batch_slug}.csv"
+
+    @property
+    def request_end_date(self) -> date:
+        return self.price_target_session + timedelta(days=1)
+
+
+BATCH1_PARAMETERS = BatchParameters(
+    batch_id="PROSP_BATCH1",
+    batch_slug="batch1",
+    prosp_reference_start=date(2026, 10, 21),
+    prosp_reference_end=date(2026, 11, 17),
+    price_target_session=date(2026, 11, 17),
+    price_run_id="H2V21_PHASE1_20261120_A2_PSKY",
+    expected_input_sha256="2a01fb5d0cbf8b110779bd61d2f94116877dde15fbef1dd4a91d757d3e9a1493",
+    expected_predictions_sha256="5554daa42e1ffc09475badb044590017cc53763f1b31ba5f72f043166adf6534",
+    expected_model_sha256="16a74ac113444dc6cc4d2c27c4f01ad1dd1aa462232dc55303677f07a89db087",
+    expected_none_ensemble_sha256="8dd59aae14c92f9d8dd9a6c055c166157e8b49b0d6ce0b48591080277ec7a54f",
+    expected_split_ensemble_sha256="44dc22079a57f4e60a07822c259503377bd80f72a04929bffc25db9a802c50d2",
+    expected_split_ticker_count=458,
+    parent_snapshot_commit="546ea38f7376adf9480a0da07048ed8ecc561ea3",
+)
+
+
+def load_batch_parameters(path: str | Path) -> BatchParameters:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise H2Phase1Error(f"invalid batch configuration: {path}") from exc
+    if not isinstance(value, dict):
+        raise H2Phase1Error("batch configuration is not an object")
+    try:
+        batch = BatchParameters(
+            batch_id=str(value["batch_id"]),
+            batch_slug=str(value["batch_slug"]),
+            prosp_reference_start=date.fromisoformat(str(value["prosp_reference_start"])),
+            prosp_reference_end=date.fromisoformat(str(value["prosp_reference_end"])),
+            price_target_session=date.fromisoformat(str(value["price_target_session"])),
+            price_run_id=str(value["price_run_id"]),
+            expected_input_sha256=value.get("expected_input_sha256"),
+            expected_predictions_sha256=value.get("expected_predictions_sha256"),
+            expected_model_sha256=value.get("expected_model_sha256"),
+            expected_none_ensemble_sha256=value.get("expected_none_ensemble_sha256"),
+            expected_split_ensemble_sha256=value.get("expected_split_ensemble_sha256"),
+            expected_split_ticker_count=value.get("expected_split_ticker_count"),
+            parent_snapshot_commit=value.get("parent_snapshot_commit"),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise H2Phase1Error("batch configuration fields are invalid") from exc
+    if not re.fullmatch(r"PROSP_BATCH[1-9][0-9]*", batch.batch_id):
+        raise H2Phase1Error("batch_id must be PROSP_BATCH<n>")
+    if not re.fullmatch(r"batch[1-9][0-9]*", batch.batch_slug):
+        raise H2Phase1Error("batch_slug must be batch<n>")
+    if batch.prosp_reference_start > batch.prosp_reference_end:
+        raise H2Phase1Error("batch reference window is reversed")
+    if batch.price_target_session != batch.prosp_reference_end:
+        raise H2Phase1Error("price target must equal the batch reference end")
+    return batch
 
 
 class PriceCoverageError(H2Phase1Error):
@@ -254,14 +334,17 @@ def descriptive_release_period(local_day: date | None) -> str:
     return "OTHER"
 
 
-def assign_sample(release_at: datetime, resolution: TimingResolution) -> str:
+def assign_sample(
+    release_at: datetime, resolution: TimingResolution,
+    batch: BatchParameters = BATCH1_PARAMETERS,
+) -> str:
     reference = resolution.reference_session
     if resolution.ambiguous or reference is None:
         return "UNASSIGNED"
     if release_at >= DEV_RELEASE_START and reference <= DEV_REFERENCE_END:
         return "DEV"
-    if PROSP_REFERENCE_START <= reference <= PROSP_REFERENCE_END:
-        return "PROSP_BATCH1"
+    if batch.prosp_reference_start <= reference <= batch.prosp_reference_end:
+        return batch.batch_id
     return "OUTSIDE"
 
 
@@ -496,6 +579,7 @@ def exclusion_sort_key(row: Mapping[str, object]) -> tuple[str, str, str, str]:
 def write_phase1_csvs(
     output_root: str | Path, dev_rows: Sequence[Mapping[str, object]],
     prosp_rows: Sequence[Mapping[str, object]], exclusions: Sequence[Mapping[str, object]],
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> dict[str, str]:
     root = Path(output_root)
     if root.exists() and any(root.iterdir()):
@@ -503,7 +587,7 @@ def write_phase1_csvs(
     root.mkdir(parents=True, exist_ok=True)
     outputs = {
         "dev": root / "h2_v2_1_inputs_dev.csv",
-        "prosp": root / "h2_v2_1_inputs_prosp_batch1.csv",
+        "prosp": root / batch.input_filename,
         "exclusions": root / "h2_v2_1_exclusions.csv",
     }
     write_deterministic_csv(outputs["dev"], sorted(dev_rows, key=input_sort_key), INPUT_COLUMNS)
@@ -662,7 +746,9 @@ def make_tree_read_only(root: str | Path) -> None:
             path.chmod(stat.S_IREAD)
 
 
-def acquire_price_ensemble(root: str | Path) -> dict[str, object]:
+def acquire_price_ensemble(
+    root: str | Path, batch: BatchParameters = BATCH1_PARAMETERS,
+) -> dict[str, object]:
     base = Path(root)
     if base.exists() and any(base.iterdir()):
         raise H2Phase1Error(f"price ensemble directory must be new and empty: {base}")
@@ -671,18 +757,18 @@ def acquire_price_ensemble(root: str | Path) -> dict[str, object]:
     client = TwelveDataClient()
     issuer_root = base / "issuers"
     snapshot = acquire_snapshot(
-        target_session=PRICE_TARGET_SESSION, output_root=issuer_root,
-        run_id=PRICE_RUN_ID, client=client,
+        target_session=batch.price_target_session, output_root=issuer_root,
+        run_id=batch.price_run_id, client=client,
         provider_symbol_overrides=PRICE_PROVIDER_SYMBOL_OVERRIDES,
     )
     benchmark_root = base / "benchmark"
     benchmark_root.mkdir(parents=True, exist_ok=True)
     capture = client.fetch(
-        "SPY", start_date=PRICE_HISTORY_START, target_session=PRICE_TARGET_SESSION,
+        "SPY", start_date=PRICE_HISTORY_START, target_session=batch.price_target_session,
         remaining_tickers=1,
     )
     (benchmark_root / "SPY.raw.json").write_bytes(capture.raw)
-    normalized = normalize_response("SPY", capture.raw, target_session=PRICE_TARGET_SESSION)
+    normalized = normalize_response("SPY", capture.raw, target_session=batch.price_target_session)
     if normalized.classification != "ACTIVE_COMPLETE":
         raise H2Phase1Error(f"SPY price capture is not complete: {normalized.classification}")
     spy_bytes = canonical_bytes(list(normalized.bars))
@@ -705,13 +791,14 @@ def acquire_price_ensemble(root: str | Path) -> dict[str, object]:
         "provider": "TWELVE_DATA",
         "snapshot_id": snapshot["snapshot_id"],
         "issuer_snapshot_sha256": snapshot["snapshot_sha256"],
-        "target_session": PRICE_TARGET_SESSION.isoformat(),
+        "target_session": batch.price_target_session.isoformat(),
         "acquisition_started_at_utc": utc_text(started),
         "acquisition_completed_at_utc": utc_text(completed),
         "endpoint": "https://api.twelvedata.com/time_series",
         "parameters": {
             "interval": "1day", "start_date": PRICE_HISTORY_START.isoformat(),
-            "end_date": "2026-11-18", "outputsize": 5000, "adjust": "none",
+            "end_date": batch.request_end_date.isoformat(), "outputsize": 5000,
+            "adjust": "none",
         },
         "adjustment_policy": {
             "provider_adjust": "none", "split_adjusted": False,
@@ -1074,6 +1161,7 @@ def resolve_share_class_plans(
 
 def _release_identity_from_filing(
     *, ticker: str, filing: Mapping[str, object],
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> dict[str, object]:
     """Build timing/sample identity without reading text, prices, or facts."""
 
@@ -1094,15 +1182,16 @@ def _release_identity_from_filing(
         "reference_session_date": resolution.reference_session,
         "release_local_date": resolution.local_date,
         "release_period": descriptive_release_period(resolution.local_date),
-        "sample": assign_sample(accepted, resolution),
+        "sample": assign_sample(accepted, resolution, batch),
     }
 
 
 def _release_from_filing(
     *, ticker: str, filing: Mapping[str, object], all_filings: Sequence[Mapping[str, object]],
     companyfacts: Mapping[str, object], sec_root: Path, text_root: Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> dict[str, object]:
-    identity = _release_identity_from_filing(ticker=ticker, filing=filing)
+    identity = _release_identity_from_filing(ticker=ticker, filing=filing, batch=batch)
     accession = str(identity["release_id"])
     accepted = identity["release_at_dt"]
     assert isinstance(accepted, datetime)
@@ -1190,14 +1279,16 @@ def _exclusion_row(
     }
 
 
-def resolution_event_scope(release: Mapping[str, object]) -> str:
+def resolution_event_scope(
+    release: Mapping[str, object], batch: BatchParameters = BATCH1_PARAMETERS,
+) -> str:
     accepted = release.get("release_at_dt")
     if not isinstance(accepted, datetime):
         raise H2Phase1Error("resolution audit release lacks acceptance time")
     if accepted < DEV_RELEASE_START:
         return "HISTORICAL_PAIRING"
     sample = str(release.get("sample") or "")
-    if sample in {"DEV", "PROSP_BATCH1", "UNASSIGNED"}:
+    if sample in {"DEV", batch.batch_id, "UNASSIGNED"}:
         return sample
     return "OUTSIDE_WINDOW"
 
@@ -1221,6 +1312,7 @@ def build_phase1_inputs(
     text_root: str | Path, output_root: str | Path,
     supported_by_ticker: Mapping[str, str] | None = None,
     sec_ticker_to_canonical: Mapping[str, str] | None = None,
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> dict[str, object]:
     """Build outcome-free input snapshots from verified immutable sources."""
 
@@ -1266,7 +1358,7 @@ def build_phase1_inputs(
         if not isinstance(case, dict) or not isinstance(case.get("cik"), str):
             raise H2Phase1Error("share-class resolution case is malformed")
         case["event_counts"] = {
-            "HISTORICAL_PAIRING": 0, "DEV": 0, "PROSP_BATCH1": 0,
+            "HISTORICAL_PAIRING": 0, "DEV": 0, batch.batch_id: 0,
             "UNASSIGNED": 0, "OUTSIDE_WINDOW": 0,
         }
         audit_by_cik[str(case["cik"])] = case
@@ -1287,7 +1379,7 @@ def build_phase1_inputs(
         ]
         if ticker is None:
             releases = [
-                _release_identity_from_filing(ticker="", filing=filing)
+                _release_identity_from_filing(ticker="", filing=filing, batch=batch)
                 for filing in release_filings
             ]
         else:
@@ -1301,6 +1393,7 @@ def build_phase1_inputs(
                 _release_from_filing(
                     ticker=ticker, filing=filing, all_filings=filings,
                     companyfacts=companyfacts, sec_root=sec_base, text_root=text_base,
+                    batch=batch,
                 )
                 for filing in release_filings
             ]
@@ -1318,7 +1411,7 @@ def build_phase1_inputs(
             if audit_case is not None:
                 counts = audit_case.get("event_counts")
                 assert isinstance(counts, dict)
-                scope = resolution_event_scope(release)
+                scope = resolution_event_scope(release, batch)
                 counts[scope] = int(counts[scope]) + 1
 
         if ticker is None:
@@ -1356,7 +1449,10 @@ def build_phase1_inputs(
             if selected is None:
                 initial_reasons.append(("NO_EX99", "no qualifying EX-99 document in the complete submission"))
             if sample == "OUTSIDE":
-                initial_reasons.append(("OUTSIDE_SAMPLE_WINDOW", "reference session is outside DEV/PROSP_BATCH1"))
+                initial_reasons.append((
+                    "OUTSIDE_SAMPLE_WINDOW",
+                    f"reference session is outside DEV/{batch.batch_id}",
+                ))
             if sample == "UNASSIGNED" or selected is None or sample == "OUTSIDE":
                 exclusions.extend(_exclusion_row(release, reason, detail) for reason, detail in initial_reasons)
                 continue
@@ -1475,13 +1571,13 @@ def build_phase1_inputs(
             }
             if sample == "DEV":
                 dev_rows.append(row)
-            elif sample == "PROSP_BATCH1":
+            elif sample == batch.batch_id:
                 prosp_rows.append(row)
             else:
                 raise H2Phase1Error(f"unexpected sample after filtering: {sample}")
             exclusions.extend(_exclusion_row(release, reason, detail) for reason, detail in reasons)
 
-    csv_hashes = write_phase1_csvs(output, dev_rows, prosp_rows, exclusions)
+    csv_hashes = write_phase1_csvs(output, dev_rows, prosp_rows, exclusions, batch)
     text_inventory = file_inventory(text_base)
     text_manifest = {
         "schema_name": "trinity.h2-v2-1-normalized-sec-texts",

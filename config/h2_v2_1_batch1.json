@@ -1,0 +1,15 @@
+{
+  "batch_id": "PROSP_BATCH1",
+  "batch_slug": "batch1",
+  "prosp_reference_start": "2026-10-21",
+  "prosp_reference_end": "2026-11-17",
+  "price_target_session": "2026-11-17",
+  "price_run_id": "H2V21_PHASE1_20261120_A2_PSKY",
+  "expected_input_sha256": "2a01fb5d0cbf8b110779bd61d2f94116877dde15fbef1dd4a91d757d3e9a1493",
+  "expected_predictions_sha256": "5554daa42e1ffc09475badb044590017cc53763f1b31ba5f72f043166adf6534",
+  "expected_model_sha256": "16a74ac113444dc6cc4d2c27c4f01ad1dd1aa462232dc55303677f07a89db087",
+  "expected_none_ensemble_sha256": "8dd59aae14c92f9d8dd9a6c055c166157e8b49b0d6ce0b48591080277ec7a54f",
+  "expected_split_ensemble_sha256": "44dc22079a57f4e60a07822c259503377bd80f72a04929bffc25db9a802c50d2",
+  "expected_split_ticker_count": 458,
+  "parent_snapshot_commit": "546ea38f7376adf9480a0da07048ed8ecc561ea3"
+}

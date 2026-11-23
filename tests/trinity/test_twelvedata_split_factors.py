@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
 import hashlib
 import inspect
 import json
@@ -17,6 +18,7 @@ from trinity.h2_v2_1_inputs import (
 )
 import trinity.twelvedata_split_factors as factors
 from trinity.twelvedata_prices import TwelveDataClient
+from trinity.h2_v2_1_inputs import BATCH1_PARAMETERS
 
 
 class _Response:
@@ -102,7 +104,7 @@ def _parent(root: Path, tickers=("A", "B", "SKYD")) -> Path:
 
 
 def test_resumable_batches_keep_a2_parameters_and_psky_mapping(monkeypatch, tmp_path):
-    monkeypatch.setattr(factors, "CANONICAL_TICKER_COUNT", 3)
+    batch = replace(BATCH1_PARAMETERS, expected_split_ticker_count=3)
     parent = _parent(tmp_path / "parent")
     root = tmp_path / "adjusted"
     first_client, first_session = _client([
@@ -110,7 +112,7 @@ def test_resumable_batches_keep_a2_parameters_and_psky_mapping(monkeypatch, tmp_
     ])
     first = factors.acquire_split_adjusted_snapshot(
         parent_root=parent, output_root=root, client=first_client,
-        seal_read_only=False,
+        seal_read_only=False, batch=batch,
     )
     assert first["complete"] is False
     assert (first["completed_ticker_count"], first["remaining_ticker_count"]) == (2, 1)
@@ -128,18 +130,18 @@ def test_resumable_batches_keep_a2_parameters_and_psky_mapping(monkeypatch, tmp_
     ])
     final = factors.acquire_split_adjusted_snapshot(
         parent_root=parent, output_root=root, client=second_client,
-        seal_read_only=False,
+        seal_read_only=False, batch=batch,
     )
     assert final["canonical_ticker_count"] == 3
     assert final["terminal_response_count"] == 3
     assert second_session.calls[1][1]["params"]["symbol"] == "PSKY"
     assert all(call[1]["params"].get("symbol") != "SKYD" for call in second_session.calls[1:])
-    verified = factors.verify_split_adjusted_snapshot(root)
+    verified = factors.verify_split_adjusted_snapshot(root, batch=batch)
     assert verified["ensemble_sha256"] == final["ensemble_sha256"]
 
 
 def test_resume_refuses_changed_completed_file(monkeypatch, tmp_path):
-    monkeypatch.setattr(factors, "CANONICAL_TICKER_COUNT", 3)
+    batch = replace(BATCH1_PARAMETERS, expected_split_ticker_count=3)
     parent = _parent(tmp_path / "parent")
     root = tmp_path / "adjusted"
     client, _session = _client([
@@ -147,6 +149,7 @@ def test_resume_refuses_changed_completed_file(monkeypatch, tmp_path):
     ])
     progress = factors.acquire_split_adjusted_snapshot(
         parent_root=parent, output_root=root, client=client, seal_read_only=False,
+        batch=batch,
     )
     assert progress["completed_ticker_count"] == 1
     (root / "normalized" / "A.json").write_bytes(b"[]")
@@ -154,7 +157,7 @@ def test_resume_refuses_changed_completed_file(monkeypatch, tmp_path):
     with pytest.raises(factors.SplitFactorError, match="changed completed normalized"):
         factors.acquire_split_adjusted_snapshot(
             parent_root=parent, output_root=root, client=resume_client,
-            seal_read_only=False,
+            seal_read_only=False, batch=batch,
         )
     assert resume_session.calls == []
 
@@ -215,6 +218,7 @@ def _factor_sources(tmp_path: Path):
 
 
 def test_detection_is_bounded_common_date_decimal_and_strict(monkeypatch, tmp_path):
+    batch = replace(BATCH1_PARAMETERS, expected_split_ensemble_sha256="adjusted-ensemble")
     parent = tmp_path / "parent"
     parent.mkdir()
     write_deterministic_csv(
@@ -229,14 +233,15 @@ def test_detection_is_bounded_common_date_decimal_and_strict(monkeypatch, tmp_pa
     write_deterministic_csv(parent / "h2_v2_1_exclusions.csv", [], EXCLUSION_COLUMNS)
     none_root, adjusted_root, adjusted_manifest = _factor_sources(tmp_path)
     monkeypatch.setattr(factors, "verify_price_ensemble", lambda _root: {
-        "ensemble_sha256": factors.NONE_ENSEMBLE_SHA256,
+        "ensemble_sha256": BATCH1_PARAMETERS.expected_none_ensemble_sha256,
         "adjustment_policy": {"provider_adjust": "none"},
     })
     monkeypatch.setattr(
-        factors, "verify_split_adjusted_snapshot", lambda _root: adjusted_manifest,
+        factors, "verify_split_adjusted_snapshot", lambda _root, **_kwargs: adjusted_manifest,
     )
     detections = factors.detect_split_factors(
         parent_root=parent, none_price_root=none_root, adjusted_root=adjusted_root,
+        batch=batch,
     )
     assert [(item["ticker"], item["date"]) for item in detections] == [
         ("A", "2026-09-05"), ("A", "2026-09-10"),
@@ -247,6 +252,7 @@ def test_detection_is_bounded_common_date_decimal_and_strict(monkeypatch, tmp_pa
 
 
 def test_event_bounds_reasons_and_outputs_are_deterministic(monkeypatch, tmp_path):
+    batch = replace(BATCH1_PARAMETERS, expected_split_ensemble_sha256="adjusted-ensemble")
     parent = tmp_path / "parent"
     parent.mkdir()
     write_deterministic_csv(
@@ -267,20 +273,20 @@ def test_event_bounds_reasons_and_outputs_are_deterministic(monkeypatch, tmp_pat
     write_deterministic_csv(parent / "h2_v2_1_exclusions.csv", [], EXCLUSION_COLUMNS)
     none_root, adjusted_root, adjusted_manifest = _factor_sources(tmp_path)
     monkeypatch.setattr(factors, "verify_price_ensemble", lambda _root: {
-        "ensemble_sha256": factors.NONE_ENSEMBLE_SHA256,
+        "ensemble_sha256": BATCH1_PARAMETERS.expected_none_ensemble_sha256,
         "adjustment_policy": {"provider_adjust": "none"},
     })
     monkeypatch.setattr(
-        factors, "verify_split_adjusted_snapshot", lambda _root: adjusted_manifest,
+        factors, "verify_split_adjusted_snapshot", lambda _root, **_kwargs: adjusted_manifest,
     )
     fixed_now = lambda: datetime(2026, 11, 20, 19, tzinfo=timezone.utc)
     first = factors.apply_split_factor_screen(
         parent_root=parent, none_price_root=none_root, adjusted_root=adjusted_root,
-        output_root=tmp_path / "out1", now=fixed_now,
+        output_root=tmp_path / "out1", now=fixed_now, batch=batch,
     )
     second = factors.apply_split_factor_screen(
         parent_root=parent, none_price_root=none_root, adjusted_root=adjusted_root,
-        output_root=tmp_path / "out2", now=fixed_now,
+        output_root=tmp_path / "out2", now=fixed_now, batch=batch,
     )
     assert first == second
     for name in (
@@ -306,6 +312,7 @@ def test_event_bounds_reasons_and_outputs_are_deterministic(monkeypatch, tmp_pat
 def test_incomplete_event_coverage_precedes_split_and_audits_nonactive(
     monkeypatch, tmp_path,
 ):
+    batch = replace(BATCH1_PARAMETERS, expected_split_ensemble_sha256="adjusted-ensemble")
     parent = tmp_path / "parent"
     parent.mkdir()
     write_deterministic_csv(
@@ -359,16 +366,17 @@ def test_incomplete_event_coverage_precedes_split_and_audits_nonactive(
         ],
     }
     monkeypatch.setattr(factors, "verify_price_ensemble", lambda _root: {
-        "ensemble_sha256": factors.NONE_ENSEMBLE_SHA256,
+        "ensemble_sha256": BATCH1_PARAMETERS.expected_none_ensemble_sha256,
         "adjustment_policy": {"provider_adjust": "none"},
     })
     monkeypatch.setattr(
-        factors, "verify_split_adjusted_snapshot", lambda _root: adjusted_manifest,
+        factors, "verify_split_adjusted_snapshot", lambda _root, **_kwargs: adjusted_manifest,
     )
     result = factors.apply_split_factor_screen(
         parent_root=parent, none_price_root=none_root, adjusted_root=adjusted_root,
         output_root=tmp_path / "out",
         now=lambda: datetime(2026, 11, 21, 1, tzinfo=timezone.utc),
+        batch=batch,
     )
     rows = factors._read_csv(tmp_path / "out" / "h2_v2_1_inputs_dev.csv")
     gap = next(row for row in rows if row["ticker"] == "GAP")

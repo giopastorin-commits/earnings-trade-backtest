@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 from trinity.h2_v2_1_inputs import (
+    BATCH1_PARAMETERS,
+    BatchParameters,
     canonical_json_bytes,
     sha256_file,
     verify_price_ensemble,
@@ -29,9 +31,6 @@ from trinity.twelvedata_split_factors import verify_split_adjusted_snapshot
 
 
 DEV_SHA256 = "e1f3e7671422ece25cc6a0ffba9c4bbca4e11ad84d7e080bc349932466817501"
-PROSP_SHA256 = "2a01fb5d0cbf8b110779bd61d2f94116877dde15fbef1dd4a91d757d3e9a1493"
-NONE_ENSEMBLE_SHA256 = "8dd59aae14c92f9d8dd9a6c055c166157e8b49b0d6ce0b48591080277ec7a54f"
-SPLIT_ENSEMBLE_SHA256 = "44dc22079a57f4e60a07822c259503377bd80f72a04929bffc25db9a802c50d2"
 PROVENANCE_REPORT_SHA256 = "a922e4e7e0ea0d32ac4e0e91384a1017e27023679d155a846c44a6e7a0944adf"
 PRE_EVENT_COMMIT = "bee6463372e541519aae88cd98481bba27839875"
 PHASE2_SCHEMA = "trinity.h2-v2-1-phase2-model"
@@ -88,16 +87,20 @@ def _read_csv(path: str | Path) -> list[dict[str, str]]:
 def verify_frozen_sources(
     *, dev_path: str | Path, prosp_path: str | Path,
     price_root: str | Path, split_root: str | Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if sha256_file(dev_path) != DEV_SHA256:
         raise Phase2Error("frozen DEV SHA-256 mismatch")
-    if sha256_file(prosp_path) != PROSP_SHA256:
-        raise Phase2Error("frozen PROSP_BATCH1 SHA-256 mismatch")
+    if batch.expected_input_sha256 is not None \
+            and sha256_file(prosp_path) != batch.expected_input_sha256:
+        raise Phase2Error(f"frozen {batch.batch_id} SHA-256 mismatch")
     price_manifest = verify_price_ensemble(price_root)
-    if price_manifest.get("ensemble_sha256") != NONE_ENSEMBLE_SHA256:
+    if batch.expected_none_ensemble_sha256 is not None \
+            and price_manifest.get("ensemble_sha256") != batch.expected_none_ensemble_sha256:
         raise Phase2Error("frozen unadjusted ensemble SHA-256 mismatch")
-    split_manifest = verify_split_adjusted_snapshot(split_root)
-    if split_manifest.get("ensemble_sha256") != SPLIT_ENSEMBLE_SHA256:
+    split_manifest = verify_split_adjusted_snapshot(split_root, batch=batch)
+    if batch.expected_split_ensemble_sha256 is not None \
+            and split_manifest.get("ensemble_sha256") != batch.expected_split_ensemble_sha256:
         raise Phase2Error("frozen split-adjusted ensemble SHA-256 mismatch")
     return price_manifest, split_manifest
 
@@ -460,11 +463,17 @@ def _predict(model: Mapping[str, Any], features: Mapping[str, float]) -> float:
 
 def build_predictions(
     *, prosp_path: str | Path, model_path: str | Path, output_path: str | Path,
+    batch: BatchParameters = BATCH1_PARAMETERS,
 ) -> dict[str, Any]:
     """Build predictions without accepting or opening any price source."""
 
-    if sha256_file(prosp_path) != PROSP_SHA256:
-        raise Phase2Error("frozen PROSP_BATCH1 SHA-256 mismatch")
+    if batch.expected_input_sha256 is not None \
+            and sha256_file(prosp_path) != batch.expected_input_sha256:
+        raise Phase2Error(f"frozen {batch.batch_id} SHA-256 mismatch")
+    if batch.expected_model_sha256 is None:
+        raise Phase2Error("batch configuration lacks the frozen model SHA-256")
+    if sha256_file(model_path) != batch.expected_model_sha256:
+        raise Phase2Error("frozen model SHA-256 mismatch")
     try:
         artifact = json.loads(Path(model_path).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -493,10 +502,32 @@ def build_predictions(
             "pred_1e": _predict(models["M1e"], features),
         })
     write_deterministic_csv(output_path, rows, PREDICTION_COLUMNS)
-    return {
+    result = {
         "predicted_count": len(rows),
         "not_predicted_count": len(inputs) - len(rows),
         "sha256": sha256_file(output_path),
+    }
+    if batch.expected_predictions_sha256 is not None \
+            and result["sha256"] != batch.expected_predictions_sha256:
+        raise Phase2Error(f"frozen {batch.batch_id} prediction SHA-256 mismatch")
+    return result
+
+
+def verify_batch_neutrality(
+    *, input_path: str | Path, predictions_path: str | Path,
+    batch: BatchParameters,
+) -> dict[str, str]:
+    if batch.expected_input_sha256 is None or batch.expected_predictions_sha256 is None:
+        raise Phase2Error("neutrality verification requires both frozen expected hashes")
+    actual_input = sha256_file(input_path)
+    actual_predictions = sha256_file(predictions_path)
+    if actual_input != batch.expected_input_sha256:
+        raise Phase2Error(f"{batch.batch_id} neutrality input SHA-256 mismatch")
+    if actual_predictions != batch.expected_predictions_sha256:
+        raise Phase2Error(f"{batch.batch_id} neutrality prediction SHA-256 mismatch")
+    return {
+        "input_sha256": actual_input,
+        "predictions_sha256": actual_predictions,
     }
 
 
@@ -580,6 +611,87 @@ def build_seal_manifest(
     }
     Path(output_path).write_bytes(canonical_json_bytes(manifest, newline=True))
     return manifest
+
+
+def add_prosp_batch_to_seal(
+    *, manifest_path: str | Path, prosp_path: str | Path,
+    predictions_path: str | Path, model_path: str | Path,
+    price_root: str | Path, split_root: str | Path,
+    batch: BatchParameters, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Add one outcome-free prospective lot to the existing seal manifest."""
+
+    if batch.batch_id == BATCH1_PARAMETERS.batch_id:
+        raise Phase2Error("the initial seal already contains batch 1")
+    if batch.expected_input_sha256 is None \
+            or sha256_file(prosp_path) != batch.expected_input_sha256:
+        raise Phase2Error(f"frozen {batch.batch_id} SHA-256 mismatch")
+    if batch.expected_predictions_sha256 is None \
+            or sha256_file(predictions_path) != batch.expected_predictions_sha256:
+        raise Phase2Error(f"frozen {batch.batch_id} prediction SHA-256 mismatch")
+    if batch.expected_model_sha256 is None \
+            or sha256_file(model_path) != batch.expected_model_sha256:
+        raise Phase2Error("frozen model SHA-256 mismatch")
+    price_manifest = verify_price_ensemble(price_root)
+    split_manifest = verify_split_adjusted_snapshot(split_root, batch=batch)
+    if batch.expected_none_ensemble_sha256 is None \
+            or price_manifest.get("ensemble_sha256") != batch.expected_none_ensemble_sha256:
+        raise Phase2Error("batch unadjusted ensemble SHA-256 mismatch")
+    if batch.expected_split_ensemble_sha256 is None \
+            or split_manifest.get("ensemble_sha256") != batch.expected_split_ensemble_sha256:
+        raise Phase2Error("batch split-adjusted ensemble SHA-256 mismatch")
+    path = Path(manifest_path)
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Phase2Error("invalid existing seal manifest") from exc
+    if not isinstance(manifest, dict) \
+            or manifest.get("schema_name") != "trinity.h2-v2-1-seal-manifest":
+        raise Phase2Error("unsupported existing seal manifest")
+    block_name = f"prosp_{batch.batch_slug}"
+    if block_name in manifest:
+        raise Phase2Error(f"seal manifest already contains {block_name}")
+    rows = _read_csv(prosp_path)
+    included = [row for row in rows if row.get("row_status") == "INCLUDED"]
+    window_hashes = [
+        {
+            "current_release_id": row["current_release_id"],
+            "price_window_sha256": row.get("price_window_sha256") or None,
+        }
+        for row in sorted(rows, key=lambda item: item["current_release_id"])
+    ]
+    seal_time = now or datetime.now(timezone.utc)
+    s_seal = _last_completed_session(seal_time)
+    manifest[block_name] = {
+        "batch_id": batch.batch_id,
+        "reference_start": batch.prosp_reference_start.isoformat(),
+        "reference_end": batch.prosp_reference_end.isoformat(),
+        "input_sha256": sha256_file(prosp_path),
+        "predictions_sha256": sha256_file(predictions_path),
+        "model_sha256": sha256_file(model_path),
+        "price_window_hashes": window_hashes,
+        "price_window_hashes_ensemble_sha256": _canonical_hash(window_hashes),
+        "included_prediction_count": len(included),
+        "s_seal": s_seal,
+        "d20_on_or_before_s_seal_count": sum(
+            _d20(row["reference_session_date"]) <= s_seal for row in included
+        ),
+        "s_seal_membership_rule": "D20 > S_seal",
+        "price_snapshot": {
+            "target_session": batch.price_target_session.isoformat(),
+            "ensemble_sha256": price_manifest.get("ensemble_sha256"),
+            "manifest_sha256": sha256_file(Path(price_root) / "price_ensemble_manifest.json"),
+        },
+        "split_adjusted_snapshot": {
+            "target_session": batch.price_target_session.isoformat(),
+            "ensemble_sha256": split_manifest.get("ensemble_sha256"),
+            "manifest_sha256": sha256_file(
+                Path(split_root) / "split_adjusted_snapshot_manifest.json"
+            ),
+        },
+    }
+    path.write_bytes(canonical_json_bytes(manifest, newline=True))
+    return manifest[block_name]
 
 
 def _cluster_cr1(
